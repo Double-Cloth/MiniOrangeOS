@@ -39,7 +39,11 @@ CONTAINER_LIVE_REF=''
 CONTAINER_IMAGE_PRESENT=0
 CONTAINER_IMAGE_ID=''
 CONTAINER_BUILDER_PRESENT=0
+CONTAINER_OWNED_IMAGE_PRESENT=0
+CONTAINER_OWNED_BUILDER_PRESENT=0
 declare -a CONTAINER_COMMAND=()
+declare -a CONTAINER_OWNED_CONTAINERS=()
+declare -a CONTAINER_RUNNING_CONTAINERS=()
 
 container_fail() {
     minios_die "$*"
@@ -622,6 +626,158 @@ container_probe_docker_builder() {
         return "$status"
     }
     CONTAINER_BUILDER_PRESENT=1
+}
+
+container_append_candidate_name() {
+    local candidate="$1"
+    local existing
+    [[ -n "$candidate" ]] || return 0
+    for existing in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
+        [[ "$existing" != "$candidate" ]] || return 0
+    done
+    CONTAINER_OWNED_CONTAINERS+=("$candidate")
+}
+
+container_discover_owned_containers() {
+    local candidates
+    local candidate
+    local actual_name
+    local actual_label
+    local actual_task_label
+    local actual_intent_label
+    local actual_image_id
+    local actual_running
+    local status
+
+    CONTAINER_OWNED_CONTAINERS=()
+    CONTAINER_RUNNING_CONTAINERS=()
+    if candidates="$("${CONTAINER_COMMAND[@]}" container ls --all \
+        --filter "name=^${MINIOS_CONTAINER_NAME}-run-" \
+        --format '{{.Names}}')"; then
+        :
+    else
+        status=$?
+        container_fail "项目命名前缀容器枚举失败：status=$status"
+        return "$status"
+    fi
+    while IFS= read -r candidate; do
+        container_append_candidate_name "$candidate"
+    done <<<"$candidates"
+    if candidates="$("${CONTAINER_COMMAND[@]}" container ls --all \
+        --filter "label=$MINIOS_CONTAINER_LABEL" \
+        --format '{{.Names}}')"; then
+        :
+    else
+        status=$?
+        container_fail "项目 label 容器枚举失败：status=$status"
+        return "$status"
+    fi
+    while IFS= read -r candidate; do
+        container_append_candidate_name "$candidate"
+    done <<<"$candidates"
+
+    for candidate in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
+        actual_name="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format '{{.Name}}' "$candidate")" || return $?
+        actual_name="${actual_name#/}"
+        if [[ "$actual_name" != "$candidate" \
+            || ! "$actual_name" =~ ^miniorangeos-dev-run-[1-9][0-9]*$ ]]; then
+            container_fail "项目容器名称不符合精确规则：actual=${actual_name:-missing} candidate=$candidate"
+            return 1
+        fi
+        actual_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_LABEL_KEY\" }}" \
+            "$candidate")" || return $?
+        actual_task_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_TASK_LABEL_KEY\" }}" \
+            "$candidate")" || return $?
+        actual_intent_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_INTENT_LABEL_KEY\" }}" \
+            "$candidate")" || return $?
+        actual_image_id="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format '{{.Image}}' "$candidate")" || return $?
+        actual_image_id="$(container_normalize_image_id "$actual_image_id")" \
+            || return $?
+        actual_running="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format '{{.State.Running}}' "$candidate")" || return $?
+        if [[ "$actual_label" != "$MINIOS_CONTAINER_LABEL_VALUE" \
+            || "$actual_task_label" != "$MINIOS_CONTAINER_TASK_LABEL_VALUE" \
+            || "$actual_intent_label" != "$STATE_CONTAINER_INTENT" \
+            || "$actual_image_id" != "$STATE_CONTAINER_IMAGE_ID" ]]; then
+            container_fail "项目容器 ownership 不匹配：$candidate"
+            return 1
+        fi
+        case "$actual_running" in
+            true) CONTAINER_RUNNING_CONTAINERS+=("$candidate") ;;
+            false) ;;
+            *)
+                container_fail "项目容器 running 状态非法：container=$candidate value=${actual_running:-missing}"
+                return 1
+                ;;
+        esac
+    done
+}
+
+container_probe_loaded_resources() {
+    CONTAINER_OWNED_IMAGE_PRESENT=0
+    CONTAINER_OWNED_BUILDER_PRESENT=0
+    container_validate_partial_storage_boundaries || return $?
+    container_select_backend "$STATE_CONTAINER_BACKEND" || return $?
+    container_probe_image "$STATE_CONTAINER_LIVE_REF" || return $?
+    if ((CONTAINER_IMAGE_PRESENT == 1)); then
+        container_verify_state_ownership || return $?
+        CONTAINER_OWNED_IMAGE_PRESENT=1
+    fi
+    if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
+        container_probe_docker_builder "$STATE_CONTAINER_BUILDER" || return $?
+        if ((CONTAINER_BUILDER_PRESENT == 1)); then
+            CONTAINER_OWNED_BUILDER_PRESENT=1
+        fi
+    fi
+    container_discover_owned_containers || return $?
+    # backend 探测可能触碰固定路径；任何 mutation 前重新验证边界。
+    container_validate_partial_storage_boundaries
+}
+
+container_remove_owned_containers() {
+    local candidate
+
+    # 初始候选已在任何 mutation 前完成全量 ownership 验证。running 容器
+    # 带 --rm，stop 后可能自动消失，因此不能继续使用旧候选列表无条件 rm。
+    for candidate in "${CONTAINER_RUNNING_CONTAINERS[@]}"; do
+        "${CONTAINER_COMMAND[@]}" container stop "$candidate" || return $?
+    done
+
+    # stop 是第一个安全竞态边界：重新按 name/label 两路枚举，并在删除任何
+    # 幸存者前重新验证所有当前候选。自动消失视为成功，foreign replacement
+    # 或新出现的 ownership mismatch 会在这里 fail closed。
+    container_discover_owned_containers || return $?
+    for candidate in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
+        "${CONTAINER_COMMAND[@]}" container rm "$candidate" || return $?
+    done
+    # rm 后建立第二个安全竞态边界，禁止遗留或并发出现的项目候选进入后续
+    # image/builder/storage mutation；合法并发也必须由下一次 lifecycle 重试处理。
+    container_discover_owned_containers || return $?
+    if ((${#CONTAINER_OWNED_CONTAINERS[@]} != 0)); then
+        container_fail '项目容器清理后仍有新候选，拒绝继续删除镜像或存储'
+        return 1
+    fi
+}
+
+container_cleanup_loaded_resources() {
+    container_validate_partial_storage_boundaries || return $?
+    container_remove_owned_containers || return $?
+    if [[ "$STATE_CONTAINER_BACKEND" == 'docker' \
+        && $CONTAINER_OWNED_BUILDER_PRESENT -eq 1 ]]; then
+        docker buildx rm --force "$STATE_CONTAINER_BUILDER" || return $?
+    fi
+    if ((CONTAINER_OWNED_IMAGE_PRESENT == 1)); then
+        "${CONTAINER_COMMAND[@]}" image rm "$STATE_CONTAINER_LIVE_REF" \
+            || return $?
+    fi
+    container_remove_storage_components || return $?
+    container_remove_state_partials || return $?
+    rm -f -- "$MINIOS_CONTAINER_STATE_FILE"
 }
 
 STATE_CONTAINER_PHASE=''

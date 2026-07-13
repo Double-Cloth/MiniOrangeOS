@@ -39,45 +39,10 @@ if ((apply == 0)); then
     exit 0
 fi
 
-image_present=0
-builder_present=0
-
+container_probe_loaded_resources
 if [[ "$STATE_CONTAINER_PHASE" == 'ready' ]]; then
-    container_validate_resource_boundaries
-    container_select_backend "$STATE_CONTAINER_BACKEND"
-    container_probe_image "$STATE_CONTAINER_LIVE_REF"
-    if ((CONTAINER_IMAGE_PRESENT == 0)); then
-        container_fail 'ready state 的项目镜像缺失，拒绝开始 destroy'
-        exit 1
-    fi
-    container_verify_state_ownership
-    image_present=1
-    if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-        container_probe_docker_builder "$STATE_CONTAINER_BUILDER"
-        if ((CONTAINER_BUILDER_PRESENT == 0)); then
-            container_fail 'ready state 的固定 Buildx builder 缺失'
-            exit 1
-        fi
-        builder_present=1
-    fi
     container_transition_phase destroying
-else
-    container_validate_partial_storage_boundaries
-    container_select_backend "$STATE_CONTAINER_BACKEND"
-    container_probe_image "$STATE_CONTAINER_LIVE_REF"
-    if ((CONTAINER_IMAGE_PRESENT == 1)); then
-        container_verify_state_ownership
-        image_present=1
-    fi
-    if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-        container_probe_docker_builder "$STATE_CONTAINER_BUILDER"
-        if ((CONTAINER_BUILDER_PRESENT == 1)); then
-            builder_present=1
-        fi
-    fi
 fi
-
-container_validate_partial_storage_boundaries
 
 if [[ "$STATE_CONTAINER_IMAGE" != 'miniorangeos-dev:ubuntu-24.04' \
     || "$STATE_CONTAINER_LABEL" != 'org.miniorangeos.project=MiniOrangeOS' ]]; then
@@ -85,13 +50,6 @@ if [[ "$STATE_CONTAINER_IMAGE" != 'miniorangeos-dev:ubuntu-24.04' \
     exit 1
 fi
 
-if [[ "$STATE_CONTAINER_BACKEND" == 'docker' && $builder_present -eq 1 ]]; then
-    docker buildx rm --force "$STATE_CONTAINER_BUILDER"
-fi
-if ((image_present == 1)); then
-    "${CONTAINER_COMMAND[@]}" image rm "$STATE_CONTAINER_LIVE_REF"
-fi
-container_remove_storage_components
-rm -f -- "$MINIOS_CONTAINER_STATE_FILE"
+container_cleanup_loaded_resources
 printf 'container_destroy=complete backend=%s image=%s\n' \
     "$STATE_CONTAINER_BACKEND" "$STATE_CONTAINER_LIVE_REF"

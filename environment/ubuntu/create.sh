@@ -15,20 +15,18 @@ if [[ -e "$MINIOS_CONTAINER_STATE_FILE" || -L "$MINIOS_CONTAINER_STATE_FILE" ]];
     container_validate_loaded_state_boundaries
     case "$STATE_CONTAINER_PHASE" in
         ready)
-            container_validate_resource_boundaries
-            container_select_backend "$STATE_CONTAINER_BACKEND"
-            container_verify_state_ownership
-            if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-                container_probe_docker_builder "$STATE_CONTAINER_BUILDER"
-                if ((CONTAINER_BUILDER_PRESENT == 0)); then
-                    container_fail 'ready state 的固定 Buildx builder 缺失'
-                    exit 1
-                fi
+            container_probe_loaded_resources
+            if ((CONTAINER_OWNED_IMAGE_PRESENT == 1)) \
+                && { [[ "$STATE_CONTAINER_BACKEND" != 'docker' ]] \
+                    || ((CONTAINER_OWNED_BUILDER_PRESENT == 1)); }; then
+                printf 'container_status=up-to-date backend=%s image=%s image_id=%s\n' \
+                    "$STATE_CONTAINER_BACKEND" "$STATE_CONTAINER_LIVE_REF" \
+                    "$STATE_CONTAINER_IMAGE_ID"
+                exit 0
             fi
-            printf 'container_status=up-to-date backend=%s image=%s image_id=%s\n' \
-                "$STATE_CONTAINER_BACKEND" "$STATE_CONTAINER_LIVE_REF" \
-                "$STATE_CONTAINER_IMAGE_ID"
-            exit 0
+            minios_log 'INFO' 'ready state 资源发生可验证漂移，自动清理后重建'
+            container_transition_phase destroying
+            container_cleanup_loaded_resources
             ;;
         destroying)
             container_fail 'container state 正在 destroying；请先重试 destroy.sh --all'
