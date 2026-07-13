@@ -983,24 +983,53 @@ printf "T00_TEST_RESULT=PASS\n"
 '
 ~~~
 
-Expected: 7 tests PASS，最后输出 T00_TEST_RESULT=PASS。
+Expected: 9 tests PASS，最后输出 T00_TEST_RESULT=PASS。
 
 - [ ] **Step 3: 验证宿主未被项目工具链污染**
 
 Run from PowerShell:
 
 ~~~powershell
-$forbidden = @('i686-elf-gcc', 'nasm', 'qemu-system-i386', 'gdb')
-foreach ($name in $forbidden) {
-    $command = Get-Command $name -ErrorAction SilentlyContinue
-    if ($command) {
-        throw "Windows PATH 中发现禁止的项目工具：$name -> $($command.Source)"
+$projectRoots = @(
+    [IO.Path]::GetFullPath('D:\DC\program-projects\OTHER\MiniOrangeOS').TrimEnd('\'),
+    [IO.Path]::GetFullPath('D:\ApplicationData\MiniOrangeOS').TrimEnd('\')
+)
+$toolNames = @('i686-elf-gcc', 'nasm', 'qemu-system-i386', 'gdb')
+foreach ($name in $toolNames) {
+    $commands = @(Get-Command $name -All -ErrorAction SilentlyContinue)
+    if ($commands.Count -eq 0) {
+        Write-Output "$name -> ABSENT"
+    }
+    foreach ($command in $commands) {
+        $source = [IO.Path]::GetFullPath($command.Source)
+        Write-Output "$name -> $source"
+        foreach ($root in $projectRoots) {
+            if ($source.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+                $source.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Windows PATH 中发现项目自有工具：$name -> $source"
+            }
+        }
+    }
+}
+foreach ($scope in @('User', 'Machine')) {
+    $pathValue = [Environment]::GetEnvironmentVariable('Path', $scope)
+    foreach ($entry in @($pathValue -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        $pathEntry = [IO.Path]::GetFullPath(
+            [Environment]::ExpandEnvironmentVariables($entry)
+        ).TrimEnd('\')
+        foreach ($root in $projectRoots) {
+            if ($pathEntry.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+                $pathEntry.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)) {
+                throw "$scope PATH 包含项目路径：$pathEntry"
+            }
+        }
     }
 }
 wsl.exe --list --verbose
 ~~~
 
-Expected: Windows PATH 未找到四项项目工具；MiniOrangeOS-Dev 和原有 docker-desktop 均存在。
+Expected: 枚举四项工具的实际解析结果；来源位于权威工作树或 `D:\ApplicationData\MiniOrangeOS` 时失败，用户预存的外部工具只记录、不删除、不修改 PATH；User/Machine PATH 不包含两个项目根；MiniOrangeOS-Dev 和原有 docker-desktop 均存在。
 
 - [ ] **Step 4: 写入实际任务报告并更新进度**
 
@@ -1038,10 +1067,10 @@ docs/task-reports/T00-project-bootstrap.md:
 
 ## 测试结果
 
-- ProjectLayoutTests：PASS（7 项）。
+- ProjectLayoutTests：PASS（9 项）。
 - Ubuntu 版本：24.04。
 - 默认 WSL 用户：minios。
-- Windows PATH 项目工具污染检查：PASS。
+- Windows PATH 项目自有工具与项目路径污染检查：PASS；外部预存工具按真实来源记录，未修改用户环境。
 
 ## 未解决问题
 
@@ -1060,7 +1089,7 @@ docs/task-reports/T00-project-bootstrap.md:
 Update docs/progress.md T00 row to:
 
 ~~~markdown
-| T00 | 完成 | feature/T00-project-bootstrap | ProjectLayoutTests 7/7 PASS | merge: complete T00 project bootstrap |
+| T00 | 验收通过，待合并 | feature/T00-project-bootstrap | ProjectLayoutTests 9/9 PASS | 待最终审查与 no-ff 合并 |
 ~~~
 
 - [ ] **Step 5: 提交任务报告**
@@ -1113,7 +1142,7 @@ python3 -m unittest tests.host.test_project_layout -v
 '
 ~~~
 
-Expected: main 工作区干净；图中保留 T00 no-ff merge；删除任务分支后 7 项测试仍 PASS。
+Expected: main 工作区干净；图中保留 T00 no-ff merge；删除任务分支后 9 项测试仍 PASS。
 
 ---
 

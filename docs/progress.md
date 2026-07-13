@@ -4,7 +4,7 @@
 
 | 任务 | 状态 | 分支 | 测试证据 | 合并 |
 |---|---|---|---|---|
-| T00 | 实施中 | feature/T00-project-bootstrap | tests.host.test_project_layout | 待验收 |
+| T00 | 验收通过，待合并 | feature/T00-project-bootstrap | ProjectLayoutTests 9/9 PASS | 待最终审查与 no-ff 合并 |
 | T01–T74 | 未开始 | — | — | — |
 
 ## 里程碑
