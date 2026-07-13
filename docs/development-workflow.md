@@ -52,31 +52,33 @@ docs/T73-architecture-sync
 提交信息采用：
 
 ```text
-<type>: <summary>
+type(scope): summary
 ```
 
-常用类型：
+允许类型：
 
 | 类型 | 使用场景 |
 |---|---|
+| `feat` | 新增功能 |
+| `fix` | 缺陷修复 |
+| `test` | 测试框架和测试用例 |
+| `refactor` | 不改变行为的代码重构 |
 | `docs` | 文档、计划、来源记录 |
 | `build` | 构建系统、工具链、CI |
-| `test` | 测试框架和测试用例 |
-| `boot` | Stage 1、Stage 2、启动链 |
-| `kernel` | 内核通用基础 |
-| `mm` | 内存管理 |
-| `proc` | 进程、调度、Ring 3 |
-| `fs` | 磁盘、块设备、文件系统 |
-| `user` | 用户态程序和 libc |
-| `fix` | 缺陷修复 |
+| `chore` | 仓库维护和非功能性整理 |
+
+`scope` 表示受影响模块；`boot`、`kernel`、`mm`、`proc`、`fs`、`user` 等模块名只作为 scope，不作为 type。
 
 示例：
 
 ```text
-boot: add stage1 disk read skeleton
-mm: validate usercopy page ranges
-fs: implement direct block read path
-docs: sync filesystem layout contract
+feat(boot): add stage1 disk read skeleton
+feat(kernel): add panic output contract
+fix(mm): validate usercopy page ranges
+feat(proc): add scheduler state transition
+feat(fs): implement direct block read path
+feat(user): add shell command dispatch
+docs(filesystem): sync layout contract
 ```
 
 ## 合并

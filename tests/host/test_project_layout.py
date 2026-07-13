@@ -116,12 +116,34 @@ class ProjectLayoutTests(unittest.TestCase):
     def test_text_files_use_lf(self) -> None:
         bad_files: list[str] = []
         for path in ROOT.rglob("*"):
-            if ".git" in path.parts or not path.is_file():
+            relative_path = path.relative_to(ROOT)
+            if not path.is_file() or any(
+                part in {".git", ".superpowers"} for part in relative_path.parts
+            ):
                 continue
-            if path.suffix in TEXT_SUFFIXES or path.name in {"Makefile", "Containerfile"}:
-                if b"\r\n" in path.read_bytes():
-                    bad_files.append(path.relative_to(ROOT).as_posix())
-        self.assertEqual([], bad_files, f"发现 CRLF：{bad_files}")
+            is_text = (
+                path.suffix in TEXT_SUFFIXES
+                or path.name in {
+                    "Makefile",
+                    "Containerfile",
+                    "LICENSE",
+                    ".gitignore",
+                    ".gitattributes",
+                    ".gitkeep",
+                }
+            )
+            if not is_text:
+                continue
+
+            data = path.read_bytes()
+            relative_name = relative_path.as_posix()
+            try:
+                data.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                bad_files.append(f"{relative_name}: 非 UTF-8")
+            if b"\r" in data:
+                bad_files.append(f"{relative_name}: 包含 CR")
+        self.assertEqual([], bad_files, f"文本策略失败：{bad_files}")
 
     def test_readme_records_authoritative_worktree(self) -> None:
         path = ROOT / "README.md"
@@ -157,6 +179,36 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn("Windows Git 负责版本控制和文件编辑", t01_content)
         self.assertIn("不安装 Windows 原生编译、调试或虚拟化工具链", t01_content)
         self.assertIn("Linux 构建和测试仅在专用 WSL 或真实 Ubuntu 隔离模型中执行", t01_content)
+
+    def test_development_workflow_records_commit_contract(self) -> None:
+        path = ROOT / "docs/development-workflow.md"
+        self.assertTrue(path.is_file(), "缺少文件：docs/development-workflow.md")
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("type(scope): summary", content)
+        self.assertNotIn("<type>: <summary>", content)
+        for commit_type in ("feat", "fix", "test", "refactor", "docs", "build", "chore"):
+            self.assertIn(f"`{commit_type}`", content)
+
+    def test_environment_records_t01_script_contract(self) -> None:
+        path = ROOT / "docs/environment.md"
+        self.assertTrue(path.is_file(), "缺少文件：docs/environment.md")
+        content = path.read_text(encoding="utf-8")
+        required_scripts = (
+            "environment/wsl/create.ps1",
+            "environment/wsl/enter.ps1",
+            "environment/wsl/backup.ps1",
+            "environment/wsl/destroy.ps1",
+            "environment/Containerfile",
+            "environment/ubuntu/create.sh",
+            "environment/ubuntu/run.sh",
+            "environment/ubuntu/destroy.sh",
+            "environment/bootstrap-inside.sh",
+            "environment/with-env.sh",
+            "environment/verify.sh",
+            "tools/build_toolchain.sh",
+        )
+        for script in required_scripts:
+            self.assertIn(script, content)
 
 
 if __name__ == "__main__":

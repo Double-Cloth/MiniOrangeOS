@@ -83,16 +83,22 @@ rm -rf ~/.local/share
 
 ## 后续脚本契约
 
-后续任务允许创建以下脚本，但当前文档阶段不实现：
+以下脚本和配置由 T01 实现；T00 只记录路径与职责，不声明文件已经存在或可执行：
 
 | 文件 | 职责 |
 |---|---|
-| `environment/verify.sh` | 输出环境指纹，校验工具路径和版本，拒绝污染宿主的路径 |
-| `environment/with-env.sh` | 以项目工具链和 venv 执行命令，不修改全局环境 |
-| `environment/bootstrap-wsl.ps1` | 注册或提示创建 `MiniOrangeOS-Dev`，不安装 Windows 原生工具链 |
-| `environment/build-toolchain.sh` | 在项目工具根目录构建或安装 i686-elf 工具链 |
+| `environment/wsl/create.ps1` | 定向创建 `MiniOrangeOS-Dev`，所有环境载荷写入授权根目录 |
+| `environment/wsl/enter.ps1` | 进入既有 `MiniOrangeOS-Dev`，不创建第二份工作树 |
+| `environment/wsl/backup.ps1` | 将专用发行版备份到项目授权的导出目录 |
+| `environment/wsl/destroy.ps1` | 预览并定向注销 `MiniOrangeOS-Dev`，不影响其他发行版 |
 | `environment/Containerfile` | 定义真实 Ubuntu 复验容器 |
-| `environment/cleanup.sh` | 只删除带项目标签或项目根路径的资源 |
+| `environment/ubuntu/create.sh` | 创建带项目标签的真实 Ubuntu rootless OCI 复验环境 |
+| `environment/ubuntu/run.sh` | 在已创建的复验环境中运行项目命令 |
+| `environment/ubuntu/destroy.sh` | 只删除本项目标记的容器、镜像、卷和缓存 |
+| `environment/bootstrap-inside.sh` | 在隔离 Linux 环境中安装固定版本依赖，不写入宿主 `/usr/local` |
+| `environment/with-env.sh` | 临时注入项目工具链和 venv 后执行命令，不修改全局环境 |
+| `environment/verify.sh` | 输出环境指纹，校验工具路径和版本，拒绝越界路径 |
+| `tools/build_toolchain.sh` | 在 `$MINIOS_ENV_ROOT/toolchain` 可重复构建 i686-elf 工具链 |
 
 ## 环境验证最低输出
 
