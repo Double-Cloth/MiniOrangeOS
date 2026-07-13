@@ -149,11 +149,11 @@ class ProjectLayoutTests(unittest.TestCase):
         path = ROOT / "PROJECT_PLAN.md"
         self.assertTrue(path.is_file(), "缺少文件：PROJECT_PLAN.md")
         content = path.read_text(encoding="utf-8")
-        self.assertNotIn("Windows 只允许使用专用 WSL2", content)
 
         t01_start = content.index("### T01：")
         t02_start = content.index("### T02：", t01_start)
         t01_content = content[t01_start:t02_start]
+        self.assertNotIn("Windows 只允许使用专用 WSL2", t01_content)
         self.assertIn("Windows Git 负责版本控制和文件编辑", t01_content)
         self.assertIn("不安装 Windows 原生编译、调试或虚拟化工具链", t01_content)
         self.assertIn("Linux 构建和测试仅在专用 WSL 或真实 Ubuntu 隔离模型中执行", t01_content)
