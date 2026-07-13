@@ -1340,6 +1340,49 @@ for helper_failure in signal-after-create replace-partial; do
     [[ -z "$(find "$state_path" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'helper failure left partial: %s\n' "$helper_failure" >&2; exit 1; }
     rm -rf -- "$state_path"
 done
+for crash_phase in kill-after-restrict kill-after-partial; do
+    mkdir -- "$state_path"
+    chown "minios:$target_uid" "$state_path"
+    chmod 0755 "$state_path"
+    crash_original="$environment_root/state-unused-$crash_phase"
+    if "${positive[@]}" MINIOS_PACKAGE_STATE_RACE_PHASE="$crash_phase" \
+        "FAKE_RACE_STATE=$state_path" "FAKE_RACE_ORIGINAL=$crash_original" \
+        "FAKE_RACE_OUTSIDE=$protected" "$script" --system-only; then
+        printf 'SIGKILL crash probe unexpectedly passed: %s\n' "$crash_phase" >&2
+        exit 1
+    fi
+    [[ "$(stat -c '%u|%a' "$state_path")" == '0|700' ]] || { printf 'SIGKILL did not leave exact recoverable residue: %s\n' "$crash_phase" >&2; exit 1; }
+    if [[ "$crash_phase" == kill-after-partial ]]; then
+        [[ -n "$(find "$state_path" -maxdepth 1 -type f -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'partial crash residue missing\n' >&2; exit 1; }
+    fi
+    /usr/bin/timeout 8 "${positive[@]}" "$script" --system-only
+    [[ "$(stat -c '%u|%a' "$state_path")" == "$target_uid|755" ]] || { printf 'crash recovery did not restore state metadata: %s\n' "$crash_phase" >&2; exit 1; }
+    [[ -s "$state_path/apt-packages.lock" && ! -L "$state_path/apt-packages.lock" ]] || { printf 'crash recovery retry did not commit lock: %s\n' "$crash_phase" >&2; exit 1; }
+    [[ -z "$(find "$state_path" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'crash recovery left partial: %s\n' "$crash_phase" >&2; exit 1; }
+    rm -rf -- "$state_path"
+done
+mkdir -- "$state_path"
+chmod 0700 "$state_path"
+ln -s -- "$protected/sentinel" "$state_path/apt-packages.lock.partial.123.0123456789abcdef"
+recovery_apt_before="$(apt_lines)"
+if "${positive[@]}" "$script" --system-only; then
+    printf 'root residue symlink unexpectedly recovered\n' >&2
+    exit 1
+fi
+[[ "$(apt_lines)" == "$recovery_apt_before" ]] || { printf 'malicious symlink residue reached apt\n' >&2; exit 1; }
+[[ -L "$state_path/apt-packages.lock.partial.123.0123456789abcdef" ]] || { printf 'malicious symlink residue was changed\n' >&2; exit 1; }
+rm -rf -- "$state_path"
+mkdir -- "$state_path"
+chmod 0700 "$state_path"
+foreign_partial="$state_path/apt-packages.lock.partial.456.fedcba9876543210"
+printf 'foreign\n' >"$foreign_partial"
+if "${positive[@]}" "$script" --system-only; then
+    printf 'foreign root residue unexpectedly recovered\n' >&2
+    exit 1
+fi
+[[ "$(apt_lines)" == "$recovery_apt_before" ]] || { printf 'foreign residue reached apt\n' >&2; exit 1; }
+[[ -f "$foreign_partial" && "$(stat -c '%u|%a' "$foreign_partial")" == '0|644' ]] || { printf 'foreign residue was changed\n' >&2; exit 1; }
+rm -rf -- "$state_path"
 positive_apt_before="$(apt_lines)"
 apt_background_pid_file="$root/apt-background.pid"
 "${positive[@]}" FAKE_APT_BACKGROUND_PID_FILE="$apt_background_pid_file" "$script" --system-only

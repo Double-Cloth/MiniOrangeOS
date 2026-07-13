@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
+import re
 import secrets
 import signal
 import stat
@@ -15,6 +16,9 @@ from dataclasses import dataclass
 
 LOCK_NAME = "apt-packages.lock"
 PARTIAL_PREFIX = f"{LOCK_NAME}.partial."
+PARTIAL_NAME_PATTERN = re.compile(
+    rf"^{re.escape(PARTIAL_PREFIX)}[1-9][0-9]*\.[0-9a-f]{{16}}$"
+)
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 HANDLED_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM, signal.SIGHUP))
 
@@ -33,6 +37,7 @@ class Arguments:
     race_state: str | None
     race_original: str | None
     race_outside: str | None
+    recover_only: bool
 
 
 def parse_arguments() -> Arguments:
@@ -49,11 +54,14 @@ def parse_arguments() -> Arguments:
             "after-partial",
             "signal-after-create",
             "replace-partial",
+            "kill-after-restrict",
+            "kill-after-partial",
         ),
     )
     parser.add_argument("--race-state")
     parser.add_argument("--race-original")
     parser.add_argument("--race-outside")
+    parser.add_argument("--recover-only", action="store_true")
     namespace = parser.parse_args()
     if namespace.target_uid <= 0 or namespace.target_gid <= 0:
         parser.error("target uid/gid 必须是非零整数")
@@ -65,6 +73,8 @@ def parse_arguments() -> Arguments:
     )
     if any(race_values) and (not namespace.test_root or not all(race_values)):
         parser.error("race 参数只能在 test root 下完整提供")
+    if namespace.recover_only and any(race_values):
+        parser.error("recover-only 禁止使用 race 参数")
     return Arguments(
         environment_root=namespace.environment_root,
         target_uid=namespace.target_uid,
@@ -74,6 +84,7 @@ def parse_arguments() -> Arguments:
         race_state=namespace.race_state,
         race_original=namespace.race_original,
         race_outside=namespace.race_outside,
+        recover_only=namespace.recover_only,
     )
 
 
@@ -290,6 +301,65 @@ def replace_partial_for_test(
         os.close(replacement)
 
 
+def validate_recovery_lock(state_fd: int, args: Arguments) -> None:
+    try:
+        item = os.stat(LOCK_NAME, dir_fd=state_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or item.st_nlink != 1
+        or item.st_uid != args.target_uid
+        or stat.S_IMODE(item.st_mode) != 0o644
+    ):
+        raise WriterError("crash residue 中已有 package lock 不可信")
+
+
+def recover_package_state(args: Arguments) -> None:
+    descriptors, identities = open_validated_chain(args, state_restricted=True)
+    state_fd = descriptors[-1]
+    previous_signal_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, HANDLED_SIGNALS
+    )
+    try:
+        fcntl.flock(state_fd, fcntl.LOCK_EX)
+        assert_chain_unchanged(args, identities, state_restricted=True)
+        validate_recovery_lock(state_fd, args)
+        recoverable_partials: list[str] = []
+        for name in os.listdir(state_fd):
+            if name == LOCK_NAME:
+                continue
+            if not PARTIAL_NAME_PATTERN.fullmatch(name):
+                raise WriterError(f"crash residue 含未知条目：{name}")
+            item = os.stat(name, dir_fd=state_fd, follow_symlinks=False)
+            root_partial = item.st_uid == 0 and stat.S_IMODE(item.st_mode) == 0o600
+            target_partial = (
+                item.st_uid == args.target_uid
+                and stat.S_IMODE(item.st_mode) == 0o644
+            )
+            if (
+                not stat.S_ISREG(item.st_mode)
+                or item.st_nlink != 1
+                or not (root_partial or target_partial)
+            ):
+                raise WriterError(f"crash residue partial 不可信：{name}")
+            recoverable_partials.append(name)
+        if len(recoverable_partials) > 1:
+            raise WriterError("crash residue 含多个 transaction partial")
+        for name in recoverable_partials:
+            os.unlink(name, dir_fd=state_fd)
+        os.fsync(state_fd)
+        assert_chain_unchanged(args, identities, state_restricted=True)
+        os.fchown(state_fd, args.target_uid, args.target_gid)
+        os.fchmod(state_fd, 0o755)
+        os.fsync(state_fd)
+    finally:
+        try:
+            close_descriptors(descriptors)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+
+
 def install_signal_handlers() -> None:
     def interrupted(signum: int, _frame: object) -> None:
         raise WriterError(f"收到信号 {signum}，中止 package lock 写入")
@@ -310,29 +380,34 @@ def write_package_lock(args: Arguments, content: bytes) -> None:
     state_restricted = False
     partial_fd: int | None = None
     partial_name: str | None = None
+    previous_signal_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, HANDLED_SIGNALS
+    )
     try:
         fcntl.flock(state_fd, fcntl.LOCK_EX)
         state_restricted = True
-        os.fchown(state_fd, 0, 0)
         os.fchmod(state_fd, 0o700)
+        os.fchown(state_fd, 0, 0)
         restricted = os.fstat(state_fd)
         if restricted.st_uid != 0 or stat.S_IMODE(restricted.st_mode) != 0o700:
             raise WriterError("无法把锚定 package-state 临时收紧为 root-only")
+        if args.race_phase == "kill-after-restrict":
+            os.kill(os.getpid(), signal.SIGKILL)
         validate_existing_entries(state_fd, args.target_uid)
         run_test_race(args, "after-open")
         assert_chain_unchanged(args, identities, state_restricted=True)
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
-        try:
-            partial_fd, partial_name = create_partial(state_fd)
-            if args.race_phase == "signal-after-create":
-                os.kill(os.getpid(), signal.SIGTERM)
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        partial_fd, partial_name = create_partial(state_fd)
+        if args.race_phase == "signal-after-create":
+            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), signal.SIGINT)
+            raise WriterError("测试注入重复 handled signals")
         write_all(partial_fd, content)
         os.fchmod(partial_fd, 0o644)
         os.fchown(partial_fd, args.target_uid, args.target_gid)
         os.fsync(partial_fd)
         validate_written_file(partial_fd, args.target_uid, len(content))
+        if args.race_phase == "kill-after-partial":
+            os.kill(os.getpid(), signal.SIGKILL)
         run_test_race(args, "after-partial")
         assert_chain_unchanged(args, identities, state_restricted=True)
         expected_partial_identity = identity(os.fstat(partial_fd))
@@ -374,25 +449,30 @@ def write_package_lock(args: Arguments, content: bytes) -> None:
                 except FileNotFoundError:
                     pass
         finally:
-            restore_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
             try:
                 if state_restricted:
-                    os.fchmod(state_fd, original_state_mode)
                     os.fchown(
                         state_fd, original_state.st_uid, original_state.st_gid
                     )
+                    os.fchmod(state_fd, original_state_mode)
                     os.fsync(state_fd)
             finally:
                 try:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, restore_mask)
-                finally:
                     close_descriptors(descriptors)
+                finally:
+                    signal.pthread_sigmask(
+                        signal.SIG_SETMASK, previous_signal_mask
+                    )
 
 
 def main() -> int:
     try:
         args = parse_arguments()
         install_signal_handlers()
+        if args.recover_only:
+            recover_package_state(args)
+            print("package_state_recovery_status=complete")
+            return 0
         write_package_lock(args, sys.stdin.buffer.read())
     except (WriterError, OSError) as error:
         print(f"FAIL package-state writer: {error}", file=sys.stderr)

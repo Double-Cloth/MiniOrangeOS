@@ -811,6 +811,26 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             write_body.rindex("assert_chain_unchanged", 0, write_body.index("os.replace")),
             write_body.index("os.replace"),
         )
+        block_position = write_body.index("signal.pthread_sigmask")
+        restrict_position = write_body.index("os.fchown(state_fd, 0, 0)")
+        restore_position = write_body.rindex("os.fchown(")
+        unblock_position = write_body.rindex("signal.pthread_sigmask")
+        self.assertLess(block_position, restrict_position)
+        self.assertLess(restore_position, unblock_position)
+        for token in (
+            "--recover-only",
+            "recover_package_state",
+            "PARTIAL_NAME_PATTERN",
+            "follow_symlinks=False",
+        ):
+            self.assertIn(token, writer)
+        system_phase = self._function_body(
+            bootstrap, "run_system_phase", powershell=False
+        )
+        self.assertLess(
+            system_phase.index("recover_package_state_after_crash"),
+            system_phase.index("--prepare-package-state"),
+        )
 
     def test_bootstrap_gates_identity_user_and_environment_before_mutation(
         self,

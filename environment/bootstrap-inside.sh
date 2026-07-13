@@ -993,6 +993,26 @@ prepare_package_state_as_target() {
     reject_existing_package_lock_partials_at "$state_directory"
 }
 
+recover_package_state_after_crash() {
+    local state_directory="$environment_root/state"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        return 0
+    fi
+    IFS='|' read -r item_type item_uid item_mode \
+        < <(stat -c '%F|%u|%a' -- "$state_directory") || return $?
+    if [[ "$item_type" == 'directory' && "$item_uid" == '0' \
+        && "$item_mode" == '700' ]]; then
+        /usr/bin/python3 -I -B "$SCRIPT_DIR/lib/package_state_writer.py" \
+            --recover-only \
+            --environment-root "$environment_root" \
+            --target-uid "$target_uid" \
+            --target-gid "$target_gid"
+    fi
+}
+
 write_package_lock_with_helper() {
     if ((EUID != 0)); then
         fail 'package lock helper 必须由 root phase 执行'
@@ -1079,6 +1099,7 @@ run_system_phase() {
         fail '--system-only 必须由 root 执行'
         return 1
     fi
+    recover_package_state_after_crash || return $?
     run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --prepare-package-state --target-user "$target_user" || return $?
     validate_package_state_directory || return $?
     validate_package_lock_at "$environment_root/state" || return $?
