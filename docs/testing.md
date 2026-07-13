@@ -59,7 +59,7 @@ python3 -m unittest discover -s tests/host -v
 
 2026-07-14 在 Windows 权威工作树对应的正式 `MiniOrangeOS-Dev` WSL2 中执行：
 
-- `python3 -m unittest discover -s tests/host -v`：122/122 PASS；
+- `python3 -m unittest discover -s tests/host -v`：124/124 PASS；
 - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\host\test_wsl_lifecycle.ps1`：29/29 PASS；
 - `./environment/verify.sh`：PASS，GCC 13.2.0、GNU ld 2.42、ELF32 freestanding compile、Windows/Linux 全局污染检查均通过。
 
