@@ -204,23 +204,123 @@ if ((download_only == 1)); then
     exit 0
 fi
 
+validate_archive_members() {
+    local archive="$1"
+    local expected_name="$2"
+    local status
+    if python3 - "$archive" "$expected_name" <<'PY'
+import posixpath
+import sys
+import tarfile
+
+archive, expected = sys.argv[1:]
+
+def reject(member: tarfile.TarInfo, reason: str) -> None:
+    print(f"unsafe archive member: {member.name!r}: {reason}", file=sys.stderr)
+    raise SystemExit(1)
+
+with tarfile.open(archive, "r:*") as source:
+    for member in source:
+        name = member.name.rstrip("/")
+        normalized = posixpath.normpath(name)
+        if not name or name.startswith("/") or normalized in {"", ".", ".."}:
+            reject(member, "absolute or empty path")
+        if normalized.startswith("../") or normalized.split("/", 1)[0] != expected:
+            reject(member, "path escapes expected top-level directory")
+        if not (member.isdir() or member.isreg() or member.issym() or member.islnk()):
+            reject(member, "unsupported special member type")
+        if member.issym() or member.islnk():
+            target = member.linkname
+            if not target or target.startswith("/"):
+                reject(member, "absolute or empty link target")
+            if member.issym():
+                resolved = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(normalized), target)
+                )
+            else:
+                resolved = posixpath.normpath(target)
+            if resolved.startswith("../") or resolved.split("/", 1)[0] != expected:
+                reject(member, "link target escapes expected top-level directory")
+PY
+    then
+        :
+    else
+        status=$?
+        minios_log "FAIL" "归档成员预检失败：$archive status=$status"
+        return "$status"
+    fi
+}
+
+source_stamp_matches() {
+    local stamp="$1"
+    local component="$2"
+    local version="$3"
+    local archive_sha256="$4"
+    local expected_name="$5"
+    local line_count
+
+    if [[ ! -f "$stamp" || -L "$stamp" ]]; then
+        return 1
+    fi
+    if line_count="$(wc -l <"$stamp")"; then
+        :
+    else
+        return $?
+    fi
+    [[ "$line_count" == "4" ]] || return 1
+    grep -Fqx -- "component=$component" "$stamp" || return 1
+    grep -Fqx -- "version=$version" "$stamp" || return 1
+    grep -Fqx -- "archive_sha256=$archive_sha256" "$stamp" || return 1
+    grep -Fqx -- "expected_top_level=$expected_name" "$stamp" || return 1
+}
+
+write_source_stamp() {
+    local stamp="$1"
+    local component="$2"
+    local version="$3"
+    local archive_sha256="$4"
+    local expected_name="$5"
+    local partial_stamp="$stamp.partial"
+    local status
+
+    assert_owned_path_without_symlink "$stamp" || return $?
+    assert_owned_path_without_symlink "$partial_stamp" || return $?
+    if rm -f -- "$partial_stamp"; then :; else return $?; fi
+    if printf '%s\n' \
+        "component=$component" \
+        "version=$version" \
+        "archive_sha256=$archive_sha256" \
+        "expected_top_level=$expected_name" >"$partial_stamp"; then
+        :
+    else
+        status=$?
+        rm -f -- "$partial_stamp" || true
+        return "$status"
+    fi
+    if mv -f -- "$partial_stamp" "$stamp"; then
+        :
+    else
+        status=$?
+        rm -f -- "$partial_stamp" || true
+        return "$status"
+    fi
+}
+
 extract_source() {
     local archive="$1"
     local final_directory="$2"
+    local component="$3"
+    local version="$4"
+    local archive_sha256="$5"
     local expected_name="${final_directory##*/}"
     local partial_directory="$SOURCE_DIR/.extract-$expected_name.partial"
     local extracted_directory="$partial_directory/$expected_name"
+    local source_stamp="$final_directory/.minios-source.env"
+    local extracted_stamp="$extracted_directory/.minios-source.env"
     local status
 
     assert_owned_path_without_symlink "$final_directory" || return $?
     assert_owned_path_without_symlink "$partial_directory" || return $?
-    if [[ -d "$final_directory" && -f "$final_directory/configure" && ! -L "$final_directory/configure" ]]; then
-        return 0
-    fi
-    if [[ -e "$final_directory" || -L "$final_directory" ]]; then
-        minios_die "源码目录已存在但不完整，拒绝覆盖：$final_directory"
-        return 1
-    fi
     if mkdir -p -- "$SOURCE_DIR"; then
         :
     else
@@ -229,6 +329,20 @@ extract_source() {
         return "$status"
     fi
     remove_owned_path "$partial_directory" || return $?
+    if [[ -e "$final_directory" || -L "$final_directory" ]]; then
+        if [[ -d "$final_directory" \
+            && -f "$final_directory/configure" \
+            && -x "$final_directory/configure" \
+            && ! -L "$final_directory/configure" ]] \
+            && source_stamp_matches \
+                "$source_stamp" "$component" "$version" \
+                "$archive_sha256" "$expected_name"; then
+            return 0
+        fi
+        minios_die "源码缓存缺少或不匹配项目 stamp，拒绝复用：$final_directory"
+        return 1
+    fi
+    validate_archive_members "$archive" "$expected_name" || return $?
     if mkdir -p -- "$partial_directory"; then
         :
     else
@@ -244,10 +358,22 @@ extract_source() {
         minios_log "FAIL" "源码解包失败：$archive status=$status"
         return "$status"
     fi
-    if [[ ! -f "$extracted_directory/configure" || -L "$extracted_directory/configure" ]]; then
+    if [[ ! -f "$extracted_directory/configure" \
+        || ! -x "$extracted_directory/configure" \
+        || -L "$extracted_directory/configure" ]]; then
         remove_owned_path "$partial_directory" || true
         minios_die "源码包缺少可信 configure：$archive"
         return 1
+    fi
+    if write_source_stamp \
+        "$extracted_stamp" "$component" "$version" \
+        "$archive_sha256" "$expected_name"; then
+        :
+    else
+        status=$?
+        remove_owned_path "$partial_directory" || true
+        minios_log "FAIL" "无法写入源码缓存 stamp：$extracted_stamp status=$status"
+        return "$status"
     fi
     if mv -- "$extracted_directory" "$final_directory"; then
         :
@@ -260,8 +386,12 @@ extract_source() {
     remove_owned_path "$partial_directory" || return $?
 }
 
-extract_source "$BINUTILS_ARCHIVE" "$BINUTILS_SOURCE" || exit $?
-extract_source "$GCC_ARCHIVE" "$GCC_SOURCE" || exit $?
+extract_source \
+    "$BINUTILS_ARCHIVE" "$BINUTILS_SOURCE" binutils \
+    "$MINIOS_BINUTILS_VERSION" "$MINIOS_BINUTILS_SHA256" || exit $?
+extract_source \
+    "$GCC_ARCHIVE" "$GCC_SOURCE" gcc \
+    "$MINIOS_GCC_VERSION" "$MINIOS_GCC_SHA256" || exit $?
 
 if lock_fingerprint="$(
     printf '%s\n' \
@@ -284,11 +414,38 @@ else
     exit "$status"
 fi
 
+cleanup_stale_selfchecks() {
+    local candidate
+    local nullglob_was_set=0
+    local status
+    local -a stale_directories
+
+    if shopt -q nullglob; then nullglob_was_set=1; fi
+    shopt -s nullglob
+    stale_directories=("$MINIOS_ENV_ROOT"/.toolchain-selfcheck.*)
+    if ((nullglob_was_set == 0)); then shopt -u nullglob; fi
+    for candidate in "${stale_directories[@]}"; do
+        if assert_owned_path_without_symlink "$candidate"; then :; else return $?; fi
+        if remove_owned_path "$candidate"; then
+            :
+        else
+            status=$?
+            return "$status"
+        fi
+    done
+}
+
 read_tool_versions() {
     local gcc_path="$PREFIX/bin/$MINIOS_TARGET-gcc"
     local ld_path="$PREFIX/bin/$MINIOS_TARGET-ld"
+    local selfcheck_directory
+    local selfcheck_source
+    local selfcheck_object
+    local selfcheck_status=0
+    local cleanup_status
     local status
 
+    cleanup_stale_selfchecks || return $?
     assert_owned_path_without_symlink "$gcc_path" || return $?
     assert_owned_path_without_symlink "$ld_path" || return $?
     if [[ ! -f "$gcc_path" || ! -x "$gcc_path" || -L "$gcc_path" ]]; then
@@ -321,6 +478,82 @@ read_tool_versions() {
     if [[ -z "$gcc_version_output" || -z "$ld_version_output" ]]; then
         return 1
     fi
+    if [[ " $gcc_version_output " != *" $MINIOS_GCC_VERSION "* ]]; then
+        minios_log "FAIL" "GCC 版本与锁文件不匹配：$gcc_version_output"
+        return 1
+    fi
+    if [[ " $ld_version_output " != *" $MINIOS_BINUTILS_VERSION "* ]]; then
+        minios_log "FAIL" "Binutils 版本与锁文件不匹配：$ld_version_output"
+        return 1
+    fi
+    if libgcc_path="$($gcc_path -print-libgcc-file-name)"; then
+        libgcc_path="${libgcc_path%%$'\n'*}"
+    else
+        status=$?
+        return "$status"
+    fi
+    case "$libgcc_path" in
+        "$PREFIX"/*) ;;
+        *)
+            minios_log "FAIL" "libgcc 不属于项目 prefix：${libgcc_path:-missing}"
+            return 1
+            ;;
+    esac
+    assert_owned_path_without_symlink "$libgcc_path" || return $?
+    if [[ ! -f "$libgcc_path" || -L "$libgcc_path" || ! -s "$libgcc_path" ]]; then
+        minios_log "FAIL" "libgcc 必须是 prefix 内非空普通文件：$libgcc_path"
+        return 1
+    fi
+
+    if selfcheck_directory="$(mktemp -d "$MINIOS_ENV_ROOT/.toolchain-selfcheck.XXXXXX")"; then
+        :
+    else
+        status=$?
+        minios_log "FAIL" "无法创建工具链自检临时目录：status=$status"
+        return "$status"
+    fi
+    if assert_owned_path_without_symlink "$selfcheck_directory"; then
+        :
+    else
+        selfcheck_status=$?
+    fi
+    selfcheck_source="$selfcheck_directory/verify.c"
+    selfcheck_object="$selfcheck_directory/verify.o"
+    if ((selfcheck_status == 0)); then
+        if printf '%s\n' 'void minios_toolchain_verify(void) {}' >"$selfcheck_source"; then
+            :
+        else
+            selfcheck_status=$?
+        fi
+    fi
+    if ((selfcheck_status == 0)); then
+        if "$gcc_path" -ffreestanding -fno-pie -c \
+            "$selfcheck_source" -o "$selfcheck_object"; then
+            :
+        else
+            selfcheck_status=$?
+        fi
+    fi
+    if ((selfcheck_status == 0)) \
+        && [[ ! -f "$selfcheck_object" \
+            || -L "$selfcheck_object" \
+            || ! -s "$selfcheck_object" ]]; then
+        minios_log "FAIL" "交叉编译器未生成非空普通对象文件"
+        selfcheck_status=1
+    fi
+    if remove_owned_path "$selfcheck_directory"; then
+        :
+    else
+        cleanup_status=$?
+        if ((selfcheck_status == 0)); then
+            selfcheck_status=$cleanup_status
+        else
+            minios_log "FAIL" "自检失败后清理临时目录也失败：status=$cleanup_status"
+        fi
+    fi
+    if ((selfcheck_status != 0)); then
+        return "$selfcheck_status"
+    fi
 }
 
 marker_has_line() {
@@ -329,6 +562,8 @@ marker_has_line() {
 }
 
 toolchain_is_current() {
+    assert_owned_path_without_symlink "$STATE_DIR" || return $?
+    assert_owned_path_without_symlink "$TOOLCHAIN_MARKER" || return $?
     if [[ ! -f "$TOOLCHAIN_MARKER" || -L "$TOOLCHAIN_MARKER" ]]; then
         return 1
     fi
@@ -341,8 +576,15 @@ toolchain_is_current() {
     marker_has_line "gcc_dumpmachine=$gcc_dumpmachine" || return 1
     marker_has_line "gcc_version=$gcc_version_output" || return 1
     marker_has_line "ld_version=$ld_version_output" || return 1
+    marker_has_line "libgcc_path=$libgcc_path" || return 1
+    marker_has_line "binutils_configure=${BINUTILS_CONFIGURE_ARGS[*]}" || return 1
+    marker_has_line "gcc_configure=${GCC_CONFIGURE_ARGS[*]}" || return 1
+    marker_has_line "gcc_build_targets=${GCC_BUILD_TARGETS[*]}" || return 1
+    marker_has_line "gcc_install_targets=${GCC_INSTALL_TARGETS[*]}" || return 1
 }
 
+assert_owned_path_without_symlink "$STATE_DIR" || exit $?
+assert_owned_path_without_symlink "$TOOLCHAIN_MARKER" || exit $?
 if toolchain_is_current; then
     printf 'toolchain_status=up-to-date\n'
     exit 0
@@ -424,9 +666,14 @@ if printf '%s\n' \
     "binutils_sha256=$MINIOS_BINUTILS_SHA256" \
     "gcc_source_version=$MINIOS_GCC_VERSION" \
     "gcc_source_sha256=$MINIOS_GCC_SHA256" \
+    "binutils_configure=${BINUTILS_CONFIGURE_ARGS[*]}" \
+    "gcc_configure=${GCC_CONFIGURE_ARGS[*]}" \
+    "gcc_build_targets=${GCC_BUILD_TARGETS[*]}" \
+    "gcc_install_targets=${GCC_INSTALL_TARGETS[*]}" \
     "gcc_dumpmachine=$gcc_dumpmachine" \
     "gcc_version=$gcc_version_output" \
-    "ld_version=$ld_version_output" >"$marker_partial"; then
+    "ld_version=$ld_version_output" \
+    "libgcc_path=$libgcc_path" >"$marker_partial"; then
     :
 else
     status=$?

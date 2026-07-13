@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import subprocess
@@ -175,22 +176,51 @@ case " $* " in
       mkdir -p "$FAKE_TOOLCHAIN_PREFIX/bin"
       cat > "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-ld" <<'EOF'
 #!/bin/sh
-printf 'GNU ld (GNU Binutils) 1.0\n'
+printf 'GNU ld (GNU Binutils) %s\n' "${FAKE_LD_VERSION:-1.0}"
 EOF
       chmod +x "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-ld"
     fi
     ;;
+esac
+case " $* " in
   *" install-gcc "*)
     mkdir -p "$FAKE_TOOLCHAIN_PREFIX/bin"
     cat > "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-gcc" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
   -dumpmachine) printf 'i686-elf\n' ;;
-  --version) printf 'i686-elf-gcc (GCC) 1.0\n' ;;
-  *) exit 64 ;;
+  --version) printf 'i686-elf-gcc (GCC) %s\n' "${FAKE_GCC_VERSION:-1.0}" ;;
+  -print-libgcc-file-name)
+    printf '%s\n' "${FAKE_LIBGCC_PATH:-__MINIOS_LIBGCC__}"
+    ;;
+  *)
+    output=
+    previous=
+    for argument in "$@"; do
+      if [ "$previous" = "-o" ]; then output="$argument"; fi
+      previous="$argument"
+    done
+    case "${FAKE_GCC_COMPILE_MODE:-valid}" in
+      valid) printf 'fake-object\n' > "$output" ;;
+      empty) : > "$output" ;;
+      symlink) ln -s /dev/null "$output" ;;
+      missing) : ;;
+      *) exit 65 ;;
+    esac
+    ;;
 esac
 EOF
+    sed -i "s|__MINIOS_LIBGCC__|$FAKE_TOOLCHAIN_PREFIX/lib/gcc/i686-elf/1.0/libgcc.a|" \
+      "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-gcc"
     chmod +x "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-gcc"
+    ;;
+  *) : ;;
+esac
+case " $* " in
+  *" install-target-libgcc "*)
+    mkdir -p "$FAKE_TOOLCHAIN_PREFIX/lib/gcc/i686-elf/1.0"
+    printf 'fake-libgcc\n' > \
+      "$FAKE_TOOLCHAIN_PREFIX/lib/gcc/i686-elf/1.0/libgcc.a"
     ;;
   *) : ;;
 esac
@@ -280,6 +310,47 @@ esac
             text=True,
             timeout=20,
         )
+
+    def _replace_fixture_archive(
+        self,
+        fixture_root: Path,
+        component: str,
+        archive: Path,
+    ) -> None:
+        versions_file = fixture_root / "environment" / "versions.env"
+        content = versions_file.read_text(encoding="utf-8")
+        prefix = f"MINIOS_{component.upper()}"
+        lines = []
+        for line in content.splitlines():
+            if line.startswith(f"{prefix}_URL="):
+                line = f"{prefix}_URL={archive.as_uri()}"
+            elif line.startswith(f"{prefix}_SHA256="):
+                line = f"{prefix}_SHA256={hashlib.sha256(archive.read_bytes()).hexdigest()}"
+            lines.append(line)
+        versions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _write_malicious_toolchain_archive(
+        self, archive: Path, member_kind: str
+    ) -> None:
+        configure_data = b"#!/bin/sh\nexit 0\n"
+        configure = tarfile.TarInfo("binutils-1.0/configure")
+        configure.mode = 0o755
+        configure.size = len(configure_data)
+        with tarfile.open(archive, "w:xz") as tar:
+            tar.addfile(configure, io.BytesIO(configure_data))
+            if member_kind in {"absolute", "dotdot"}:
+                name = "/absolute-escape" if member_kind == "absolute" else "../escape"
+                payload = b"escape\n"
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                tar.addfile(member, io.BytesIO(payload))
+            else:
+                member = tarfile.TarInfo("binutils-1.0/unsafe-link")
+                member.type = (
+                    tarfile.SYMTYPE if member_kind == "symlink" else tarfile.LNKTYPE
+                )
+                member.linkname = "../../escape"
+                tar.addfile(member)
 
     def test_with_env_rejects_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -693,6 +764,13 @@ exit 0
             self.assertRegex(marker_text, r"(?m)^lock_fingerprint=[0-9a-f]{64}$")
             self.assertIn("target=i686-elf", marker_text)
             self.assertIn(f"prefix={environment_root}/toolchain", marker_text)
+            self.assertIn("binutils_configure=--target=i686-elf", marker_text)
+            self.assertIn("gcc_configure=--target=i686-elf", marker_text)
+            self.assertIn("gcc_build_targets=all-gcc all-target-libgcc", marker_text)
+            self.assertIn(
+                "gcc_install_targets=install-gcc install-target-libgcc",
+                marker_text,
+            )
             log_before = log.read_text(encoding="utf-8")
             self.assertIn(
                 "configure component=binutils", log_before
@@ -707,16 +785,212 @@ exit 0
             self.assertIn("install-gcc", log_before)
             self.assertIn("install-target-libgcc", log_before)
 
+            interrupted_selfcheck = (
+                environment_root / ".toolchain-selfcheck.interrupted"
+            )
+            interrupted_selfcheck.mkdir()
+            (interrupted_selfcheck / "stale.o").write_bytes(b"stale\n")
             second = self._run_fixture_toolchain(fixture_root, env=env)
             self.assertEqual(0, second.returncode, second.stderr)
             self.assertIn("toolchain_status=up-to-date", second.stdout)
             self.assertEqual(log_before, log.read_text(encoding="utf-8"))
+            self.assertFalse(interrupted_selfcheck.exists())
 
             (environment_root / "toolchain" / "bin" / "i686-elf-ld").unlink()
             third = self._run_fixture_toolchain(fixture_root, env=env)
             self.assertEqual(0, third.returncode, third.stderr)
             self.assertNotIn("toolchain_status=up-to-date", third.stdout)
             self.assertGreater(len(log.read_text(encoding="utf-8")), len(log_before))
+
+    def test_toolchain_source_cache_requires_exact_atomic_stamps(self) -> None:
+        expected = {
+            "binutils": (
+                "1.0",
+                "binutils-1.0",
+            ),
+            "gcc": (
+                "1.0",
+                "gcc-1.0",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, _, env = self._write_toolchain_fixture(temporary_root)
+            result = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            version_values = dict(
+                line.split("=", 1)
+                for line in (
+                    fixture_root / "environment" / "versions.env"
+                ).read_text(encoding="utf-8").splitlines()
+            )
+            for component, (version, top_level) in expected.items():
+                stamp = (
+                    environment_root
+                    / "sources"
+                    / top_level
+                    / ".minios-source.env"
+                )
+                self.assertTrue(stamp.is_file() and not stamp.is_symlink())
+                text = stamp.read_text(encoding="utf-8")
+                self.assertIn(f"component={component}\n", text)
+                self.assertIn(f"version={version}\n", text)
+                self.assertIn(f"expected_top_level={top_level}\n", text)
+                self.assertIn(
+                    "archive_sha256="
+                    f"{version_values[f'MINIOS_{component.upper()}_SHA256']}\n",
+                    text,
+                )
+
+                stale_partial = (
+                    environment_root / "sources" / f".extract-{top_level}.partial"
+                )
+                stale_partial.mkdir()
+                (stale_partial / "stale").write_text("stale\n", encoding="utf-8")
+            second = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertFalse(any((environment_root / "sources").glob(".extract-*.partial")))
+
+    def test_toolchain_rejects_missing_or_mismatched_source_stamp(self) -> None:
+        for component, top_level in (
+            ("binutils", "binutils-1.0"),
+            ("gcc", "gcc-1.0"),
+        ):
+            for stamp_mode in ("missing", "wrong-hash"):
+                with (
+                    self.subTest(component=component, stamp_mode=stamp_mode),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    fixture_root, log, env = self._write_toolchain_fixture(temporary_root)
+                    first = self._run_fixture_toolchain(fixture_root, env=env)
+                    self.assertEqual(0, first.returncode, first.stderr)
+                    stamp = (
+                        Path(env["MINIOS_ENV_ROOT"])
+                        / "sources"
+                        / top_level
+                        / ".minios-source.env"
+                    )
+                    if stamp_mode == "wrong-hash":
+                        stamp.write_text(
+                            f"component={component}\nversion=1.0\n"
+                            f"archive_sha256={'0' * 64}\n"
+                            f"expected_top_level={top_level}\n",
+                            encoding="utf-8",
+                        )
+                    elif stamp.exists():
+                        stamp.unlink()
+                    log_before = log.read_text(encoding="utf-8")
+                    marker = (
+                        Path(env["MINIOS_ENV_ROOT"]) / "state/toolchain.env"
+                    )
+                    marker_before = marker.read_bytes()
+                    second = self._run_fixture_toolchain(fixture_root, env=env)
+                    self.assertNotEqual(0, second.returncode)
+                    self.assertNotIn("toolchain_status=up-to-date", second.stdout)
+                    self.assertEqual(log_before, log.read_text(encoding="utf-8"))
+                    self.assertEqual(marker_before, marker.read_bytes())
+
+    def test_toolchain_selfcheck_rejects_untruthful_artifacts(self) -> None:
+        cases = (
+            ("wrong-gcc-version", {"FAKE_GCC_VERSION": "11.0"}, True),
+            ("wrong-ld-version", {"FAKE_LD_VERSION": "11.0"}, True),
+            ("compile-missing", {"FAKE_GCC_COMPILE_MODE": "missing"}, True),
+            ("compile-empty", {"FAKE_GCC_COMPILE_MODE": "empty"}, True),
+            ("compile-symlink", {"FAKE_GCC_COMPILE_MODE": "symlink"}, True),
+            ("missing-libgcc", {}, False),
+            ("empty-libgcc", {}, False),
+            ("external-libgcc", {}, True),
+            ("symlink-libgcc", {}, True),
+            ("symlink-libgcc-parent", {}, True),
+        )
+        for case, overrides, expect_failure in cases:
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                fixture_root, log, env = self._write_toolchain_fixture(temporary_root)
+                first = self._run_fixture_toolchain(fixture_root, env=env)
+                self.assertEqual(0, first.returncode, first.stderr)
+                environment_root = Path(env["MINIOS_ENV_ROOT"])
+                libgcc = (
+                    environment_root
+                    / "toolchain/lib/gcc/i686-elf/1.0/libgcc.a"
+                )
+                outside = temporary_root / "outside-libgcc.a"
+                outside.write_bytes(b"outside\n")
+                if case == "missing-libgcc":
+                    libgcc.unlink()
+                elif case == "empty-libgcc":
+                    libgcc.write_bytes(b"")
+                elif case == "external-libgcc":
+                    overrides = {"FAKE_LIBGCC_PATH": str(outside)}
+                elif case == "symlink-libgcc":
+                    libgcc.unlink()
+                    libgcc.symlink_to(outside)
+                elif case == "symlink-libgcc-parent":
+                    gcc_parent = environment_root / "toolchain/lib/gcc"
+                    outside_parent = temporary_root / "outside-gcc-parent"
+                    gcc_parent.rename(outside_parent)
+                    gcc_parent.symlink_to(outside_parent, target_is_directory=True)
+                env.update(overrides)
+                log_before = log.read_text(encoding="utf-8")
+                result = self._run_fixture_toolchain(fixture_root, env=env)
+                self.assertNotIn("toolchain_status=up-to-date", result.stdout)
+                if expect_failure:
+                    self.assertNotEqual(0, result.returncode)
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                self.assertGreater(len(log.read_text(encoding="utf-8")), len(log_before))
+                self.assertFalse(any(environment_root.glob(".toolchain-selfcheck.*")))
+
+    def test_toolchain_rejects_symlinked_state_parent_before_marker_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, log, env = self._write_toolchain_fixture(temporary_root)
+            first = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, first.returncode, first.stderr)
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            state = environment_root / "state"
+            outside_state = temporary_root / "outside-state"
+            state.rename(outside_state)
+            state.symlink_to(outside_state, target_is_directory=True)
+            log_before = log.read_text(encoding="utf-8")
+
+            result = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("toolchain_status=up-to-date", result.stdout)
+            self.assertEqual(log_before, log.read_text(encoding="utf-8"))
+
+    def test_toolchain_rejects_unsafe_tar_members_before_extraction(self) -> None:
+        for member_kind in ("absolute", "dotdot", "symlink", "hardlink"):
+            with (
+                self.subTest(member_kind=member_kind),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                fixture_root, _, env = self._write_toolchain_fixture(temporary_root)
+                archive = temporary_root / f"malicious-{member_kind}.tar.xz"
+                self._write_malicious_toolchain_archive(archive, member_kind)
+                self._replace_fixture_archive(
+                    fixture_root, "binutils", archive
+                )
+                result = self._run_fixture_toolchain(fixture_root, env=env)
+                self.assertNotEqual(0, result.returncode)
+                self.assertRegex(
+                    (result.stdout + result.stderr).lower(),
+                    r"(?:unsafe archive member|archive member|归档成员|不安全成员)",
+                )
+                self.assertFalse((temporary_root / "escape").exists())
+                self.assertFalse(
+                    any(
+                        (Path(env["MINIOS_ENV_ROOT"]) / "sources").glob(
+                            ".extract-*.partial"
+                        )
+                    )
+                )
 
     def test_toolchain_force_preserves_downloads_sources_and_unknown_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
