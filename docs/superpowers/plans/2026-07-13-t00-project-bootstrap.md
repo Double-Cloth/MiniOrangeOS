@@ -983,7 +983,7 @@ printf "T00_TEST_RESULT=PASS\n"
 '
 ~~~
 
-Expected: 9 tests PASS，最后输出 T00_TEST_RESULT=PASS。
+Expected: 11 tests PASS，最后输出 T00_TEST_RESULT=PASS。
 
 - [ ] **Step 3: 验证宿主未被项目工具链污染**
 
@@ -1067,7 +1067,7 @@ docs/task-reports/T00-project-bootstrap.md:
 
 ## 测试结果
 
-- ProjectLayoutTests：PASS（9 项）。
+- ProjectLayoutTests：PASS（11 项）。
 - Ubuntu 版本：24.04。
 - 默认 WSL 用户：minios。
 - Windows PATH 项目自有工具与项目路径污染检查：PASS；外部预存工具按真实来源记录，未修改用户环境。
@@ -1089,7 +1089,7 @@ docs/task-reports/T00-project-bootstrap.md:
 Update docs/progress.md T00 row to:
 
 ~~~markdown
-| T00 | 验收通过，待合并 | feature/T00-project-bootstrap | ProjectLayoutTests 9/9 PASS | 待最终审查与 no-ff 合并 |
+| T00 | 验收通过，待合并 | feature/T00-project-bootstrap | ProjectLayoutTests 11/11 PASS | 待最终审查与 no-ff 合并 |
 ~~~
 
 - [ ] **Step 5: 提交任务报告**
@@ -1142,7 +1142,7 @@ python3 -m unittest tests.host.test_project_layout -v
 '
 ~~~
 
-Expected: main 工作区干净；图中保留 T00 no-ff merge；删除任务分支后 9 项测试仍 PASS。
+Expected: main 工作区干净；图中保留 T00 no-ff merge；删除任务分支后 11 项测试仍 PASS。
 
 ---
 

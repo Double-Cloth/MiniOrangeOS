@@ -14,8 +14,9 @@
 - 建立 README、贡献规范、编码规范和稳定的 `PROJECT_PLAN.md` 入口。
 - 同步 Windows 权威工作树、Windows Git 与 WSL Linux 测试边界。
 - 建立进度、ADR、来源、风险和审查心得入口。
-- 添加并扩展 Python 标准库仓库契约测试，共 9 项。
+- 添加并扩展 Python 标准库仓库契约测试，共 11 项。
 - 将 T01 旧环境规则检查收窄到 T01 章节，避免历史或说明性引用导致误报。
+- 最终全分支审查新增提交格式与 T01 环境脚本契约，并将文本测试扩展到严格 UTF-8、任意 CR、策略文件和全部 `.gitkeep`。
 
 T00 未添加操作系统功能代码，未安装项目编译、汇编、虚拟化或调试工具链。
 
@@ -53,7 +54,7 @@ wsl.exe --list --verbose
 - `git diff --check`：无输出。
 - 所有受控文本的 index 和工作树行尾均为 LF。
 - T00 占位词扫描：0 个命中。
-- `ProjectLayoutTests`：9/9 PASS，最终标记 `T00_TEST_RESULT=PASS`。
+- `ProjectLayoutTests`：11/11 PASS，最终标记 `T00_TEST_RESULT=PASS`。
 - WSL 环境：Ubuntu 24.04 LTS，默认用户 `minios`；`MiniOrangeOS-Dev` 与 `docker-desktop` 均为 WSL 2。
 - Windows 命令解析：`i686-elf-gcc`、`nasm`、`qemu-system-i386` 未找到；预存外部 `gdb` 位于 `D:\ProgramFiles\GreenSoftware\development-tools\mingw64\bin\gdb.exe`。
 - 项目自有 PATH 污染检查：PASS；User/Machine PATH 均不包含权威工作树或 `D:\ApplicationData\MiniOrangeOS`，未修改用户环境。
