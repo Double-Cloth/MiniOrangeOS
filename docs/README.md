@@ -4,21 +4,27 @@
 
 ## 文档目标
 
-本目录把 `MiniOrangeOS_Codex_Project_Plan_v1.1.md` 中的路线图拆成可执行的工程说明。后续 Codex 或开发者执行任务时，应先阅读对应专题文档，再进入具体任务，不得脱离这些约束生成孤立代码。
+权威计划入口是仓库根目录的 `PROJECT_PLAN.md`。本目录把其路线图拆成可执行的工程说明。后续 Codex 或开发者执行任务时，应先阅读对应专题文档，再进入具体任务，不得脱离这些约束生成孤立代码。
 
 ## 阅读顺序
 
-1. `environment.md`：确认开发环境、隔离边界和清理方式。
-2. `development-workflow.md`：确认分支、提交、任务报告和文档同步规则。
-3. `architecture.md`：理解总体分层、目录职责和跨模块接口。
-4. `boot.md`：实现 Stage 1、Stage 2、ELF 内核加载前阅读。
-5. `memory.md`：实现 E820、PMM、分页、堆和用户拷贝前阅读。
-6. `process.md`：实现 PCB、调度、Ring 3、生命周期和 ELF 用户进程前阅读。
-7. `syscall.md`：实现 `int 0x80`、用户指针校验和系统调用表前阅读。
-8. `filesystem.md`：实现 ATA、块设备、MiniFS、VFS 和用户文件命令前阅读。
-9. `testing.md`：实现任何模块前确认测试层级和串口协议。
-10. `provenance.md`：记录来源、自主实现证明和代码审查说明。
-11. `problems.md`：记录风险、降级策略、调试线索和已知问题。
+1. `PROJECT_PLAN.md`：从仓库根目录确认任务顺序、范围和完成定义。
+2. `environment.md`：确认开发环境、隔离边界和清理方式。
+3. `development-workflow.md`：确认分支、提交、任务报告和文档同步规则。
+4. `coding-standards.md`：确认 C、NASM、Python、Shell、命名和错误模型约定。
+5. `architecture.md`：理解总体分层、目录职责和跨模块接口。
+6. `boot.md`：实现 Stage 1、Stage 2、ELF 内核加载前阅读。
+7. `memory.md`：实现 E820、PMM、分页、堆和用户拷贝前阅读。
+8. `process.md`：实现 PCB、调度、Ring 3、生命周期和 ELF 用户进程前阅读。
+9. `syscall.md`：实现 `int 0x80`、用户指针校验和系统调用表前阅读。
+10. `filesystem.md`：实现 ATA、块设备、MiniFS、VFS 和用户文件命令前阅读。
+11. `testing.md`：实现任何模块前确认测试层级和串口协议。
+12. `provenance.md`：记录来源、自主实现证明和代码审查说明。
+13. `problems.md`：记录风险、降级策略、调试线索和已知问题。
+14. `progress.md`：只记录有提交和真实测试证据的任务与里程碑状态。
+15. `review-notes.md`：记录里程碑阅读、理解、问题修正和待学习内容。
+16. `decisions/`：记录已接受的重要工程决策、背景和代价。
+17. `task-reports/`：记录每个 TXX 的真实变更、命令、测试证据和未解决问题。
 
 ## 文档维护规则
 
@@ -35,4 +41,3 @@
 - 计划书回答“做什么、按什么顺序做、完成定义是什么”。
 - 专题文档回答“具体怎么设计、边界在哪里、如何验证”。
 - 任务报告回答“本次实际改了什么、跑了什么测试、还剩什么风险”。
-

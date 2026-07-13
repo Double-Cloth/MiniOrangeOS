@@ -1,0 +1,34 @@
+# 构建和镜像产物
+/build/
+*.o
+*.a
+*.elf
+*.bin
+*.img
+*.iso
+*.map
+*.d
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# 项目隔离环境的仓库内状态
+/.cache/
+/environment/.state/
+/environment/.venv/
+/environment/toolchain/
+
+# 测试和调试临时文件
+*.log
+*.pid
+*.tmp
+*.swp
+
+# 编辑器和系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
