@@ -2,7 +2,7 @@
 
 > 执行方式：Subagent-Driven Development。每个 Task 使用新的实现代理，提交后由独立审查代理检查；Critical/Important 必须修复并复审。
 
-目标：实现可重复、可审计、可备份、可定向删除的 `MiniOrangeOS-Dev` 与真实 Ubuntu 容器环境，并从固定源码构建 `i686-elf` Binutils/GCC。
+目标：实现可重复、可审计、可备份、可定向删除的 `MiniOrangeOS-Dev` 与 Ubuntu 24.04 rootless 容器环境，并从固定源码构建 `i686-elf` Binutils/GCC。
 
 设计依据：`docs/superpowers/specs/2026-07-13-t01-environment-toolchain-design.md`
 
@@ -13,7 +13,7 @@
 - 文件修改与 Git 只在 Windows 权威工作树执行；WSL 和容器内禁止运行 Git。
 - 所有脚本、测试和文档使用 UTF-8/LF；Shell 使用 `set -euo pipefail`。
 - 不修改 Windows PATH、注册表、全局 Git、Linux Shell 启动文件或宿主 `/usr/local`。
-- 不自动安装 Podman/Docker，不执行任何全局 prune。
+- 不在 Windows 或真实宿主自动安装 Podman/Docker，不执行任何全局 prune；允许在专用测试 WSL 发行版内部安装 rootless Podman。
 - 所有删除前验证解析后的绝对路径和精确资源名；默认只预览。
 - 下载必须先校验 SHA-256，再解包或构建。
 - 不声称未运行的 WSL、容器、备份或删除测试为 PASS。
@@ -34,10 +34,10 @@
 1. 12 个 T01 文件存在；
 2. `environment/versions.env` 包含 WSL、容器、Binutils、GCC 的版本、URL 和 64 位小写 SHA-256；
 3. Shell 脚本包含严格模式，禁止 `system prune`、`rm -rf /`、写 `/usr/local` 和修改 Shell 启动文件；
-4. PowerShell 脚本只允许 `MiniOrangeOS-Dev` 或 `MiniOrangeOS-Dev-Test-*`，环境根必须在 `D:\ApplicationData\MiniOrangeOS`；
+4. PowerShell 脚本只允许 `MiniOrangeOS-Dev` 或 `MiniOrangeOS-Dev-Test-*`，环境根必须在 `D:\ApplicationData\MiniOrangeOS`，并验证注册表 BasePath 与 reparse point；
 5. `destroy.ps1` 同时要求 `-Apply` 与精确 `-ConfirmName`；
 6. Containerfile 固定 Ubuntu digest 和项目标签；
-7. Ubuntu 删除脚本只使用项目标签与固定镜像名；
+7. Ubuntu 删除脚本使用项目标签、固定镜像名、记录的 image ID 和专用存储或 Builder 四重边界；
 8. 文档路径与实现一致。
 
 `test_environment_runtime.py` 使用 Python 标准库与临时目录覆盖：
@@ -182,6 +182,8 @@ Refs: T01
 - 所有文件操作使用 `-LiteralPath`；
 - 使用 `[IO.Path]::GetFullPath` 后验证位于授权根；
 - 列举 WSL 名称时移除 NUL 并精确比较；
+- 从当前用户 Lxss 注册项读取现有发行版 BasePath，解析后必须位于授权根且与预期安装目录一致；
+- 授权根和目标路径的任何现有组件带 reparse point 时拒绝创建、备份或删除；
 - `create.ps1` 已存在正式发行版时不导入，只验证并按参数重复 bootstrap；
 - 下载使用 `.partial`、固定 SHA-256 和原子移动；
 - 只 terminate/unregister 精确目标，禁止 `wsl --shutdown`；
@@ -254,7 +256,7 @@ This Task may create no product commit. Write full evidence to `.superpowers/sdd
 
 ---
 
-## Task 6：实现真实 Ubuntu 容器适配层
+## Task 6：实现 Ubuntu rootless 容器适配层
 
 **Files:**
 
@@ -279,7 +281,8 @@ This Task may create no product commit. Write full evidence to `.superpowers/sdd
 - `MINIOS_CONTAINER_BACKEND` 可显式选择 `podman` 或 `docker`；
 - 未指定时优先可用的 rootless Podman，其次已有 Docker；
 - 只检查可用性，不自动安装或启动运行时；
-- create 构建固定镜像；run 使用 `--rm` 临时容器和项目标签；destroy 默认预览，`--all` 精确删除项目资源。
+- Podman 使用 `$MINIOS_ENV_ROOT/container-storage` 的独立 graphroot/runroot；Docker 使用项目专用 Buildx builder；
+- create 构建固定镜像并记录 image ID；run 使用 `--rm` 临时容器和项目标签；destroy 默认预览，`--all` 只有在 name、label、image ID 一致时才删除，并清理项目专用存储或 Builder 缓存。
 
 TDD first with fake backend executables in a temporary PATH, then shell syntax and full host regression.
 
@@ -308,17 +311,32 @@ Run `backup.ps1` against the formal distro; verify export exists under `D:\Appli
 5. Run with `-Apply -ConfirmName MiniOrangeOS-Dev-Test-Empty`.
 6. Verify the test distro disappeared while `MiniOrangeOS-Dev` and `docker-desktop` remain.
 
-### Container
+### Ubuntu 24.04 rootless container host
 
-Use an already installed backend. On this machine select Docker explicitly after the engine is available:
+用户已明确要求所有 Linux 测试只在 WSL 中执行。创建独立测试发行版 `MiniOrangeOS-Dev-Test-ContainerHost`，它不得复用正式发行版的工具链状态：
+
+1. 用固定 Ubuntu 24.04.4 WSL 镜像执行 `create.ps1 -SkipBootstrap`；
+2. 在测试发行版内部安装 Podman、uidmap、slirp4netns 和 fuse-overlayfs；
+3. 以非 root `minios` 用户记录 `/etc/os-release`、UID、`podman info` 的 rootless 状态；
+4. 在该 Ubuntu 24.04 测试宿主中执行：
 
 ```bash
-MINIOS_CONTAINER_BACKEND=docker ./environment/ubuntu/create.sh
-MINIOS_CONTAINER_BACKEND=docker ./environment/ubuntu/run.sh ./environment/verify.sh
-MINIOS_CONTAINER_BACKEND=docker ./environment/ubuntu/destroy.sh --all
+MINIOS_CONTAINER_BACKEND=podman ./environment/ubuntu/create.sh
+MINIOS_CONTAINER_BACKEND=podman ./environment/ubuntu/run.sh ./environment/verify.sh
+MINIOS_CONTAINER_BACKEND=podman ./environment/ubuntu/destroy.sh --all
 ```
 
-Record before/after project-labeled resources and prove unrelated images/containers are unchanged. Restore the runtime to its prior stopped/running state when feasible.
+5. 证明项目容器、镜像和 `$MINIOS_ENV_ROOT/container-storage` 构建缓存已清除，其他资源不变；
+6. 定向注销 `MiniOrangeOS-Dev-Test-ContainerHost`，证明正式发行版与 `docker-desktop` 仍存在。
+
+这验证 Ubuntu 24.04 用户态和 rootless OCI 语义，但 WSL 仍共享 Microsoft Linux 内核。按用户测试边界，原生 Ubuntu 内核复验留给后续 Linux CI；在 `docs/decisions/0002-wsl-only-t01-container-host.md` 与任务报告中明确记录，不得声称已在物理或虚拟机 Ubuntu 执行。
+
+Negative integration tests must cover:
+
+- Lxss BasePath 指向授权根外；
+- 授权路径含 reparse point；
+- 同名镜像缺少项目 label；
+- 同名镜像 image ID 与状态文件不一致。
 
 Run all host tests again. No product commit is required unless integration reveals a defect; fixes must follow RED/GREEN and receive a separate commit.
 
@@ -337,6 +355,7 @@ Run all host tests again. No product commit is required unless integration revea
 - Modify: `docs/progress.md`
 - Modify: `docs/review-notes.md`
 - Create: `docs/task-reports/T01-environment-toolchain.md`
+- Create: `docs/decisions/0002-wsl-only-t01-container-host.md`
 
 Required facts:
 
@@ -344,7 +363,7 @@ Required facts:
 - WSL 首次/第二次 bootstrap 结果；
 - backup 路径、大小与 SHA-256；
 - test distro 的 preview/定向删除证据；
-- 容器 backend、基础镜像 digest、create/run/destroy 证据；
+- rootless Podman 测试宿主、基础镜像 digest、create/run/destroy/缓存清理证据，以及 WSL 内核偏差；
 - `/mnt/d`、构建时间、容器运行时和预存 Windows gdb 等真实风险；
 - T01 状态先写“验收通过，待合并”，不得提前写已合并。
 
@@ -385,7 +404,7 @@ git merge --no-ff feature/T01-environment-toolchain -m "merge: complete T01 envi
 | 固定版本、URL、SHA-256 | 2、3、5 |
 | i686-elf Binutils/GCC | 3、5、7 |
 | 重复 bootstrap | 5 |
-| 真实 Ubuntu 容器 create/run/destroy | 6、7 |
+| Ubuntu 24.04 rootless 容器 create/run/destroy | 6、7；按用户指令在独立 WSL 测试宿主执行，原生内核差异由 ADR/CI 跟踪 |
 | 空环境删除演练、不影响其他发行版 | 4、7 |
 | 不修改全局配置和 `/usr/local` | 全局约束、2、4、6、7 |
 | 文档、来源、风险、进度、心得 | 8 |

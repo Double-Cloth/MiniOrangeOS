@@ -56,11 +56,11 @@ Windows WSL 适配层：
 - `backup.ps1`：终止目标发行版后定向导出到授权 `exports`；
 - `destroy.ps1`：默认只预览，要求显式 `-Apply` 和发行版名确认后才注销。
 
-真实 Ubuntu 容器适配层：
+Ubuntu 容器适配层：
 
-- `environment/ubuntu/create.sh`：选择 rootless Podman 或已有 Docker，构建固定镜像；
+- `environment/ubuntu/create.sh`：选择 rootless Podman 或已有 Docker，使用项目专用存储或 Builder 构建固定镜像；
 - `run.sh`：用临时容器运行命令，挂载当前工作树；
-- `destroy.sh --all`：只删除项目标签匹配的容器和固定镜像，不执行全局 prune。
+- `destroy.sh --all`：在 name、label、记录的 image ID 一致后，删除项目容器、固定镜像和专用构建缓存，不执行全局 prune。
 
 ## 3. 固定来源
 
@@ -153,10 +153,14 @@ GCC 配置：
 ### 7.2 容器
 
 - 固定标签 `org.miniorangeos.project=MiniOrangeOS`；
-- 固定镜像名 `miniorangeos-dev:ubuntu-24.04`；
-- `destroy.sh` 只处理固定镜像和相同标签的容器；
+- 固定镜像名 `miniorangeos-dev:ubuntu-24.04`；创建成功后把 image ID 和 digest 写入 `$MINIOS_ENV_ROOT/state/container.env`；
+- rootless Podman 使用 `$MINIOS_ENV_ROOT/container-storage` 下的项目专用 graphroot/runroot，不复用用户默认容器存储；
+- Docker 兼容后端使用固定的项目专用 Buildx builder，销毁时先删除 builder 及其缓存，再删除项目镜像；
+- `destroy.sh` 只有在镜像名、OCI label、记录的 image ID 三者一致时才处理容器和镜像；
 - 默认只预览，只有 `--all` 才执行完整项目清理；
-- 禁止 `podman system prune`、`docker system prune` 和无标签批量删除。
+- 禁止 `podman system prune`、`docker system prune` 和无标签批量删除；`--all` 完成后项目专用容器存储或 Builder 缓存必须消失。
+
+WSL 删除还必须从 `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` 读取目标发行版的注册 `BasePath`，确认其解析后位于授权环境根。授权根到目标路径的任何现有组件带 reparse point 时拒绝执行；不能只依赖字符串前缀。正式发行版和测试发行版分别校验预期安装路径。
 
 ## 8. 测试策略
 
@@ -180,11 +184,12 @@ Python 标准库测试检查：
 
 ### 8.3 容器集成测试
 
-- 不自动安装容器运行时；
-- 使用已有 rootless Podman，或显式选择已有 Docker；
+- 用户已要求所有测试只在 WSL 中执行，因此创建独立的 `MiniOrangeOS-Dev-Test-ContainerHost` Ubuntu 24.04 WSL2 发行版作为干净 Linux 容器宿主；
+- 在该测试发行版内部安装并使用 rootless Podman，记录 `/etc/os-release`、非 root UID 和 rootless 状态；
 - `create.sh` 构建固定镜像；
 - `run.sh ./environment/verify.sh` 成功；
-- `destroy.sh --all` 后项目容器和镜像消失，其他资源不变。
+- `destroy.sh --all` 后项目容器、镜像和专用构建缓存消失，其他资源不变；
+- 最后定向注销该测试发行版。物理或虚拟机 Ubuntu 的内核差异复验留给后续 Linux CI；该偏差必须在 ADR 和 T01 报告中记录，不能把 WSL 宿主写成原生 Linux。
 
 ## 9. 文档与 Git
 
