@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 1.3 seconds
-Output:
 # 测试策略与验收协议
 
 > 覆盖任务：T03、T70-T72，并约束所有功能任务。

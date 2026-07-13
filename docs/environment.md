@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 # 开发环境与可逆清理设计
 
 > 来源：计划书第 14、15、22.7 节。本文档只描述环境和操作约束，不包含安装脚本实现。
@@ -97,7 +94,7 @@ rm -rf ~/.local/share
 | `environment/Containerfile` | 定义真实 Ubuntu 复验容器 |
 | `environment/ubuntu/create.sh` | 创建带项目标签的真实 Ubuntu rootless OCI 复验环境 |
 | `environment/ubuntu/run.sh` | 在已创建的复验环境中运行项目命令 |
-| `environment/ubuntu/destroy.sh` | 只删除本项目标记的容器、镜像、卷和缓存 |
+| `environment/ubuntu/destroy.sh` | 无参数只预览且不删除任何资源；`--all` 才定向删除经 ownership 验证的项目资源 |
 | `environment/bootstrap-inside.sh` | 在隔离 Linux 环境中安装固定版本依赖，不写入宿主 `/usr/local` |
 | `environment/with-env.sh` | 临时注入项目工具链和 venv 后执行命令，不修改全局环境 |
 | `environment/verify.sh` | 输出环境指纹，校验工具路径和版本，拒绝越界路径 |
@@ -121,7 +118,7 @@ environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
 ./environment/ubuntu/destroy.sh --all
 ```
 
-`destroy.ps1` 默认只 preview，必须同时提供 `-Apply` 和精确确认名。`environment/ubuntu/destroy.sh` 默认保留镜像；`environment/ubuntu/destroy.sh --all` 只删除由 state、镜像 ID、标签、intent 和专用 storage 共同证明属于本项目的资源，不使用全局 prune。
+`destroy.ps1` 默认只 preview，必须同时提供 `-Apply` 和精确确认名。`environment/ubuntu/destroy.sh` 无参数只预览且不删除任何资源；只有 `--all` 才在 state、镜像 ID、标签、intent 与专用 storage 边界全部验证后执行定向删除，不使用全局 prune。
 
 ## 环境验证最低输出
 

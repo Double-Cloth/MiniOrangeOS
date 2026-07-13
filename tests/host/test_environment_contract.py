@@ -923,6 +923,18 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             with self.subTest(path=relative_path):
                 self.assertIn(relative_path, content)
         self.assertIn("environment/ubuntu/destroy.sh --all", content)
+        for relative_path in ("docs/environment.md", "environment/README.md"):
+            with self.subTest(path=relative_path):
+                lifecycle_docs = self._read_required(relative_path)
+                self.assertIn("无参数只预览且不删除任何资源", lifecycle_docs)
+                self.assertIn("只有 `--all`", lifecycle_docs)
+
+    def test_public_environment_docs_exclude_tool_output_metadata(self) -> None:
+        metadata = re.compile(r"^(?:Exit code:|Wall time:|Output:)(?:\s|$)", re.MULTILINE)
+        for relative_path in ("docs/environment.md", "docs/testing.md"):
+            with self.subTest(path=relative_path):
+                content = self._read_required(relative_path)
+                self.assertIsNone(metadata.search(content))
 
     def test_docs_record_wsl_only_rootless_podman_evidence_boundary(self) -> None:
         docs = "\n".join(

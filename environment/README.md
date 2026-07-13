@@ -38,4 +38,4 @@ Linux/WSL：
 ./environment/ubuntu/destroy.sh --all
 ```
 
-`destroy.ps1` 默认只预览，只有 `-Apply` 与精确确认名同时提供才会注销；`ubuntu/destroy.sh` 默认保留镜像，`--all` 才删除经 state、ID 和标签共同证明属于本项目的镜像与专用存储。禁止用全局 prune 代替这些入口。
+`destroy.ps1` 默认只预览，只有 `-Apply` 与精确确认名同时提供才会注销；`ubuntu/destroy.sh` 无参数只预览且不删除任何资源，只有 `--all` 才在 state、镜像 ID、标签、intent 与专用 storage 边界全部验证后执行定向删除。禁止用全局 prune 代替这些入口。
