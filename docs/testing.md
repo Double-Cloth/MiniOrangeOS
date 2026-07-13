@@ -65,6 +65,15 @@ python3 -m unittest discover -s tests/host -v
 
 身份加固合入后、identity-only 迁移前，正式发行版 `verify.sh` 按预期 FAIL；执行 `create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap` 后恢复 PASS。该入口仍 provision/validate root-owned identity，但不运行 apt 或工具链；回归同时覆盖缺失/伪造 identity 拒绝，以及正式 identity 与精确 Lxss 注册事实绑定。
 
+## T02 最终回归证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中执行：
+
+- T02 构建合同与运行时测试：25/25 PASS；
+- 全量宿主测试：149/149 PASS；PowerShell 生命周期：29/29 PASS；
+- `environment/verify.sh`、`make clean`、`make -j4 all`、第二次增量 `make -j4 all` 和 `make image`：PASS；
+- 镜像为 67,108,864 bytes、mode `0644`，SHA-256 为 `6cf4f04e738ca014720b04b3ed192e0f526cc8162c9f19785cbdac9475923da2`；Kernel 为 ELF32 i386 EXEC。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
