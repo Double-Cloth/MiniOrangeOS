@@ -238,13 +238,36 @@ class BootStage1Tests(unittest.TestCase):
             for index, (_, instruction) in enumerate(instructions)
             if re.fullmatch(r"mov\s+ah,0x42", instruction)
         ]
-        disk_calls = [
+        all_disk_calls = [
             index
             for index, (_, instruction) in enumerate(instructions)
             if re.fullmatch(r"int\s+0x13", instruction)
         ]
+        ah_setters = [
+            index
+            for index, (_, instruction) in enumerate(instructions)
+            if re.fullmatch(r"mov\s+(?:ah|ax),0x[0-9a-f]+", instruction)
+        ]
+        disk_calls: list[int] = []
+        for call_index in all_disk_calls:
+            preceding_setters = [index for index in ah_setters if index < call_index]
+            if not preceding_setters:
+                continue
+            last_setter = preceding_setters[-1]
+            if last_setter in extension_reads:
+                disk_calls.append(call_index)
+
         self.assertEqual(len(extension_reads), 2, "必须设置两次 AH=0x42")
-        self.assertEqual(len(disk_calls), 2, "必须执行两次 INT 13h 扩展读取")
+        self.assertGreaterEqual(
+            len(all_disk_calls),
+            3,
+            "必须至少执行一次 INT 13h extensions 探测和两次扩展读取",
+        )
+        self.assertEqual(
+            len(disk_calls),
+            2,
+            "最近一次 AH 设置为 0x42 的 INT 13h 扩展读取必须恰好执行两次",
+        )
 
         failure_targets: list[int] = []
         previous_call = -1
