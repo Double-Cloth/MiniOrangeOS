@@ -303,6 +303,25 @@ case " $* " in
     for requested in "$@"; do :; done
     rm -f "$builders_dir/$requested"
     ;;
+  *" system reset "*)
+    expected_graphroot="$MINIOS_ENV_ROOT/container-storage/graphroot"
+    expected_runroot="$XDG_RUNTIME_DIR/miniorangeos-t01"
+    [ "$backend" = podman ] || exit 67
+    [ "$#" -eq 7 ] \
+      && [ "$1" = --root ] \
+      && [ "$2" = "$expected_graphroot" ] \
+      && [ "$3" = --runroot ] \
+      && [ "$4" = "$expected_runroot" ] \
+      && [ "$5" = system ] \
+      && [ "$6" = reset ] \
+      && [ "$7" = --force ] \
+      || exit 68
+    if [ "${FAKE_FAIL_RESET_ONCE:-0}" = 1 ] \
+      && [ ! -e "$runtime/reset.failed" ]; then
+      : > "$runtime/reset.failed"
+      exit 77
+    fi
+    ;;
   *" image rmi "*)
     exit 64
     ;;
@@ -326,7 +345,7 @@ case " $* " in
       /usr/bin/sleep "$FAKE_CONTAINER_RUN_DELAY"
     fi
     ;;
-  *) : ;;
+  *) exit 70 ;;
 esac
 """,
             encoding="utf-8",
@@ -443,6 +462,9 @@ esac
 
     def _is_image_remove_call(self, call: list[str]) -> bool:
         return "image" in call and "rm" in call
+
+    def _is_storage_reset_call(self, call: list[str]) -> bool:
+        return "system" in call and "reset" in call
 
     def _terminate_owned_process_group(
         self,
@@ -1382,8 +1404,11 @@ exit 0
             temporary_root = Path(temporary_directory)
             command_directory = temporary_root / "commands"
             command_directory.mkdir()
+            runtime_directory = temporary_root / "runtime"
+            runtime_directory.mkdir(mode=0o700)
             env = self._base_env(temporary_root / "environment")
             env["PATH"] = self._path_without_container_engines(command_directory)
+            env["XDG_RUNTIME_DIR"] = str(runtime_directory)
             env.pop("MINIOS_CONTAINER_BACKEND", None)
 
             result = self._run_required(
@@ -1778,6 +1803,105 @@ exit 0
             expected = Path(env["XDG_RUNTIME_DIR"]) / "miniorangeos-t01"
             self.assertEqual(str(expected), state["MINIOS_CONTAINER_RUNROOT"])
             self.assertLessEqual(len(state["MINIOS_CONTAINER_RUNROOT"]), 50)
+
+    def test_create_preflights_runtime_before_state_storage_or_backend(self) -> None:
+        cases = (
+            "noncanonical",
+            "base-symlink",
+            "candidate-symlink",
+            "base-writable",
+            "candidate-writable",
+            "base-nondirectory",
+            "candidate-nondirectory",
+            "base-wrong-owner",
+            "candidate-wrong-owner",
+            "too-long",
+        )
+        for case in cases:
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, command_directory = self._container_env(
+                    temporary_root, environment_root, "podman"
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = "podman"
+                runtime = Path(env["XDG_RUNTIME_DIR"])
+                candidate = runtime / "miniorangeos-t01"
+
+                if case == "noncanonical":
+                    env["XDG_RUNTIME_DIR"] = str(
+                        runtime / ".." / runtime.name
+                    )
+                elif case == "base-symlink":
+                    real_runtime = temporary_root / "runtime-real"
+                    runtime.rename(real_runtime)
+                    runtime.symlink_to(real_runtime, target_is_directory=True)
+                elif case == "candidate-symlink":
+                    outside = temporary_root / "outside-runroot"
+                    outside.mkdir()
+                    candidate.symlink_to(outside, target_is_directory=True)
+                elif case == "base-writable":
+                    runtime.chmod(0o777)
+                elif case == "candidate-writable":
+                    candidate.mkdir()
+                    candidate.chmod(0o777)
+                elif case == "base-nondirectory":
+                    runtime.rmdir()
+                    runtime.write_text("not a directory\n", encoding="utf-8")
+                elif case == "candidate-nondirectory":
+                    candidate.write_text("not a directory\n", encoding="utf-8")
+                elif case in ("base-wrong-owner", "candidate-wrong-owner"):
+                    if case == "candidate-wrong-owner":
+                        candidate.mkdir()
+                    env["FAKE_WRONG_OWNER_PATH"] = str(
+                        runtime if case == "base-wrong-owner" else candidate
+                    )
+                    self._write_executable(
+                        command_directory / "stat",
+                        "#!/bin/sh\n"
+                        "set -eu\n"
+                        "target=''\n"
+                        "for target in \"$@\"; do :; done\n"
+                        "if [ \"$target\" = \"${FAKE_WRONG_OWNER_PATH:-}\" ]; then\n"
+                        "  printf 'directory|999999|700\\n'\n"
+                        "  exit 0\n"
+                        "fi\n"
+                        "exec /usr/bin/stat \"$@\"\n",
+                    )
+                else:
+                    long_runtime = temporary_root / ("r" * 48)
+                    long_runtime.mkdir()
+                    env["XDG_RUNTIME_DIR"] = str(long_runtime)
+
+                first = self._run_required(
+                    "environment/ubuntu/create.sh", env=env
+                )
+
+                self.assertNotEqual(0, first.returncode)
+                self.assertFalse(
+                    (environment_root / "state/container.env").exists()
+                )
+                self.assertFalse(
+                    (environment_root / "container-storage").exists()
+                )
+                self.assertFalse(
+                    environment_root.exists(),
+                    "runtime preflight 失败不得遗留 lifecycle lock/state 目录",
+                )
+                self.assertEqual([], self._container_calls(fake_log))
+
+                safe_runtime = temporary_root / "safe-runtime"
+                safe_runtime.mkdir()
+                safe_runtime.chmod(0o700)
+                env["XDG_RUNTIME_DIR"] = str(safe_runtime)
+                env.pop("FAKE_WRONG_OWNER_PATH", None)
+                second = self._run_required(
+                    "environment/ubuntu/create.sh", env=env
+                )
+                self.assertEqual(0, second.returncode, second.stderr)
 
     def test_ubuntu_create_detects_podman_before_project_storage_intent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2498,6 +2622,117 @@ exit 0
                         "新建 Docker builder 后构建失败必须定向回滚该 builder",
                     )
 
+    def test_ubuntu_run_rejects_unsafe_runroot_before_backend(self) -> None:
+        cases = (
+            "missing",
+            "nondirectory",
+            "symlink",
+            "writable",
+            "wrong-owner",
+            "noncanonical",
+            "storage-symlink",
+            "storage-writable",
+            "storage-wrong-owner",
+            "graphroot-missing",
+            "graphroot-nondirectory",
+            "graphroot-symlink",
+            "graphroot-writable",
+            "graphroot-wrong-owner",
+        )
+        for case in cases:
+            with (
+                self.subTest(case=case),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, command_directory = self._container_env(
+                    temporary_root, environment_root, "podman"
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = "podman"
+                self._write_container_state(environment_root, backend="podman")
+                runtime = Path(env["XDG_RUNTIME_DIR"])
+                runroot = runtime / "miniorangeos-t01"
+                storage = environment_root / "container-storage"
+                graphroot = storage / "graphroot"
+
+                if case == "missing":
+                    shutil.rmtree(runroot)
+                elif case == "nondirectory":
+                    shutil.rmtree(runroot)
+                    runroot.write_text("not a directory\n", encoding="utf-8")
+                elif case == "symlink":
+                    shutil.rmtree(runroot)
+                    outside = temporary_root / "outside-runroot"
+                    outside.mkdir()
+                    runroot.symlink_to(outside, target_is_directory=True)
+                elif case == "writable":
+                    runroot.chmod(0o777)
+                elif case == "wrong-owner":
+                    env["FAKE_WRONG_OWNER_PATH"] = str(runroot)
+                    self._write_executable(
+                        command_directory / "stat",
+                        "#!/bin/sh\n"
+                        "set -eu\n"
+                        "target=''\n"
+                        "for target in \"$@\"; do :; done\n"
+                        "if [ \"$target\" = \"${FAKE_WRONG_OWNER_PATH:-}\" ]; then\n"
+                        "  printf 'directory|999999|700\\n'\n"
+                        "  exit 0\n"
+                        "fi\n"
+                        "exec /usr/bin/stat \"$@\"\n",
+                    )
+                else:
+                    if case == "noncanonical":
+                        env["XDG_RUNTIME_DIR"] = str(
+                            runtime / ".." / runtime.name
+                        )
+                    elif case == "storage-symlink":
+                        outside = temporary_root / "outside-storage"
+                        storage.rename(outside)
+                        storage.symlink_to(outside, target_is_directory=True)
+                    elif case == "storage-writable":
+                        storage.chmod(0o777)
+                    elif case == "storage-wrong-owner":
+                        env["FAKE_WRONG_OWNER_PATH"] = str(storage)
+                    elif case == "graphroot-missing":
+                        graphroot.rmdir()
+                    elif case == "graphroot-nondirectory":
+                        graphroot.rmdir()
+                        graphroot.write_text(
+                            "not a directory\n", encoding="utf-8"
+                        )
+                    elif case == "graphroot-symlink":
+                        graphroot.rmdir()
+                        outside = temporary_root / "outside-graphroot"
+                        outside.mkdir()
+                        graphroot.symlink_to(outside, target_is_directory=True)
+                    elif case == "graphroot-writable":
+                        graphroot.chmod(0o777)
+                    else:
+                        env["FAKE_WRONG_OWNER_PATH"] = str(graphroot)
+
+                    if case in ("storage-wrong-owner", "graphroot-wrong-owner"):
+                        self._write_executable(
+                            command_directory / "stat",
+                            "#!/bin/sh\n"
+                            "set -eu\n"
+                            "target=''\n"
+                            "for target in \"$@\"; do :; done\n"
+                            "if [ \"$target\" = \"${FAKE_WRONG_OWNER_PATH:-}\" ]; then\n"
+                            "  printf 'directory|999999|700\\n'\n"
+                            "  exit 0\n"
+                            "fi\n"
+                            "exec /usr/bin/stat \"$@\"\n",
+                        )
+
+                result = self._run_required(
+                    "environment/ubuntu/run.sh", "/bin/true", env=env
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], self._container_calls(fake_log))
+
     def test_ubuntu_run_preserves_argument_boundaries_and_uses_read_only_repo(self) -> None:
         for backend in ("podman", "docker"):
             with (
@@ -2584,6 +2819,7 @@ exit 0
                     any(
                         self._is_image_remove_call(call)
                         or ("buildx" in call and "rm" in call)
+                        or self._is_storage_reset_call(call)
                         for call in calls
                     )
                 )
@@ -2849,36 +3085,22 @@ exit 0
                 removed_targets,
             )
 
-    def test_podman_destroy_retries_after_image_removed_and_storage_failure(self) -> None:
+    def test_podman_destroy_retries_after_scoped_reset_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             environment_root = temporary_root / "environment"
-            env, fake_log, command_directory = self._container_env(
+            env, fake_log, _ = self._container_env(
                 temporary_root, environment_root, "podman"
             )
             env["MINIOS_CONTAINER_BACKEND"] = "podman"
+            env["FAKE_FAIL_RESET_ONCE"] = "1"
             self._write_container_state(environment_root, backend="podman")
-            marker = temporary_root / "storage-rm.failed"
-            self._write_executable(
-                command_directory / "rm",
-                "#!/bin/sh\n"
-                "set -eu\n"
-                f"marker='{marker}'\n"
-                "target=''\n"
-                "for target in \"$@\"; do :; done\n"
-                "case \"$target\" in\n"
-                "  */container-storage)\n"
-                "    if [ ! -e \"$marker\" ]; then : > \"$marker\"; exit 76; fi\n"
-                "    ;;\n"
-                "esac\n"
-                "exec /usr/bin/rm \"$@\"\n",
-            )
 
             first = self._run_required(
                 "environment/ubuntu/destroy.sh", "--all", env=env
             )
             state_path = environment_root / "state/container.env"
-            self.assertNotEqual(0, first.returncode)
+            self.assertEqual(77, first.returncode)
             self.assertIn(
                 "MINIOS_CONTAINER_PHASE=destroying\n",
                 state_path.read_text(encoding="utf-8"),
@@ -2903,6 +3125,70 @@ exit 0
                     if self._is_image_remove_call(call)
                 ],
             )
+            reset_calls = [
+                call for call in calls if self._is_storage_reset_call(call)
+            ]
+            self.assertEqual(2, len(reset_calls))
+            expected_reset = [
+                "--root",
+                str(environment_root / "container-storage/graphroot"),
+                "--runroot",
+                str(temporary_root / "runtime/miniorangeos-t01"),
+                "system",
+                "reset",
+                "--force",
+            ]
+            self.assertEqual([expected_reset, expected_reset], reset_calls)
+            image_remove_index = next(
+                index
+                for index, call in enumerate(calls)
+                if self._is_image_remove_call(call)
+            )
+            first_reset_index = next(
+                index
+                for index, call in enumerate(calls)
+                if self._is_storage_reset_call(call)
+            )
+            self.assertLess(image_remove_index, first_reset_index)
+
+    def test_fake_backend_rejects_unscoped_reset_prune_and_unknown_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            environment_root = temporary_root / "environment"
+            env, _, command_directory = self._container_env(
+                temporary_root, environment_root, "podman", "docker"
+            )
+            graphroot = environment_root / "container-storage/graphroot"
+            runroot = temporary_root / "runtime/miniorangeos-t01"
+            invalid_commands = (
+                ["podman", "system", "reset", "--force"],
+                [
+                    "podman", "--root", str(temporary_root / "wrong"),
+                    "--runroot", str(runroot), "system", "reset", "--force",
+                ],
+                [
+                    "podman", "--root", str(graphroot),
+                    "--runroot", str(temporary_root / "wrong"),
+                    "system", "reset", "--force",
+                ],
+                [
+                    "docker", "--root", str(graphroot),
+                    "--runroot", str(runroot), "system", "reset", "--force",
+                ],
+                ["podman", "system", "prune", "--force"],
+                ["podman", "unknown-command"],
+            )
+            for command in invalid_commands:
+                with self.subTest(command=command):
+                    result = subprocess.run(
+                        command,
+                        cwd=ROOT,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(0, result.returncode)
 
     def test_docker_destroy_retries_after_resources_removed_and_state_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2980,9 +3266,14 @@ exit 0
         for backend in ("podman", "docker"):
             for case in (
                 "wrong-backend",
+                "invalid-intent",
                 "outside-storage",
                 "symlink-storage",
                 "writable-storage",
+                "symlink-graphroot",
+                "writable-graphroot",
+                "symlink-runroot",
+                "writable-runroot",
             ):
                 with (
                     self.subTest(backend=backend, case=case),
@@ -2997,6 +3288,17 @@ exit 0
                     if case == "wrong-backend":
                         recorded = "docker" if backend == "podman" else "podman"
                         self._write_container_state(environment_root, backend=recorded)
+                    elif case == "invalid-intent":
+                        self._write_container_state(environment_root, backend=backend)
+                        state = environment_root / "state/container.env"
+                        state.write_text(
+                            state.read_text(encoding="utf-8").replace(
+                                f"MINIOS_CONTAINER_INTENT={OWNED_INTENT}",
+                                "MINIOS_CONTAINER_INTENT=not-a-nonce",
+                            ),
+                            encoding="utf-8",
+                            newline="\n",
+                        )
                     elif case == "outside-storage":
                         self._write_container_state(
                             environment_root,
@@ -3009,9 +3311,29 @@ exit 0
                         outside = temporary_root / "outside"
                         storage.rename(outside)
                         storage.symlink_to(outside, target_is_directory=True)
-                    else:
+                    elif case == "writable-storage":
                         self._write_container_state(environment_root, backend=backend)
                         (environment_root / "container-storage").chmod(0o777)
+                    elif case in ("symlink-graphroot", "writable-graphroot"):
+                        self._write_container_state(environment_root, backend=backend)
+                        graphroot = environment_root / "container-storage/graphroot"
+                        if case == "symlink-graphroot":
+                            outside = temporary_root / "outside-graphroot"
+                            graphroot.rename(outside)
+                            graphroot.symlink_to(
+                                outside, target_is_directory=True
+                            )
+                        else:
+                            graphroot.chmod(0o777)
+                    else:
+                        self._write_container_state(environment_root, backend=backend)
+                        runroot = temporary_root / "runtime/miniorangeos-t01"
+                        if case == "symlink-runroot":
+                            outside = temporary_root / "outside-runroot"
+                            runroot.rename(outside)
+                            runroot.symlink_to(outside, target_is_directory=True)
+                        else:
+                            runroot.chmod(0o777)
 
                     result = self._run_required(
                         "environment/ubuntu/destroy.sh", "--all", env=env
@@ -3023,6 +3345,7 @@ exit 0
                         any(
                             self._is_image_remove_call(call)
                             or ("buildx" in call and "rm" in call)
+                            or self._is_storage_reset_call(call)
                             for call in calls
                         )
                     )
@@ -3059,6 +3382,7 @@ exit 0
                     any(
                         self._is_image_remove_call(call)
                         or ("buildx" in call and "rm" in call)
+                        or self._is_storage_reset_call(call)
                         for call in calls
                     )
                 )
@@ -3093,6 +3417,14 @@ exit 0
                 "inspected_image_id": FOREIGN_IMAGE_ID,
                 "expect_probe": True,
             },
+            {
+                "description": "intent nonce label 不匹配",
+                "state_image_name": "miniorangeos-dev:ubuntu-24.04",
+                "inspected_label": "MiniOrangeOS",
+                "inspected_image_id": OWNED_IMAGE_ID,
+                "inspected_intent": FOREIGN_INTENT,
+                "expect_probe": True,
+            },
         )
         for backend in ("podman", "docker"):
             for case in cases:
@@ -3122,6 +3454,9 @@ exit 0
                             "FAKE_CONTAINER_IMAGE_NAME": canonical_ref,
                             # fake inspect 把该值作为项目 label 的 value。
                             "FAKE_CONTAINER_LABEL": case["inspected_label"],
+                            "FAKE_CONTAINER_INTENT_LABEL": case.get(
+                                "inspected_intent", ""
+                            ),
                             "MINIOS_CONTAINER_BACKEND": backend,
                         }
                     )
@@ -3156,9 +3491,10 @@ exit 0
                     self.assertFalse(
                         any(
                             removal_tokens.intersection(command.split())
+                            or {"system", "reset"}.issubset(command.split())
                             for command in commands
                         ),
-                        f"ownership 不匹配时不得调用 {backend} rm/rmi：{commands}",
+                        f"ownership 不匹配时不得调用 {backend} rm/rmi/reset：{commands}",
                     )
 
     def test_ubuntu_destroy_reaches_owned_image_probe_for_both_backends(self) -> None:

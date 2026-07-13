@@ -172,6 +172,15 @@ container_assert_optional_runtime_directory() {
     fi
 }
 
+container_preflight_runtime_boundary() {
+    container_assert_optional_runtime_directory "$MINIOS_CONTAINER_RUNROOT" \
+        "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
+    if ((${#MINIOS_CONTAINER_RUNROOT} > 50)); then
+        container_fail "Podman runroot 超过 50 字符：$MINIOS_CONTAINER_RUNROOT"
+        return 1
+    fi
+}
+
 container_assert_directory_metadata() {
     local candidate="$1"
     local item_type

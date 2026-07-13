@@ -5,6 +5,8 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib.sh"
 
 [[ "$MINIOS_CONTAINER_STORAGE_ROOT" == "$MINIOS_ENV_ROOT/container-storage" ]] || exit 1
+# runtime 边界无效时必须在 lifecycle lock 创建 state 目录前零残留失败。
+container_preflight_runtime_boundary
 container_acquire_lifecycle_lock "$0" "$@"
 trap 'container_release_lifecycle_lock || true' EXIT
 

@@ -15,6 +15,7 @@ fi
 container_load_state
 container_validate_loaded_state_boundaries
 container_require_ready_phase
+container_validate_resource_boundaries
 container_select_backend "$STATE_CONTAINER_BACKEND"
 container_verify_state_ownership
 
