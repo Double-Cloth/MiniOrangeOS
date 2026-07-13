@@ -6,6 +6,7 @@ import hashlib
 import fcntl
 import io
 import os
+import signal
 import shutil
 import subprocess
 import tarfile
@@ -303,6 +304,8 @@ case " $* " in
     remove_image "$requested"
     ;;
   *" run "*)
+    printf '%s\n' "$$" > "$runtime/run.pid"
+    printf '%s\n' "$PPID" > "$runtime/run.parent-pid"
     for descriptor in /proc/$$/fd/*; do
       target=$(/usr/bin/readlink "$descriptor" 2>/dev/null || true)
       case "$target" in
@@ -427,6 +430,31 @@ esac
             line.split("\t")[1:]
             for line in fake_log.read_text(encoding="utf-8").splitlines()
         ]
+
+    def _terminate_owned_process_group(
+        self,
+        process: subprocess.Popen[str],
+        process_group: int,
+    ) -> None:
+        self.assertEqual(
+            process.pid,
+            process_group,
+            "测试只能清理由 start_new_session 创建的私有 process group",
+        )
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(process_group, signal.SIGKILL)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.fail("私有 fake backend process group 清理后 holder 未退出")
 
     def _write_toolchain_archive(
         self,
@@ -1528,17 +1556,17 @@ exit 0
             )
             self.assertIn("MINIOS_CONTAINER_PHASE=ready\n", state)
 
-    def test_container_lock_releases_on_sigkill_without_backend_inheritance(
+    def test_container_lock_survives_holder_sigkill_until_backend_tree_exits(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             environment_root = temporary_root / "environment"
-            env, _, _ = self._container_env(
+            env, fake_log, _ = self._container_env(
                 temporary_root, environment_root, "docker"
             )
             env["MINIOS_CONTAINER_BACKEND"] = "docker"
-            env["FAKE_CONTAINER_RUN_DELAY"] = "0.5"
+            env["FAKE_CONTAINER_RUN_DELAY"] = "10"
             self._write_container_state(environment_root, backend="docker")
             first = subprocess.Popen(
                 [
@@ -1551,7 +1579,9 @@ exit 0
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=True,
             )
+            process_group = os.getpgid(first.pid)
             try:
                 runtime = temporary_root / "fake-container-runtime"
                 run_started = runtime / "run.started"
@@ -1561,25 +1591,116 @@ exit 0
                         break
                     time.sleep(0.02)
                 self.assertTrue(run_started.exists(), "首个 run 未进入 fake backend")
+                backend_pid = int((runtime / "run.pid").read_text().strip())
+                self.assertEqual(process_group, os.getpgid(backend_pid))
 
-                first.kill()
-                first.communicate(timeout=2)
+                os.kill(first.pid, signal.SIGKILL)
                 retry_env = env.copy()
                 retry_env.pop("FAKE_CONTAINER_RUN_DELAY")
                 retry = self._run_required(
                     "environment/ubuntu/run.sh", "true", env=retry_env
                 )
             finally:
-                if first.poll() is None:
-                    first.kill()
-                    first.communicate()
+                self._terminate_owned_process_group(first, process_group)
 
-            self.assertEqual(0, retry.returncode, retry.stderr)
-            self.assertFalse(
-                (temporary_root / "fake-container-runtime/lock.inherited").exists(),
-                "backend 子进程不得继承 lifecycle lock FD",
+            self.assertNotEqual(0, retry.returncode)
+            self.assertRegex(
+                (retry.stdout + retry.stderr).lower(),
+                r"(?:flock|lock|锁|占用)",
             )
-            time.sleep(0.6)
+            self.assertTrue(
+                (temporary_root / "fake-container-runtime/lock.inherited").exists(),
+                "同步 backend 必须继承精确 lifecycle lock FD",
+            )
+            self.assertEqual(
+                1,
+                sum("run" in call for call in self._container_calls(fake_log)),
+            )
+
+            recovered = self._run_required(
+                "environment/ubuntu/run.sh", "true", env=retry_env
+            )
+            self.assertEqual(0, recovered.returncode, recovered.stderr)
+            self.assertEqual(
+                2,
+                sum("run" in call for call in self._container_calls(fake_log)),
+            )
+
+    def test_container_lock_survives_lifecycle_bash_sigkill_until_backend_exits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            environment_root = temporary_root / "environment"
+            env, fake_log, _ = self._container_env(
+                temporary_root, environment_root, "docker"
+            )
+            env["MINIOS_CONTAINER_BACKEND"] = "docker"
+            env["FAKE_CONTAINER_RUN_DELAY"] = "10"
+            self._write_container_state(environment_root, backend="docker")
+            first = subprocess.Popen(
+                [
+                    "/bin/bash",
+                    str(ROOT / "environment/ubuntu/run.sh"),
+                    "true",
+                ],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            process_group = os.getpgid(first.pid)
+            try:
+                runtime = temporary_root / "fake-container-runtime"
+                run_started = runtime / "run.started"
+                deadline = time.monotonic() + 5
+                while not run_started.exists() and first.poll() is None:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
+                self.assertTrue(run_started.exists(), "首个 run 未进入 fake backend")
+                backend_pid = int((runtime / "run.pid").read_text().strip())
+                lifecycle_pid = int(
+                    (runtime / "run.parent-pid").read_text().strip()
+                )
+                self.assertNotEqual(first.pid, lifecycle_pid)
+                self.assertEqual(process_group, os.getpgid(lifecycle_pid))
+                self.assertEqual(process_group, os.getpgid(backend_pid))
+
+                os.kill(lifecycle_pid, signal.SIGKILL)
+                first.wait(timeout=3)
+                self.assertEqual(process_group, os.getpgid(backend_pid))
+                retry_env = env.copy()
+                retry_env.pop("FAKE_CONTAINER_RUN_DELAY")
+                retry = self._run_required(
+                    "environment/ubuntu/run.sh", "true", env=retry_env
+                )
+            finally:
+                self._terminate_owned_process_group(first, process_group)
+
+            self.assertNotEqual(0, retry.returncode)
+            self.assertRegex(
+                (retry.stdout + retry.stderr).lower(),
+                r"(?:flock|lock|锁|占用)",
+            )
+            self.assertTrue(
+                (temporary_root / "fake-container-runtime/lock.inherited").exists()
+            )
+            self.assertEqual(
+                1,
+                sum("run" in call for call in self._container_calls(fake_log)),
+            )
+
+            recovered = self._run_required(
+                "environment/ubuntu/run.sh", "true", env=retry_env
+            )
+            self.assertEqual(0, recovered.returncode, recovered.stderr)
+            self.assertEqual(
+                2,
+                sum("run" in call for call in self._container_calls(fake_log)),
+            )
 
     def test_ubuntu_create_prefers_rootless_podman_then_docker(self) -> None:
         cases = (

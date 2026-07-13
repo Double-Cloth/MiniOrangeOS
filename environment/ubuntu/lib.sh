@@ -323,8 +323,9 @@ container_acquire_lifecycle_lock() {
     fi
     container_assert_lock_metadata || return $?
 
-    # 由 flock 进程持锁，并在执行 lifecycle 脚本前关闭子进程中的锁 FD。
-    # 因此外层进程即使遭 SIGKILL，锁也会立即释放，不会被 backend 子进程继承。
+    # flock、lifecycle Bash 与同步 backend 进程树继承同一锁 open-file-description。
+    # 任一祖先进程遭 SIGKILL 时，只要同步后代仍运行，锁就继续阻止并发 lifecycle；
+    # 全部同步后代退出后由内核自动释放。create/run/destroy 禁止后台启动 backend。
     if [[ "${MINIOS_CONTAINER_LIFECYCLE_LOCKED:-0}" == '1' ]]; then
         container_assert_parent_lifecycle_lock
         return $?
@@ -334,14 +335,14 @@ container_acquire_lifecycle_lock() {
         return 2
     fi
     lifecycle_script="$(realpath -e -- "$lifecycle_script")" || return $?
-    exec flock --exclusive --nonblock --close --verbose \
+    exec flock --exclusive --nonblock --verbose \
         "$MINIOS_CONTAINER_LOCK_FILE" \
         /usr/bin/env MINIOS_CONTAINER_LIFECYCLE_LOCKED=1 \
         /usr/bin/bash "$lifecycle_script" "${@:2}"
 }
 
 container_release_lifecycle_lock() {
-    # 锁归属 flock 包装进程；lifecycle 子进程退出时由内核自动释放。
+    # flock 与同步后代共享锁；整棵同步进程树退出时由内核自动释放。
     return 0
 }
 
