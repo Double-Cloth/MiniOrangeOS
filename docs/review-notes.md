@@ -41,3 +41,9 @@ M0 已完成并验证以下能力：
 - 串口 PASS 只是协议输入，成功还必须同时满足完整有序状态机、无 FAIL、QEMU 真实退出和精确 debug-exit 状态。
 - 进程清理要绑定本次 leader/PGID，并在回收前保留 leader 身份；subreaper 才能覆盖容器中双重 fork 的孤儿后代。
 - 路径安全需要把镜像、构建根和日志目录绑定到已验证 FD；原子 rename 后仍要核对最终 inode，且 DrvFS 的可见性语义必须由真实工作树测试验证。
+
+## T10 心得
+
+- DAP 的 segment:offset 不回绕不等于物理 DMA 边界安全；跨 `0x10000` 的连续区域需要拆成两个 BIOS 请求。
+- Stage 1 自己打印 `loader loaded` 不能证明交接成功；最小 Stage 2 探针应真实核验寄存器、标志和退出握手。
+- 由单一布局生成汇编常量仍属于构建产品功能，必须继承 marker、nofollow、严格 schema、原子提交和源码零副作用边界。
