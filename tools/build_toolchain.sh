@@ -204,51 +204,204 @@ if ((download_only == 1)); then
     exit 0
 fi
 
-validate_archive_members() {
-    local archive="$1"
-    local expected_name="$2"
-    local status
-    if python3 - "$archive" "$expected_name" <<'PY'
+calculate_source_manifest() {
+    local source_kind="$1"
+    local source_path="$2"
+    local expected_name="$3"
+
+    python3 - "$source_kind" "$source_path" "$expected_name" <<'PY'
+import hashlib
+import json
+import os
 import posixpath
+import stat
 import sys
 import tarfile
 
-archive, expected = sys.argv[1:]
+source_kind, source_path, expected_name = sys.argv[1:]
+excluded_root_entries = {".minios-source.env"}
 
-def reject(member: tarfile.TarInfo, reason: str) -> None:
-    print(f"unsafe archive member: {member.name!r}: {reason}", file=sys.stderr)
-    raise SystemExit(1)
 
-with tarfile.open(archive, "r:*") as source:
-    for member in source:
-        name = member.name.rstrip("/")
-        normalized = posixpath.normpath(name)
-        if not name or name.startswith("/") or normalized in {"", ".", ".."}:
-            reject(member, "absolute or empty path")
-        if normalized.startswith("../") or normalized.split("/", 1)[0] != expected:
-            reject(member, "path escapes expected top-level directory")
-        if not (member.isdir() or member.isreg() or member.issym() or member.islnk()):
-            reject(member, "unsupported special member type")
-        if member.issym() or member.islnk():
-            target = member.linkname
-            if not target or target.startswith("/"):
-                reject(member, "absolute or empty link target")
-            if member.issym():
+def file_digest(file_object) -> str:
+    digest = hashlib.sha256()
+    while chunk := file_object.read(1024 * 1024):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def finish(entries: dict[str, tuple[str, int, str]]) -> None:
+    digest = hashlib.sha256()
+    for relative_path in sorted(entries):
+        entry_type, mode, payload = entries[relative_path]
+        line = json.dumps(
+            [relative_path, entry_type, mode, payload],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(line)
+        digest.update(b"\n")
+    print(digest.hexdigest())
+
+
+def archive_entries() -> dict[str, tuple[str, int, str]]:
+    entries: dict[str, tuple[str, int, str]] = {}
+    hardlinks: dict[str, str] = {}
+    prefix = expected_name + "/"
+    with tarfile.open(source_path, "r:*") as archive:
+        for member in archive:
+            name = member.name.rstrip("/")
+            normalized = posixpath.normpath(name)
+            if not name or name.startswith("/") or normalized in {"", ".", ".."}:
+                raise ValueError(
+                    f"unsafe archive member (absolute or empty path): {member.name!r}"
+                )
+            if normalized == expected_name:
+                if not member.isdir():
+                    raise ValueError(
+                        f"unsafe archive member (top-level entry is not a directory): "
+                        f"{member.name!r}"
+                    )
+                continue
+            if not normalized.startswith(prefix):
+                raise ValueError(
+                    f"unsafe archive member (path escapes expected root): "
+                    f"{member.name!r}"
+                )
+            relative_path = normalized[len(prefix) :]
+            if relative_path in excluded_root_entries or relative_path in entries:
+                raise ValueError(
+                    f"unsafe archive member (reserved or duplicate path): "
+                    f"{member.name!r}"
+                )
+            if member.isdir():
+                entries[relative_path] = ("directory", member.mode & 0o755, "")
+            elif member.isreg():
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"cannot read archive entry: {member.name!r}")
+                with extracted:
+                    entries[relative_path] = (
+                        "file",
+                        member.mode & 0o755,
+                        file_digest(extracted),
+                    )
+            elif member.issym():
+                target = member.linkname
                 resolved = posixpath.normpath(
                     posixpath.join(posixpath.dirname(normalized), target)
                 )
+                if not target or target.startswith("/") or not resolved.startswith(prefix):
+                    raise ValueError(
+                        f"unsafe archive member (symlink target escapes root): "
+                        f"{member.name!r}"
+                    )
+                entries[relative_path] = ("symlink", 0o777, member.linkname)
+            elif member.islnk():
+                target = posixpath.normpath(member.linkname)
+                if not target.startswith(prefix):
+                    raise ValueError(
+                        f"unsafe archive member (hardlink target escapes root): "
+                        f"{member.name!r}"
+                    )
+                entries[relative_path] = ("hardlink", 0, "")
+                hardlinks[relative_path] = target[len(prefix) :]
             else:
-                resolved = posixpath.normpath(target)
-            if resolved.startswith("../") or resolved.split("/", 1)[0] != expected:
-                reject(member, "link target escapes expected top-level directory")
+                raise ValueError(
+                    f"unsafe archive member (unsupported type): {member.name!r}"
+                )
+
+    resolving: set[str] = set()
+
+    def resolve_hardlink(relative_path: str) -> tuple[str, int, str]:
+        entry = entries.get(relative_path)
+        if entry is None:
+            raise ValueError(f"missing hardlink target: {relative_path!r}")
+        if entry[0] != "hardlink":
+            if entry[0] != "file":
+                raise ValueError(f"hardlink target is not a regular file: {relative_path!r}")
+            return entry
+        if relative_path in resolving:
+            raise ValueError(f"hardlink cycle: {relative_path!r}")
+        resolving.add(relative_path)
+        resolved = resolve_hardlink(hardlinks[relative_path])
+        resolving.remove(relative_path)
+        entries[relative_path] = resolved
+        return resolved
+
+    for relative_path in hardlinks:
+        resolve_hardlink(relative_path)
+    return entries
+
+
+def tree_entries() -> dict[str, tuple[str, int, str]]:
+    entries: dict[str, tuple[str, int, str]] = {}
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(source_path, directory_flags)
+
+    def visit(directory_fd: int, parent: str) -> None:
+        with os.scandir(directory_fd) as iterator:
+            names = sorted(entry.name for entry in iterator)
+        for name in names:
+            if not parent and name in excluded_root_entries:
+                continue
+            relative_path = f"{parent}/{name}" if parent else name
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                try:
+                    child_metadata = os.fstat(child_fd)
+                    entries[relative_path] = (
+                        "directory",
+                        stat.S_IMODE(child_metadata.st_mode) & 0o777,
+                        "",
+                    )
+                    visit(child_fd, relative_path)
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(metadata.st_mode):
+                file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+                try:
+                    file_metadata = os.fstat(file_fd)
+                    if not stat.S_ISREG(file_metadata.st_mode):
+                        raise ValueError(
+                            f"source entry changed type while scanning: {relative_path!r}"
+                        )
+                    with os.fdopen(file_fd, "rb", closefd=False) as file_object:
+                        digest = file_digest(file_object)
+                finally:
+                    os.close(file_fd)
+                entries[relative_path] = (
+                    "file",
+                    stat.S_IMODE(file_metadata.st_mode) & 0o777,
+                    digest,
+                )
+            elif stat.S_ISLNK(metadata.st_mode):
+                entries[relative_path] = (
+                    "symlink",
+                    0o777,
+                    os.readlink(name, dir_fd=directory_fd),
+                )
+            else:
+                raise ValueError(f"unsupported source entry: {relative_path!r}")
+
+    try:
+        visit(root_fd, "")
+    finally:
+        os.close(root_fd)
+    return entries
+
+
+try:
+    if source_kind == "archive":
+        finish(archive_entries())
+    elif source_kind == "tree":
+        finish(tree_entries())
+    else:
+        raise ValueError(f"unknown source kind: {source_kind!r}")
+except (OSError, tarfile.TarError, ValueError) as error:
+    print(f"source manifest failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
 PY
-    then
-        :
-    else
-        status=$?
-        minios_log "FAIL" "归档成员预检失败：$archive status=$status"
-        return "$status"
-    fi
 }
 
 source_stamp_matches() {
@@ -257,6 +410,7 @@ source_stamp_matches() {
     local version="$3"
     local archive_sha256="$4"
     local expected_name="$5"
+    local source_manifest_sha256="$6"
     local line_count
 
     if [[ ! -f "$stamp" || -L "$stamp" ]]; then
@@ -267,6 +421,27 @@ source_stamp_matches() {
     else
         return $?
     fi
+    [[ "$line_count" == "6" ]] || return 1
+    grep -Fqx -- "component=$component" "$stamp" || return 1
+    grep -Fqx -- "version=$version" "$stamp" || return 1
+    grep -Fqx -- "archive_sha256=$archive_sha256" "$stamp" || return 1
+    grep -Fqx -- "expected_top_level=$expected_name" "$stamp" || return 1
+    grep -Fqx -- "source_manifest_version=1" "$stamp" || return 1
+    grep -Fqx -- "source_manifest_sha256=$source_manifest_sha256" "$stamp" || return 1
+}
+
+legacy_source_stamp_matches() {
+    local stamp="$1"
+    local component="$2"
+    local version="$3"
+    local archive_sha256="$4"
+    local expected_name="$5"
+    local line_count
+
+    if [[ ! -f "$stamp" || -L "$stamp" ]]; then
+        return 1
+    fi
+    if line_count="$(wc -l <"$stamp")"; then :; else return $?; fi
     [[ "$line_count" == "4" ]] || return 1
     grep -Fqx -- "component=$component" "$stamp" || return 1
     grep -Fqx -- "version=$version" "$stamp" || return 1
@@ -280,6 +455,7 @@ write_source_stamp() {
     local version="$3"
     local archive_sha256="$4"
     local expected_name="$5"
+    local source_manifest_sha256="$6"
     local partial_stamp="$stamp.partial"
     local status
 
@@ -290,7 +466,9 @@ write_source_stamp() {
         "component=$component" \
         "version=$version" \
         "archive_sha256=$archive_sha256" \
-        "expected_top_level=$expected_name" >"$partial_stamp"; then
+        "expected_top_level=$expected_name" \
+        "source_manifest_version=1" \
+        "source_manifest_sha256=$source_manifest_sha256" >"$partial_stamp"; then
         :
     else
         status=$?
@@ -317,6 +495,10 @@ extract_source() {
     local extracted_directory="$partial_directory/$expected_name"
     local source_stamp="$final_directory/.minios-source.env"
     local extracted_stamp="$extracted_directory/.minios-source.env"
+    local expected_source_manifest
+    local actual_source_manifest
+    local stamp_is_current=0
+    local stamp_is_legacy=0
     local status
 
     assert_owned_path_without_symlink "$final_directory" || return $?
@@ -329,20 +511,67 @@ extract_source() {
         return "$status"
     fi
     remove_owned_path "$partial_directory" || return $?
+    if minios_verify_sha256 "$archive" "$archive_sha256"; then
+        :
+    else
+        status=$?
+        minios_log "FAIL" "源码归档复核失败：$archive status=$status"
+        return "$status"
+    fi
+    if expected_source_manifest="$(
+        calculate_source_manifest archive "$archive" "$expected_name"
+    )"; then
+        :
+    else
+        status=$?
+        minios_log "FAIL" "无法计算归档源码清单：$archive status=$status"
+        return "$status"
+    fi
+    if [[ ! "$expected_source_manifest" =~ ^[0-9a-f]{64}$ ]]; then
+        minios_die "归档源码清单摘要无效：$archive"
+        return 1
+    fi
     if [[ -e "$final_directory" || -L "$final_directory" ]]; then
         if [[ -d "$final_directory" \
             && -f "$final_directory/configure" \
             && -x "$final_directory/configure" \
-            && ! -L "$final_directory/configure" ]] \
-            && source_stamp_matches \
+            && ! -L "$final_directory/configure" ]]; then
+            if source_stamp_matches \
+                "$source_stamp" "$component" "$version" \
+                "$archive_sha256" "$expected_name" \
+                "$expected_source_manifest"; then
+                stamp_is_current=1
+            elif legacy_source_stamp_matches \
                 "$source_stamp" "$component" "$version" \
                 "$archive_sha256" "$expected_name"; then
-            return 0
+                stamp_is_legacy=1
+            fi
+            if ((stamp_is_current == 1 || stamp_is_legacy == 1)); then
+                if actual_source_manifest="$(
+                    calculate_source_manifest tree \
+                        "$final_directory" "$expected_name"
+                )"; then
+                    :
+                else
+                    status=$?
+                    minios_log "FAIL" \
+                        "无法计算缓存源码清单：$final_directory status=$status"
+                    return "$status"
+                fi
+                if [[ "$actual_source_manifest" == "$expected_source_manifest" ]]; then
+                    if ((stamp_is_legacy == 1)); then
+                        write_source_stamp \
+                            "$source_stamp" "$component" "$version" \
+                            "$archive_sha256" "$expected_name" \
+                            "$expected_source_manifest" || return $?
+                    fi
+                    return 0
+                fi
+            fi
         fi
-        minios_die "源码缓存缺少或不匹配项目 stamp，拒绝复用：$final_directory"
+        minios_die "源码缓存 stamp 或完整源码清单不匹配，拒绝复用：$final_directory"
         return 1
     fi
-    validate_archive_members "$archive" "$expected_name" || return $?
     if mkdir -p -- "$partial_directory"; then
         :
     else
@@ -350,7 +579,7 @@ extract_source() {
         minios_log "FAIL" "无法创建解包临时目录：$partial_directory status=$status"
         return "$status"
     fi
-    if tar -xf "$archive" -C "$partial_directory"; then
+    if (umask 022 && tar -xf "$archive" -C "$partial_directory"); then
         :
     else
         status=$?
@@ -365,9 +594,26 @@ extract_source() {
         minios_die "源码包缺少可信 configure：$archive"
         return 1
     fi
+    if actual_source_manifest="$(
+        calculate_source_manifest tree "$extracted_directory" "$expected_name"
+    )"; then
+        :
+    else
+        status=$?
+        remove_owned_path "$partial_directory" || true
+        minios_log "FAIL" \
+            "无法计算解包源码清单：$extracted_directory status=$status"
+        return "$status"
+    fi
+    if [[ "$actual_source_manifest" != "$expected_source_manifest" ]]; then
+        remove_owned_path "$partial_directory" || true
+        minios_die "解包源码与已锁定归档清单不匹配：$archive"
+        return 1
+    fi
     if write_source_stamp \
         "$extracted_stamp" "$component" "$version" \
-        "$archive_sha256" "$expected_name"; then
+        "$archive_sha256" "$expected_name" \
+        "$expected_source_manifest"; then
         :
     else
         status=$?
