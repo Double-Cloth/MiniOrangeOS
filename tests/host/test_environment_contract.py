@@ -25,9 +25,11 @@ PUBLIC_T01_FILES = (
 )
 
 SHELL_SCRIPTS = (
+    "environment/lib/common.sh",
     "environment/bootstrap-inside.sh",
     "environment/with-env.sh",
     "environment/verify.sh",
+    "environment/ubuntu/lib.sh",
     "environment/ubuntu/create.sh",
     "environment/ubuntu/run.sh",
     "environment/ubuntu/destroy.sh",
@@ -76,6 +78,38 @@ EXPECTED_VERSION_LOCK = {
         "e275e76442a6067341a27f04c5c6b83d8613144004c0413528863dc6b5c743da"
     ),
 }
+
+PROTECTED_SHELL_TARGET = re.compile(
+    r"(?:/usr/local(?:/|\b)|/etc/environment\b|"
+    r"(?:\$HOME|\$\{HOME\}|~)/\.(?:bashrc|profile)\b|"
+    r"(?<![\w/])\.(?:bashrc|profile)\b)"
+)
+
+COMMON_PROTECTED_LITERAL_LINES = (
+    re.compile(
+        r"^\s*(?:readonly\s+)?MINIOS_FORBIDDEN_ENV_ROOTS="
+        r"\(\s*[\"']/[\"']\s+[\"']/usr[\"']\s+"
+        r"[\"']/usr/local[\"']\s*\)\s*$"
+    ),
+)
+
+VERIFY_READ_ONLY_PROTECTED_LINES = (
+    re.compile(
+        r"^\s*(?:if\s+)?compgen\s+-G\s+"
+        r"[\"']?/usr/local/bin/i686-elf-\*[\"']?\s*>\s*/dev/null"
+        r"\s*(?:;\s*then)?\s*$"
+    ),
+    re.compile(
+        r"^\s*find\s+[\"']?/usr/local/bin[\"']?\s+-maxdepth\s+1\s+"
+        r"-type\s+f\s+-name\s+[\"']?i686-elf-\*[\"']?\s+-print"
+        r"(?:\s+-quit)?\s*$"
+    ),
+    re.compile(
+        r"^\s*(?:if\s+)?(?:test\s+-(?:e|f|d|L)|\[\[?\s+-(?:e|f|d|L))"
+        r"\s+[\"']?/usr/local/bin/i686-elf-(?:gcc|ld|\*)[\"']?"
+        r"\s*(?:\]\]?|;\s*then)?\s*$"
+    ),
+)
 
 
 class EnvironmentContractTests(unittest.TestCase):
@@ -176,6 +210,108 @@ class EnvironmentContractTests(unittest.TestCase):
             main_flow = main_flow[:start] + "\n" + main_flow[end:]
         return main_flow
 
+    def _expand_simple_shell_assignments(self, content: str) -> str:
+        assignments: dict[str, str] = {}
+        expanded_lines: list[str] = []
+        assignment_pattern = re.compile(
+            r"^\s*(?:(?:export|readonly|local)\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+            r"(?:\"([^\"]*)\"|'([^']*)'|([^\s;]+))\s*$"
+        )
+        variable_pattern = re.compile(
+            r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+        )
+
+        def expand(value: str) -> str:
+            for _ in range(len(assignments) + 1):
+                expanded = variable_pattern.sub(
+                    lambda match: assignments.get(
+                        match.group(1) or match.group(2), match.group(0)
+                    ),
+                    value,
+                )
+                if expanded == value:
+                    return value
+                value = expanded
+            return value
+
+        for line in content.splitlines():
+            expanded_line = expand(line)
+            match = assignment_pattern.match(expanded_line)
+            if match is not None:
+                raw_value = next(
+                    value for value in match.groups()[1:] if value is not None
+                )
+                assignments[match.group(1)] = expand(raw_value)
+            expanded_lines.append(expanded_line)
+        return "\n".join(expanded_lines)
+
+    def _shell_policy_violations(
+        self, relative_path: str, content: str
+    ) -> list[str]:
+        uncommented = self._without_comments(content)
+        expanded = self._expand_simple_shell_assignments(uncommented)
+        violations: list[str] = []
+
+        forbidden_patterns = (
+            ("global prune", re.compile(r"(?i)\b(?:podman|docker)\s+system\s+prune\b")),
+            (
+                "root delete",
+                re.compile(
+                    r"(?m)\brm\s+(?:-[^\s]+\s+)*(?:--\s+)?/"
+                    r"[ \t]*(?:$|[;&|])"
+                ),
+            ),
+            ("eval", re.compile(r"(?m)(?:^|[;&|]\s*|\s)eval(?:\s|$)")),
+            (
+                "shell -c",
+                re.compile(r"(?m)(?:^|[\s;&|])(?:/[^\s]+/)?(?:ba)?sh\s+-c\b"),
+            ),
+            (
+                "dynamic interpreter",
+                re.compile(
+                    r"(?im)\b(?:python(?:3(?:\.\d+)?)?|perl|ruby)\b[^\n]*"
+                    r"(?:\s-(?:e|c)\b|\s-[A-Za-z]*[ec][A-Za-z]*\b)"
+                ),
+            ),
+            (
+                "protected redirection",
+                re.compile(
+                    r"(?im)(?:^|\s|[;&|])(?:\d*>>?|&>>?)\s*[\"']?"
+                    + PROTECTED_SHELL_TARGET.pattern
+                ),
+            ),
+            (
+                "protected mutation command",
+                re.compile(
+                    r"(?im)\b(?:tee|install|cp|mv|rsync|mkdir|ln|touch|"
+                    r"sed\s+-i|dd|truncate|tar|perl\s+-[^\s]*i)\b[^\n]*"
+                    + PROTECTED_SHELL_TARGET.pattern
+                ),
+            ),
+        )
+        for description, pattern in forbidden_patterns:
+            if pattern.search(expanded):
+                violations.append(description)
+
+        for line_number, line in enumerate(expanded.splitlines(), start=1):
+            if PROTECTED_SHELL_TARGET.search(line) is None:
+                continue
+            if relative_path == "environment/lib/common.sh":
+                allowed = any(
+                    pattern.fullmatch(line)
+                    for pattern in COMMON_PROTECTED_LITERAL_LINES
+                )
+            elif relative_path == "environment/verify.sh":
+                allowed = any(
+                    pattern.fullmatch(line)
+                    for pattern in VERIFY_READ_ONLY_PROTECTED_LINES
+                )
+            else:
+                allowed = False
+            if not allowed:
+                violations.append(f"protected literal at line {line_number}: {line.strip()}")
+        return violations
+
     def test_public_t01_files_exist(self) -> None:
         missing = [path for path in PUBLIC_T01_FILES if not (ROOT / path).is_file()]
         self.assertEqual([], missing, f"缺少 T01 生命周期文件：{missing}")
@@ -203,34 +339,48 @@ class EnvironmentContractTests(unittest.TestCase):
                 self.assertRegex(content, r"(?m)^set -euo pipefail\s*$")
 
     def test_shell_scripts_avoid_global_or_unbounded_mutation(self) -> None:
-        root_delete = re.compile(
-            r"(?m)\brm\s+(?:-[^\s]+\s+)*(?:--\s+)?/[ \t]*(?:$|[;&|])"
-        )
-        protected_target = (
-            r"(?:/usr/local(?:/[^\s;&|]*)?|/etc/environment|"
-            r"(?:~|\$(?:HOME|\{HOME\}))/\.(?:bashrc|profile)|"
-            r"\.(?:bashrc|profile))"
-        )
-        redirected_write = re.compile(
-            rf"(?im)(?:^|\s|[;&|])(?:\d*>>?|&>>?)\s*[\"']?{protected_target}"
-        )
-        mutating_command = re.compile(
-            rf"(?im)\b(?:tee|install|cp|mv|rsync|mkdir|ln|touch|sed\s+-i)\b"
-            rf"[^\n]*{protected_target}"
-        )
         for relative_path in SHELL_SCRIPTS:
             with self.subTest(path=relative_path):
-                content = self._without_comments(self._read_required(relative_path))
-                self.assertNotIn("system prune", content.lower())
-                self.assertIsNone(root_delete.search(content), "禁止递归删除根目录")
-                self.assertIsNone(
-                    redirected_write.search(content),
-                    "禁止通过重定向写入全局路径或 Shell 启动文件",
+                content = self._read_required(relative_path)
+                self.assertEqual(
+                    [],
+                    self._shell_policy_violations(relative_path, content),
+                    "Shell 源码违反保守全局写入策略",
                 )
-                self.assertIsNone(
-                    mutating_command.search(content),
-                    "禁止写入 /usr/local 或 Shell 启动文件",
+
+    def test_shell_policy_rejects_synthetic_bypass_attempts(self) -> None:
+        malicious_sources = {
+            "dd": "dd if=tool of=/usr/local/bin/tool\n",
+            "truncate": "truncate -s 0 \"$HOME/.bashrc\"\n",
+            "tar": "tar -xf payload.tar -C /usr/local\n",
+            "perl": "perl -pi -e 's/x/y/' /etc/environment\n",
+            "python": "python3 -c 'open(path, \"w\").write(data)'\n",
+            "variable split": (
+                "root=/usr\nleaf=/local\ntarget=\"${root}${leaf}\"\n"
+                "cp tool \"$target/bin/tool\"\n"
+            ),
+        }
+        for bypass, source in malicious_sources.items():
+            with self.subTest(bypass=bypass):
+                self.assertTrue(
+                    self._shell_policy_violations("environment/with-env.sh", source),
+                    f"保守扫描器未拒绝合成绕过：{bypass}",
                 )
+
+        self.assertEqual(
+            [],
+            self._shell_policy_violations(
+                "environment/lib/common.sh",
+                'readonly MINIOS_FORBIDDEN_ENV_ROOTS=("/" "/usr" "/usr/local")\n',
+            ),
+        )
+        self.assertEqual(
+            [],
+            self._shell_policy_violations(
+                "environment/verify.sh",
+                "if compgen -G '/usr/local/bin/i686-elf-*' > /dev/null; then\nfi\n",
+            ),
+        )
 
     def test_wsl_scripts_restrict_names_and_authorized_root(self) -> None:
         for relative_path in WSL_SCRIPTS:
@@ -280,14 +430,29 @@ class EnvironmentContractTests(unittest.TestCase):
         )
         self.assertRegex(
             ownership,
-            r"(?i)GetFullPath\s*\(\s*\$ExpectedPath\s*\)",
-            "ownership helper 必须规范化预期安装路径",
+            r"(?im)^\s*\$RegisteredBasePath\s*=\s*(?:"
+            r"\(\s*Get-ItemProperty\b[^\r\n]*\)\.BasePath|"
+            r"Get-ItemPropertyValue\b[^\r\n]*(?:-Name\s+)?"
+            r"[\"']?BasePath[\"']?)\s*$",
+            "Lxss BasePath 注册读取结果必须直接赋给 RegisteredBasePath",
         )
         self.assertRegex(
             ownership,
-            r"(?is)if\s*\([^)]*(?:-cne|-ne|::Equals)[^)]*\)"
-            r"\s*\{[^}]*\bthrow\b",
-            "注册 BasePath 与预期路径不一致时必须拒绝",
+            r"(?im)^\s*\$RegisteredFullPath\s*=\s*"
+            r"\[IO\.Path\]::GetFullPath\(\$RegisteredBasePath\)\s*$",
+            "RegisteredFullPath 必须直接源自 RegisteredBasePath 的规范化",
+        )
+        self.assertRegex(
+            ownership,
+            r"(?im)^\s*\$ExpectedFullPath\s*=\s*"
+            r"\[IO\.Path\]::GetFullPath\(\$ExpectedPath\)\s*$",
+            "ExpectedFullPath 必须直接源自 ExpectedPath 的规范化",
+        )
+        self.assertRegex(
+            ownership,
+            r"(?is)if\s*\(\s*\$RegisteredFullPath\s+-cne\s+"
+            r"\$ExpectedFullPath\s*\)\s*\{[^}]*\bthrow\b",
+            "必须直接比较注册规范化路径与预期规范化路径并拒绝不一致",
         )
         self.assertRegex(
             ownership,
@@ -318,7 +483,24 @@ class EnvironmentContractTests(unittest.TestCase):
             "unregister helper 只能把参数化精确名称传给 wsl",
         )
 
+        unregister_tokens = list(re.finditer(r"(?i)--unregister\b", content))
+        self.assertEqual(
+            1,
+            len(unregister_tokens),
+            "去注释后的 destroy.ps1 全文只能有一个 --unregister",
+        )
+        unregister_start, unregister_end = self._function_span(
+            content, "Invoke-ExactWslUnregister", powershell=True
+        )
+        self.assertTrue(
+            unregister_start <= unregister_tokens[0].start() < unregister_end,
+            "唯一 --unregister 只能位于 Invoke-ExactWslUnregister 内",
+        )
+        self.assertNotIn("--unregister", ownership.lower())
+        self.assertNotIn("--unregister", confirmation.lower())
+
         main_flow = self._without_function_definitions(content, powershell=True)
+        self.assertNotIn("--unregister", main_flow.lower())
         calls = [
             re.search(rf"(?im)^\s*{re.escape(name)}\b", main_flow)
             for name in (
@@ -361,25 +543,6 @@ class EnvironmentContractTests(unittest.TestCase):
         self.assertIn("miniorangeos-dev-builder", content)
         self.assertIn("--all", content)
         self.assertNotIn("system prune", content)
-
-        ownership_call = re.search(r"(?m)^\s*assert_owned_image(?:\s|$)", content)
-        self.assertIsNotNone(
-            ownership_call,
-            "destroy --all 必须实际调用 assert_owned_image，而不只是定义或注释它",
-        )
-        removal_commands = list(
-            re.finditer(
-                r"(?im)^\s*(?:podman|docker|\"?\$\{?[a-z_][a-z0-9_]*\}?\"?)"
-                r"[^\r\n]*\s(?:rm|rmi)\b",
-                content,
-            )
-        )
-        self.assertTrue(removal_commands, "destroy.sh 必须包含受保护的容器删除路径")
-        assert ownership_call is not None
-        self.assertTrue(
-            all(ownership_call.start() < command.start() for command in removal_commands),
-            "任何 podman/docker rm 或 rmi 之前必须先调用 assert_owned_image",
-        )
 
     def test_container_create_and_destroy_share_storage_and_builder_boundaries(
         self,
