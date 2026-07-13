@@ -4,9 +4,9 @@
 
 分支：`feature/T11-stage2-real-mode`
 
-状态：**实现完成，待合并**
+状态：**完成并合并**
 
-Merge SHA：待回填
+Merge SHA：`e02acfbfba3d610f4849e91ad6f4502ce34c9272`
 
 ## 实现摘要
 

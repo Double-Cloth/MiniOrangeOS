@@ -9,7 +9,7 @@
 | T02 | 完成 | feature/T02-minimal-build-system | build 25/25、host 149/149、PowerShell 29/29、真实 clean/all/image PASS | `83323db`：`merge: complete T02 minimal build system` |
 | T03 | 完成 | feature/T03-qemu-test-framework | qemu 35/35、host 185/185、PowerShell 29/29、真实 image/test-qemu/GDB PASS | `5577dc4`：`merge: complete T03 qemu test framework` |
 | T10 | 完成 | feature/T10-boot-sector | stage1 9/9、host 194/194、T03 qemu 35/35、真实 IDE handoff/floppy error PASS | `789f18f`：`merge: complete T10 BIOS boot sector` |
-| T11 | 实现完成，待合并 | feature/T11-stage2-real-mode | stage2 8/8、host 202/202、PowerShell 29/29、真实 S1→S2/BIOS API PASS | 待回填 |
+| T11 | 完成 | feature/T11-stage2-real-mode | stage2 8/8、host 202/202、PowerShell 29/29、真实 S1→S2/BIOS API PASS | `e02acfb`：`merge: complete T11 stage2 real-mode runtime` |
 | T12–T74 | 未开始 | — | — | — |
 
 ## 里程碑
