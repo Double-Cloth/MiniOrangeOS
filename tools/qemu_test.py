@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import selectors
 import signal
@@ -12,10 +13,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import NoReturn
 
 
 PASS_LINE = b"[TEST] all PASS"
+SUITE_BEGIN = re.compile(rb"^\[TEST\] suite=([A-Za-z0-9_.-]+) begin$")
+SUITE_PASS = re.compile(rb"^\[TEST\] suite=([A-Za-z0-9_.-]+) PASS$")
+CASE_PASS = re.compile(rb"^\[TEST\] case=([A-Za-z0-9_.-]+) PASS$")
 READ_SIZE = 65536
 LINE_LIMIT = 262144
 TERMINATE_GRACE_SECONDS = 0.35
@@ -46,12 +49,16 @@ class BoundedTail:
 
 
 class ProtocolParser:
-    """按完整行严格识别 TEST 终态，不接受子串伪造。"""
+    """严格验证 suite/case/总终态的顺序和完整换行。"""
 
     def __init__(self) -> None:
         self._pending = bytearray()
+        self._active_suite: bytes | None = None
+        self._case_passes = 0
+        self._completed_suites = 0
         self.passed = False
         self.failed = False
+        self.failure_reason = ""
 
     def feed(self, data: bytes) -> None:
         self._pending.extend(data)
@@ -59,6 +66,8 @@ class ProtocolParser:
             newline = self._pending.find(b"\n")
             if newline < 0:
                 if len(self._pending) > LINE_LIMIT:
+                    if self._pending.startswith(b"[TEST]"):
+                        self._fail("TEST 行超过长度限制")
                     del self._pending[:-LINE_LIMIT]
                 return
             line = bytes(self._pending[:newline]).rstrip(b"\r")
@@ -66,15 +75,63 @@ class ProtocolParser:
             self._parse_line(line)
 
     def finish(self) -> None:
-        if self._pending:
-            self._parse_line(bytes(self._pending).rstrip(b"\r"))
-            self._pending.clear()
+        if self._pending.startswith(b"[TEST]"):
+            self._fail("TEST 行缺少换行终止符")
+        self._pending.clear()
+
+    def _fail(self, reason: str) -> None:
+        if not self.failed:
+            self.failure_reason = reason
+        self.failed = True
 
     def _parse_line(self, line: bytes) -> None:
-        if line.startswith(b"[TEST] ") and b"FAIL" in line.split():
-            self.failed = True
+        if not line.startswith(b"[TEST]"):
+            return
+        if self.passed:
+            self._fail("总 PASS 后仍出现 TEST 行")
+            return
+        if b"FAIL" in line.split():
+            self._fail("协议报告 FAIL")
+            return
+
+        match = SUITE_BEGIN.fullmatch(line)
+        if match is not None:
+            if self._active_suite is not None:
+                self._fail("suite begin 嵌套或乱序")
+                return
+            self._active_suite = match.group(1)
+            self._case_passes = 0
+            return
+
+        match = CASE_PASS.fullmatch(line)
+        if match is not None:
+            if self._active_suite is None:
+                self._fail("case PASS 位于 suite 之外")
+                return
+            self._case_passes += 1
+            return
+
+        match = SUITE_PASS.fullmatch(line)
+        if match is not None:
+            if self._active_suite != match.group(1):
+                self._fail("suite PASS 名称不匹配或乱序")
+                return
+            if self._case_passes < 1:
+                self._fail("suite 没有成功 case")
+                return
+            self._active_suite = None
+            self._case_passes = 0
+            self._completed_suites += 1
+            return
+
         if line == PASS_LINE:
+            if self._active_suite is not None or self._completed_suites < 1:
+                self._fail("总 PASS 之前存在未完成或缺失的 suite")
+                return
             self.passed = True
+            return
+
+        self._fail("未知或格式错误的 TEST 行")
 
 
 def _positive_integer(value: str, name: str) -> int:
@@ -143,40 +200,100 @@ def _test_hook(stage: str) -> None:
     subprocess.run([_safe_text(hook, "测试 hook"), stage], check=True)
 
 
-def _group_exists(group: int) -> bool:
+def _leader_exited(process_id: int) -> bool:
+    """观察主进程退出但不回收，保持 PID/PGID 身份直到组清理完成。"""
+
+    result = os.waitid(
+        os.P_PID,
+        process_id,
+        os.WEXITED | os.WNOHANG | os.WNOWAIT,
+    )
+    return result is not None
+
+
+def _group_members(group: int) -> set[int]:
+    members: set[int] = set()
     try:
-        os.killpg(group, 0)
+        entries = os.scandir("/proc")
+    except OSError:
+        return members
+    with entries:
+        for entry in entries:
+            if not entry.name.isdecimal():
+                continue
+            try:
+                stat_line = Path(entry.path, "stat").read_text(
+                    encoding="ascii", errors="strict"
+                )
+                fields = stat_line[stat_line.rfind(")") + 2 :].split()
+                process_group = int(fields[2])
+            except (OSError, ValueError, IndexError, UnicodeError):
+                continue
+            if process_group == group:
+                members.add(int(entry.name))
+    return members
+
+
+def _signal_group(group: int, signum: int) -> None:
+    try:
+        os.killpg(group, signum)
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        pass
 
 
 def _cleanup(process: subprocess.Popen[bytes]) -> None:
-    """只向本次 start_new_session 创建的进程组发送信号。"""
+    """保留未回收 leader 锚点，只清理本次新建的会话进程组。"""
 
     group = process.pid
     try:
-        os.killpg(group, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+        actual_group = os.getpgid(process.pid)
+    except ProcessLookupError as error:
+        raise RunnerError("QEMU leader 在清理前已被意外回收") from error
+    if actual_group != group:
+        raise RunnerError("QEMU 未处于 runner 创建的独立进程组")
+
+    _signal_group(group, signal.SIGTERM)
     deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
-    while time.monotonic() < deadline and _group_exists(group):
+    while time.monotonic() < deadline:
+        leader_done = _leader_exited(process.pid)
+        descendants = _group_members(group) - {process.pid}
+        if leader_done and not descendants:
+            break
         time.sleep(0.01)
-    if _group_exists(group):
-        try:
-            os.killpg(group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+
+    if not _leader_exited(process.pid) or _group_members(group) - {process.pid}:
+        _signal_group(group, signal.SIGKILL)
+
+    disappearance_deadline = time.monotonic() + 2.0
+    while time.monotonic() < disappearance_deadline:
+        if _leader_exited(process.pid) and not (
+            _group_members(group) - {process.pid}
+        ):
+            break
+        time.sleep(0.01)
+
+    remaining = _group_members(group) - {process.pid}
+    if remaining:
+        raise RunnerError(f"QEMU 进程组仍有未清理成员：{sorted(remaining)}")
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _signal_group(group, signal.SIGKILL)
         process.wait(timeout=1.0)
+
+def _drain_serial(
+    stream: object, capture: BoundedTail, parser: ProtocolParser
+) -> None:
+    descriptor = stream.fileno()  # type: ignore[attr-defined]
+    while True:
+        try:
+            data = os.read(descriptor, READ_SIZE)
+        except BlockingIOError:
+            return
+        if not data:
+            return
+        capture.append(data)
+        parser.feed(data)
 
 
 def _command(qemu: str, image: str) -> list[str]:
@@ -216,8 +333,10 @@ def _run(arguments: argparse.Namespace) -> int:
     capture = BoundedTail(maximum)
     parser = ProtocolParser()
     interrupted = 0
+    leader_completed = False
     process: subprocess.Popen[bytes] | None = None
     hook_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
 
     def handle_signal(signum: int, _frame: object) -> None:
         nonlocal interrupted
@@ -225,7 +344,7 @@ def _run(arguments: argparse.Namespace) -> int:
 
     previous = {
         signum: signal.signal(signum, handle_signal)
-        for signum in (signal.SIGINT, signal.SIGTERM)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
     try:
         process = subprocess.Popen(
@@ -246,7 +365,7 @@ def _run(arguments: argparse.Namespace) -> int:
         selector.register(process.stderr, selectors.EVENT_READ, False)
         deadline = time.monotonic() + timeout
         try:
-            while not interrupted and not parser.failed and not parser.passed:
+            while not interrupted:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -262,7 +381,8 @@ def _run(arguments: argparse.Namespace) -> int:
                     if key.data:
                         capture.append(data)
                         parser.feed(data)
-                if process.poll() is not None and not selector.get_map():
+                if _leader_exited(process.pid):
+                    leader_completed = True
                     break
         finally:
             selector.close()
@@ -274,7 +394,18 @@ def _run(arguments: argparse.Namespace) -> int:
                 _test_hook("before-cleanup")
             except BaseException as error:  # 测试 hook 失败也必须继续清理。
                 hook_error = error
-            _cleanup(process)
+            try:
+                _cleanup(process)
+            except BaseException as error:
+                cleanup_error = error
+            assert process.stdout is not None
+            try:
+                _drain_serial(process.stdout, capture, parser)
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
             try:
                 _test_hook("after-cleanup")
             except BaseException as error:
@@ -290,8 +421,14 @@ def _run(arguments: argparse.Namespace) -> int:
     if hook_error is not None:
         print(f"QEMU 测试 hook 失败：{hook_error}", file=sys.stderr)
         return 1
+    if cleanup_error is not None:
+        print(f"QEMU 进程组清理失败：{cleanup_error}", file=sys.stderr)
+        return 1
+    if not leader_completed:
+        print("QEMU 超时，未完成真实退出握手", file=sys.stderr)
+        return 1
     if parser.failed:
-        print("QEMU 串口协议报告 FAIL", file=sys.stderr)
+        print(f"QEMU 串口协议失败：{parser.failure_reason}", file=sys.stderr)
         return 1
     if not parser.passed:
         print("QEMU 超时或缺少精确的最终 [TEST] all PASS", file=sys.stderr)
