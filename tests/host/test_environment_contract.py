@@ -873,6 +873,10 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             "runroot",
             "miniorangeos-dev-builder",
             "container.env",
+            "container.lock",
+            "flock",
+            "MINIOS_CONTAINER_INTENT",
+            "org.miniorangeos.intent",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, library)
@@ -897,7 +901,7 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("graphroot", content)
         self.assertIn("runroot", content)
         self.assertIn("buildx", content)
-        self.assertIn("miniorangeos-dev-builder", content)
+        self.assertIn("state_container_builder", content)
         self.assertIn("--all", content)
         self.assertNotIn("system prune", content)
 
@@ -911,7 +915,7 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             with self.subTest(path=relative_path):
                 content = self._read_required(relative_path).lower()
                 self.assertIn("container-storage", content)
-                self.assertIn("miniorangeos-dev-builder", content)
+                self.assertRegex(content, r"(?:state_)?container_builder")
 
     def test_environment_documentation_lists_public_interfaces(self) -> None:
         content = self._read_required("docs/environment.md")

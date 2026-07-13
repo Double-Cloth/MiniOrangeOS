@@ -4,6 +4,9 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/lib.sh"
 
+container_acquire_lifecycle_lock "$0" "$@"
+trap 'container_release_lifecycle_lock || true' EXIT
+
 apply=0
 case "${1:-}" in
     '') ;;
@@ -26,7 +29,6 @@ fi
 [[ "$STATE_CONTAINER_STORAGE_ROOT" == "$MINIOS_ENV_ROOT/container-storage" ]] || exit 1
 [[ "$STATE_CONTAINER_GRAPHROOT" == "$MINIOS_ENV_ROOT/container-storage/graphroot" ]] || exit 1
 [[ "$STATE_CONTAINER_RUNROOT" == "$MINIOS_ENV_ROOT/container-storage/runroot" ]] || exit 1
-[[ "$STATE_CONTAINER_BUILDER" == 'miniorangeos-dev-builder' ]] || exit 1
 [[ "$MINIOS_CONTAINER_STATE_FILE" == "$MINIOS_ENV_ROOT/state/container.env" ]] || exit 1
 
 if ((apply == 0)); then
@@ -51,7 +53,7 @@ if [[ "$STATE_CONTAINER_PHASE" == 'ready' ]]; then
     container_verify_state_ownership
     image_present=1
     if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-        container_probe_docker_builder
+        container_probe_docker_builder "$STATE_CONTAINER_BUILDER"
         if ((CONTAINER_BUILDER_PRESENT == 0)); then
             container_fail 'ready state 的固定 Buildx builder 缺失'
             exit 1
@@ -68,7 +70,7 @@ else
         image_present=1
     fi
     if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-        container_probe_docker_builder
+        container_probe_docker_builder "$STATE_CONTAINER_BUILDER"
         if ((CONTAINER_BUILDER_PRESENT == 1)); then
             builder_present=1
         fi
@@ -84,7 +86,7 @@ if [[ "$STATE_CONTAINER_IMAGE" != 'miniorangeos-dev:ubuntu-24.04' \
 fi
 
 if [[ "$STATE_CONTAINER_BACKEND" == 'docker' && $builder_present -eq 1 ]]; then
-    docker buildx rm --force "$MINIOS_CONTAINER_BUILDER"
+    docker buildx rm --force "$STATE_CONTAINER_BUILDER"
 fi
 if ((image_present == 1)); then
     "${CONTAINER_COMMAND[@]}" image rmi "$STATE_CONTAINER_LIVE_REF"

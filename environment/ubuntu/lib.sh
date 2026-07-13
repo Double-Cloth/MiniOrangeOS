@@ -22,12 +22,15 @@ readonly MINIOS_CONTAINER_LABEL_KEY="${MINIOS_CONTAINER_LABEL%%=*}"
 readonly MINIOS_CONTAINER_LABEL_VALUE="${MINIOS_CONTAINER_LABEL#*=}"
 readonly MINIOS_CONTAINER_TASK_LABEL_KEY="${MINIOS_CONTAINER_TASK_LABEL%%=*}"
 readonly MINIOS_CONTAINER_TASK_LABEL_VALUE="${MINIOS_CONTAINER_TASK_LABEL#*=}"
+readonly MINIOS_CONTAINER_INTENT_LABEL_KEY='org.miniorangeos.intent'
 readonly MINIOS_CONTAINER_STORAGE_ROOT="$MINIOS_ENV_ROOT/container-storage"
 readonly MINIOS_CONTAINER_GRAPHROOT="$MINIOS_CONTAINER_STORAGE_ROOT/graphroot"
 readonly MINIOS_CONTAINER_RUNROOT="$MINIOS_CONTAINER_STORAGE_ROOT/runroot"
-readonly MINIOS_CONTAINER_BUILDER='miniorangeos-dev-builder'
+readonly MINIOS_CONTAINER_BUILDER_PREFIX='miniorangeos-dev-builder-'
+readonly MINIOS_CONTAINER_PODMAN_BUILDER='podman-rootless'
 readonly MINIOS_CONTAINER_STATE_DIR="$MINIOS_ENV_ROOT/state"
 readonly MINIOS_CONTAINER_STATE_FILE="$MINIOS_CONTAINER_STATE_DIR/container.env"
+readonly MINIOS_CONTAINER_LOCK_FILE="$MINIOS_CONTAINER_STATE_DIR/container.lock"
 readonly MINIOS_CONTAINERFILE="$MINIOS_REPO_ROOT/environment/Containerfile"
 
 CONTAINER_BACKEND=''
@@ -53,6 +56,33 @@ container_normalize_image_id() {
         return 1
     fi
     printf 'sha256:%s\n' "$digest"
+}
+
+container_validate_intent() {
+    local intent="$1"
+    if [[ ! "$intent" =~ ^[0-9a-f]{32}$ ]]; then
+        container_fail "container intent 必须是 lowercase 128-bit nonce：${intent:-missing}"
+        return 1
+    fi
+}
+
+container_generate_intent() {
+    local intent
+    intent="$(/usr/bin/od -An -N16 -tx1 /dev/urandom \
+        | /usr/bin/tr -d ' \n')" || return $?
+    container_validate_intent "$intent" || return $?
+    printf '%s\n' "$intent"
+}
+
+container_expected_builder() {
+    local backend="$1"
+    local intent="$2"
+    container_validate_intent "$intent" || return $?
+    case "$backend" in
+        podman) printf '%s\n' "$MINIOS_CONTAINER_PODMAN_BUILDER" ;;
+        docker) printf '%s%s\n' "$MINIOS_CONTAINER_BUILDER_PREFIX" "$intent" ;;
+        *) container_fail "无法为未知 backend 派生 builder：$backend"; return 1 ;;
+    esac
 }
 
 container_assert_lexical_path() {
@@ -210,6 +240,111 @@ container_assert_state_metadata() {
     fi
 }
 
+container_assert_lock_metadata() {
+    local file_type
+    local file_uid
+    local file_mode
+    local current_uid
+
+    current_uid="$(id -u)" || return $?
+    IFS='|' read -r file_type file_uid file_mode < <(
+        stat -c '%F|%u|%a' -- "$MINIOS_CONTAINER_LOCK_FILE"
+    )
+    if [[ "$file_type" != 'regular file' \
+        && "$file_type" != 'regular empty file' ]]; then
+        container_fail 'container lifecycle lock 必须是普通文件'
+        return 1
+    fi
+    if [[ "$file_uid" != "$current_uid" \
+        || "$file_mode" != '600' ]]; then
+        container_fail 'container lifecycle lock 必须是当前用户拥有、mode 0600 的普通文件'
+        return 1
+    fi
+}
+
+container_assert_parent_lifecycle_lock() {
+    local expected_flock
+    local parent_executable
+    local descriptor
+    local descriptor_target
+    local lock_fd_present=0
+    local status
+
+    expected_flock="$(readlink -e -- "$(command -v flock)")" || return $?
+    parent_executable="$(readlink -e -- "/proc/$PPID/exe")" || return $?
+    if [[ "$parent_executable" != "$expected_flock" ]]; then
+        container_fail '拒绝未由可信 flock 父进程持锁的 lifecycle 重入'
+        return 1
+    fi
+    for descriptor in "/proc/$PPID/fd/"*; do
+        descriptor_target="$(readlink -e -- "$descriptor" 2>/dev/null || true)"
+        if [[ "$descriptor_target" == "$MINIOS_CONTAINER_LOCK_FILE" ]]; then
+            lock_fd_present=1
+            break
+        fi
+    done
+    if ((lock_fd_present == 0)); then
+        container_fail 'flock 父进程未持有精确 lifecycle lock 文件'
+        return 1
+    fi
+    if flock --exclusive --nonblock "$MINIOS_CONTAINER_LOCK_FILE" \
+        /usr/bin/true 2>/dev/null; then
+        container_fail 'lifecycle 重入时预期锁未被持有'
+        return 1
+    else
+        status=$?
+        if ((status != 1)); then
+            container_fail "验证 lifecycle lock 持有状态失败：status=$status"
+            return "$status"
+        fi
+    fi
+}
+
+container_acquire_lifecycle_lock() {
+    local lifecycle_script="${1:-}"
+
+    container_prepare_directory "$MINIOS_CONTAINER_STATE_DIR" \
+        "$MINIOS_ENV_ROOT/state" || return $?
+    container_assert_owned_path "$MINIOS_CONTAINER_LOCK_FILE" \
+        "$MINIOS_ENV_ROOT/state/container.lock" || return $?
+    if [[ -L "$MINIOS_CONTAINER_LOCK_FILE" ]]; then
+        container_fail 'container lifecycle lock 不能是 symlink'
+        return 1
+    fi
+    if [[ ! -e "$MINIOS_CONTAINER_LOCK_FILE" ]]; then
+        if ! (umask 077; set -o noclobber; : >"$MINIOS_CONTAINER_LOCK_FILE") \
+            2>/dev/null; then
+            if [[ ! -e "$MINIOS_CONTAINER_LOCK_FILE" \
+                || -L "$MINIOS_CONTAINER_LOCK_FILE" ]]; then
+                container_fail '无法安全创建 container lifecycle lock'
+                return 1
+            fi
+        fi
+    fi
+    container_assert_lock_metadata || return $?
+
+    # 由 flock 进程持锁，并在执行 lifecycle 脚本前关闭子进程中的锁 FD。
+    # 因此外层进程即使遭 SIGKILL，锁也会立即释放，不会被 backend 子进程继承。
+    if [[ "${MINIOS_CONTAINER_LIFECYCLE_LOCKED:-0}" == '1' ]]; then
+        container_assert_parent_lifecycle_lock
+        return $?
+    fi
+    if [[ -z "$lifecycle_script" ]]; then
+        container_fail 'container lifecycle lock 缺少重入脚本路径'
+        return 2
+    fi
+    lifecycle_script="$(realpath -e -- "$lifecycle_script")" || return $?
+    exec flock --exclusive --nonblock --close --verbose \
+        "$MINIOS_CONTAINER_LOCK_FILE" \
+        /usr/bin/env MINIOS_CONTAINER_LIFECYCLE_LOCKED=1 \
+        /usr/bin/bash "$lifecycle_script" "${@:2}"
+}
+
+container_release_lifecycle_lock() {
+    # 锁归属 flock 包装进程；lifecycle 子进程退出时由内核自动释放。
+    return 0
+}
+
 container_prepare_project_paths() {
     container_prepare_directory "$MINIOS_ENV_ROOT" "$MINIOS_ENV_ROOT" || return $?
     container_prepare_directory "$MINIOS_CONTAINER_STORAGE_ROOT" \
@@ -300,10 +435,12 @@ container_expected_live_ref() {
 
 container_inspect_image() {
     local live_ref="$1"
-    local expected_id="${2:-}"
+    local expected_intent="$2"
+    local expected_id="${3:-}"
     local actual_id
     local actual_label
     local actual_task_label
+    local actual_intent_label
     local actual_names
     local normalized_expected=''
 
@@ -316,6 +453,9 @@ container_inspect_image() {
     actual_task_label="$("${CONTAINER_COMMAND[@]}" image inspect \
         --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_TASK_LABEL_KEY\" }}" \
         "$live_ref")" || return $?
+    actual_intent_label="$("${CONTAINER_COMMAND[@]}" image inspect \
+        --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_INTENT_LABEL_KEY\" }}" \
+        "$live_ref")" || return $?
     actual_names="$("${CONTAINER_COMMAND[@]}" image inspect \
         --format '{{join .RepoTags "\n"}}' "$live_ref")" || return $?
 
@@ -325,6 +465,11 @@ container_inspect_image() {
     fi
     if [[ "$actual_task_label" != "$MINIOS_CONTAINER_TASK_LABEL_VALUE" ]]; then
         container_fail "镜像 task label 不属于当前任务：${actual_task_label:-missing}"
+        return 1
+    fi
+    container_validate_intent "$expected_intent" || return $?
+    if [[ "$actual_intent_label" != "$expected_intent" ]]; then
+        container_fail "镜像 intent label 与 state nonce 不一致：actual=${actual_intent_label:-missing}"
         return 1
     fi
     if ! grep -Fqx -- "$live_ref" <<<"$actual_names"; then
@@ -382,9 +527,14 @@ container_probe_image() {
 }
 
 container_probe_docker_builder() {
+    local builder="$1"
     local names
     local matches
     local status
+    if [[ ! "$builder" =~ ^miniorangeos-dev-builder-[0-9a-f]{32}$ ]]; then
+        container_fail "Docker builder 名称不符合 nonce 派生规则：$builder"
+        return 1
+    fi
     CONTAINER_BUILDER_PRESENT=0
     if names="$(docker buildx ls --format '{{.Name}}')"; then
         :
@@ -393,14 +543,19 @@ container_probe_docker_builder() {
         container_fail "Docker Buildx builder 探测失败：status=$status"
         return "$status"
     fi
-    matches="$(grep -Fxc -- "$MINIOS_CONTAINER_BUILDER" <<<"$names" || true)"
+    matches="$(grep -Fxc -- "$builder" <<<"$names" || true)"
     if [[ "$matches" == '0' ]]; then
         return 0
     fi
     if [[ "$matches" != '1' ]]; then
-        container_fail "固定 Buildx builder 名称出现多次：$MINIOS_CONTAINER_BUILDER"
+        container_fail "nonce 派生 Buildx builder 名称出现多次：$builder"
         return 1
     fi
+    docker buildx inspect "$builder" >/dev/null || {
+        status=$?
+        container_fail "Docker Buildx builder inspect 失败：builder=$builder status=$status"
+        return "$status"
+    }
     CONTAINER_BUILDER_PRESENT=1
 }
 
@@ -410,6 +565,7 @@ STATE_CONTAINER_NAME=''
 STATE_CONTAINER_IMAGE=''
 STATE_CONTAINER_LIVE_REF=''
 STATE_CONTAINER_LABEL=''
+STATE_CONTAINER_INTENT=''
 STATE_CONTAINER_IMAGE_ID=''
 STATE_CONTAINER_BASE_DIGEST=''
 STATE_CONTAINER_STORAGE_ROOT=''
@@ -430,6 +586,7 @@ container_load_state() {
     STATE_CONTAINER_IMAGE=''
     STATE_CONTAINER_LIVE_REF=''
     STATE_CONTAINER_LABEL=''
+    STATE_CONTAINER_INTENT=''
     STATE_CONTAINER_IMAGE_ID=''
     STATE_CONTAINER_BASE_DIGEST=''
     STATE_CONTAINER_STORAGE_ROOT=''
@@ -464,6 +621,7 @@ container_load_state() {
             MINIOS_CONTAINER_IMAGE) STATE_CONTAINER_IMAGE="$value" ;;
             MINIOS_CONTAINER_LIVE_REF) STATE_CONTAINER_LIVE_REF="$value" ;;
             MINIOS_CONTAINER_LABEL) STATE_CONTAINER_LABEL="$value" ;;
+            MINIOS_CONTAINER_INTENT) STATE_CONTAINER_INTENT="$value" ;;
             MINIOS_CONTAINER_IMAGE_ID) STATE_CONTAINER_IMAGE_ID="$value" ;;
             MINIOS_CONTAINER_BASE_DIGEST) STATE_CONTAINER_BASE_DIGEST="$value" ;;
             MINIOS_CONTAINER_STORAGE_ROOT) STATE_CONTAINER_STORAGE_ROOT="$value" ;;
@@ -479,7 +637,7 @@ container_load_state() {
     for required in \
         STATE_CONTAINER_PHASE STATE_CONTAINER_BACKEND STATE_CONTAINER_NAME \
         STATE_CONTAINER_IMAGE STATE_CONTAINER_LIVE_REF \
-        STATE_CONTAINER_LABEL STATE_CONTAINER_IMAGE_ID \
+        STATE_CONTAINER_LABEL STATE_CONTAINER_INTENT STATE_CONTAINER_IMAGE_ID \
         STATE_CONTAINER_BASE_DIGEST STATE_CONTAINER_STORAGE_ROOT \
         STATE_CONTAINER_GRAPHROOT STATE_CONTAINER_RUNROOT \
         STATE_CONTAINER_BUILDER STATE_CONTAINER_SOURCE_VERSION; do
@@ -492,6 +650,7 @@ container_load_state() {
 
 container_validate_loaded_state_boundaries() {
     local expected_live_ref
+    local expected_builder
     local normalized_image_id
     if [[ "$STATE_CONTAINER_PHASE" != 'creating' \
         && "$STATE_CONTAINER_PHASE" != 'ready' \
@@ -513,9 +672,15 @@ container_validate_loaded_state_boundaries() {
         || "$STATE_CONTAINER_IMAGE" != "$MINIOS_CONTAINER_IMAGE" \
         || "$STATE_CONTAINER_LABEL" != "$MINIOS_CONTAINER_LABEL" \
         || "$STATE_CONTAINER_BASE_DIGEST" != "$MINIOS_CONTAINER_BASE_DIGEST" \
-        || "$STATE_CONTAINER_SOURCE_VERSION" != "$MINIOS_CONTAINER_SOURCE_VERSION" \
-        || "$STATE_CONTAINER_BUILDER" != "$MINIOS_CONTAINER_BUILDER" ]]; then
+        || "$STATE_CONTAINER_SOURCE_VERSION" != "$MINIOS_CONTAINER_SOURCE_VERSION" ]]; then
         container_fail 'container state 固定标识不匹配'
+        return 1
+    fi
+    container_validate_intent "$STATE_CONTAINER_INTENT" || return $?
+    expected_builder="$(container_expected_builder \
+        "$STATE_CONTAINER_BACKEND" "$STATE_CONTAINER_INTENT")" || return $?
+    if [[ "$STATE_CONTAINER_BUILDER" != "$expected_builder" ]]; then
+        container_fail "container builder 不是 state intent 的精确派生值：actual=$STATE_CONTAINER_BUILDER expected=$expected_builder"
         return 1
     fi
     if [[ "$STATE_CONTAINER_PHASE" == 'creating' \
@@ -550,7 +715,8 @@ container_validate_loaded_state_boundaries() {
 container_verify_state_ownership() {
     local live_id
     live_id="$(container_inspect_image \
-        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_IMAGE_ID")" || return $?
+        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_INTENT" \
+        "$STATE_CONTAINER_IMAGE_ID")" || return $?
     if [[ "$STATE_CONTAINER_IMAGE" != "$MINIOS_CONTAINER_IMAGE" \
         || "$STATE_CONTAINER_LABEL" != "$MINIOS_CONTAINER_LABEL" ]]; then
         container_fail 'container state 的 image name 或 OCI label 不匹配'
@@ -564,7 +730,17 @@ container_write_state() {
     local backend="$2"
     local live_ref="$3"
     local image_id="$4"
+    local intent="$5"
+    local builder="$6"
     local partial
+    local expected_builder
+    container_validate_intent "$intent" || return $?
+    expected_builder="$(container_expected_builder "$backend" "$intent")" \
+        || return $?
+    if [[ "$builder" != "$expected_builder" ]]; then
+        container_fail "拒绝写入非 intent 派生 builder：actual=$builder expected=$expected_builder"
+        return 1
+    fi
     case "$phase" in
         creating)
             if [[ "$image_id" != 'pending' ]]; then
@@ -599,12 +775,13 @@ container_write_state() {
         "MINIOS_CONTAINER_IMAGE=$MINIOS_CONTAINER_IMAGE" \
         "MINIOS_CONTAINER_LIVE_REF=$live_ref" \
         "MINIOS_CONTAINER_LABEL=$MINIOS_CONTAINER_LABEL" \
+        "MINIOS_CONTAINER_INTENT=$intent" \
         "MINIOS_CONTAINER_IMAGE_ID=$image_id" \
         "MINIOS_CONTAINER_BASE_DIGEST=$MINIOS_CONTAINER_BASE_DIGEST" \
         "MINIOS_CONTAINER_STORAGE_ROOT=$MINIOS_CONTAINER_STORAGE_ROOT" \
         "MINIOS_CONTAINER_GRAPHROOT=$MINIOS_CONTAINER_GRAPHROOT" \
         "MINIOS_CONTAINER_RUNROOT=$MINIOS_CONTAINER_RUNROOT" \
-        "MINIOS_CONTAINER_BUILDER=$MINIOS_CONTAINER_BUILDER" \
+        "MINIOS_CONTAINER_BUILDER=$builder" \
         "MINIOS_CONTAINER_SOURCE_VERSION=$MINIOS_CONTAINER_SOURCE_VERSION" \
         >"$partial"; then
         rm -f -- "$partial"
@@ -620,7 +797,8 @@ container_write_state() {
 container_transition_phase() {
     local phase="$1"
     container_write_state "$phase" "$STATE_CONTAINER_BACKEND" \
-        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_IMAGE_ID" || return $?
+        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_IMAGE_ID" \
+        "$STATE_CONTAINER_INTENT" "$STATE_CONTAINER_BUILDER" || return $?
     STATE_CONTAINER_PHASE="$phase"
 }
 
@@ -661,16 +839,17 @@ container_recover_creating_state() {
     container_probe_image "$STATE_CONTAINER_LIVE_REF" || return $?
     if ((CONTAINER_IMAGE_PRESENT == 1)); then
         if [[ "$STATE_CONTAINER_IMAGE_ID" == 'pending' ]]; then
-            container_inspect_image "$STATE_CONTAINER_LIVE_REF" >/dev/null \
-                || return $?
+            container_inspect_image "$STATE_CONTAINER_LIVE_REF" \
+                "$STATE_CONTAINER_INTENT" >/dev/null || return $?
         else
             container_inspect_image "$STATE_CONTAINER_LIVE_REF" \
-                "$STATE_CONTAINER_IMAGE_ID" >/dev/null || return $?
+                "$STATE_CONTAINER_INTENT" "$STATE_CONTAINER_IMAGE_ID" \
+                >/dev/null || return $?
         fi
         image_present=1
     fi
     if [[ "$STATE_CONTAINER_BACKEND" == 'docker' ]]; then
-        container_probe_docker_builder || return $?
+        container_probe_docker_builder "$STATE_CONTAINER_BUILDER" || return $?
         if ((CONTAINER_BUILDER_PRESENT == 1)); then
             builder_present=1
         fi
@@ -683,7 +862,7 @@ container_recover_creating_state() {
             || return $?
     fi
     if ((builder_present == 1)); then
-        docker buildx rm --force "$MINIOS_CONTAINER_BUILDER" || return $?
+        docker buildx rm --force "$STATE_CONTAINER_BUILDER" || return $?
     fi
     container_remove_storage_components || return $?
     container_remove_state_partials || return $?
