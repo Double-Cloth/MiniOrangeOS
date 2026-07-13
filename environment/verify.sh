@@ -5,6 +5,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 minios_load_versions
+readonly MINIOS_WSL_IDENTITY_FILE='/etc/miniorangeos/instance.identity'
 
 failure_count=0
 
@@ -46,6 +47,18 @@ verify_wsl2_runtime_identity() {
         && "${osrelease,,}" == *wsl2* \
         && "${version,,}" == *microsoft* \
         && "${version,,}" == *wsl2* ]]
+}
+
+verify_wsl_instance_identity() {
+    local -a lines
+    runtime_fact_is_trusted "$MINIOS_WSL_IDENTITY_FILE" || return 1
+    [[ "$(stat -c %a -- "$MINIOS_WSL_IDENTITY_FILE")" == '644' ]] || return 1
+    mapfile -t lines <"$MINIOS_WSL_IDENTITY_FILE"
+    ((${#lines[@]} == 4)) \
+        && [[ "${lines[0]}" == 'schema=1' \
+            && "${lines[1]}" == "distro=${WSL_DISTRO_NAME:-}" \
+            && "${lines[2]}" =~ ^registration_id=\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$ \
+            && "${lines[3]}" =~ ^base_path_sha256=[0-9a-f]{64}$ ]]
 }
 
 verify_container_runtime_identity() {
@@ -94,8 +107,9 @@ if [[ "${MINIOS_CONTAINER:-}" == "1" ]] && verify_container_runtime_identity; th
     environment_kind="container"
     record_pass "isolation" "project-container"
 elif [[ -z "${MINIOS_CONTAINER:-}" \
-    && "${WSL_DISTRO_NAME:-}" =~ ^MiniOrangeOS-Dev(-Test-[A-Za-z0-9][A-Za-z0-9_-]*)?$ \
-    && verify_wsl2_runtime_identity ]]; then
+    && "${WSL_DISTRO_NAME:-}" =~ ^MiniOrangeOS-Dev(-Test-[A-Za-z0-9][A-Za-z0-9_-]*)?$ ]] \
+    && verify_wsl2_runtime_identity \
+    && verify_wsl_instance_identity; then
     environment_kind="wsl"
     record_pass "isolation" "$WSL_DISTRO_NAME"
 else

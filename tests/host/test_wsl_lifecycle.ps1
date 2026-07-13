@@ -59,7 +59,7 @@ function Invoke-WithFakeLxss {
 
     function Get-ChildItem {
         param([string]$LiteralPath)
-        [pscustomobject]@{ PSPath = 'HKCU:\FakeLxss\Owned' }
+        [pscustomobject]@{ PSPath = 'HKCU:\FakeLxss\{11111111-2222-3333-4444-555555555555}' }
     }
     function Get-ItemProperty {
         param([string]$LiteralPath)
@@ -337,7 +337,12 @@ try {
             WslExecutable = $FakeWsl
         }
         Invoke-WithFakeLxss $CreateScript $Args $DistroName $InstallPath
-        Assert-True ((Read-FakeLog $FakeLog) -notmatch '--import') '已有发行版仍触发 import'
+        $Log = Read-FakeLog $FakeLog
+        Assert-True ($Log -notmatch '--import') '已有发行版仍触发 import'
+        Assert-True ($Log -match '--provision-wsl-identity') '已有发行版未安全 provision identity record'
+        Assert-True ($Log -match '--expected-distro') 'identity provision 未绑定精确发行版名'
+        Assert-True ($Log -match '--registration-id') 'identity provision 未绑定 Lxss registration ID'
+        Assert-True ($Log -match '--base-path-sha256') 'identity provision 未绑定 BasePath identity'
     }
 
     Invoke-Test '四个 WSL 入口拒绝非单路径段测试名称' {
@@ -663,7 +668,7 @@ try {
         & $EnterScript -Command 'test "$(printf enter-ok && printf second)" = enter-oksecond'
     }
 
-    Invoke-Test 'bootstrap 阶段拒绝错误权限且不触发 apt 或工具链' {
+    Invoke-Test '正式 bootstrap 缺少可信 identity 时只读拒绝' {
         $BootstrapFullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'environment\bootstrap-inside.sh'))
         $BootstrapDrive = $BootstrapFullPath.Substring(0, 1).ToLowerInvariant()
         $BootstrapPath = "/mnt/$BootstrapDrive/" + $BootstrapFullPath.Substring(3).Replace('\', '/')
@@ -674,7 +679,7 @@ try {
             $SystemStatus = $LASTEXITCODE
             Assert-True ($SystemStatus -ne 0) '普通用户执行 system-only 应失败'
             Assert-True (($SystemOutput -join "`n") -match 'FAIL') 'system-only 失败缺少诊断'
-            Assert-True (($SystemOutput -join "`n") -match '--system-only 必须由 root') '真实 os-release 与可信 root-owned 用户祖先未通过只读门'
+            Assert-True (($SystemOutput -join "`n") -match 'identity record') '正式发行版缺少 identity 时未在权限检查前拒绝'
 
             $ToolchainOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $BootstrapPath --toolchain-only 2>&1)
             $ToolchainStatus = $LASTEXITCODE
@@ -693,7 +698,7 @@ try {
 set -euo pipefail
 
 source_script='__MINIOS_BOOTSTRAP_SOURCE__'
-for token in MINIOS_WSL_CONF_PATH --write-package-lock validate_isolation_identity validate_environment_root run_as_target; do
+for token in MINIOS_WSL_CONF_PATH --prepare-package-state validate_isolation_identity validate_environment_root run_as_target; do
     grep -Fq -- "$token" "$source_script" || {
         printf 'RED missing bootstrap safety token: %s\n' "$token" >&2
         exit 99
@@ -913,6 +918,7 @@ script="$root/repo/environment/bootstrap-inside.sh"
 good_os="$standard_os_root/etc/os-release"
 bad_os="$bad_os_root/etc/os-release"
 wsl_conf="$root/wsl.conf"
+identity_file="$root/instance.identity"
 
 apt_lines() { wc -l <"$apt_log"; }
 expect_gate_failure() {
@@ -941,8 +947,44 @@ common=(
     MINIOS_BOOTSTRAP_TEST_MODE=1
     "MINIOS_BOOTSTRAP_TEST_ROOT=$root"
     "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root"
+    "MINIOS_WSL_IDENTITY_FILE=$identity_file"
     "MINIOS_WSL_CONF_PATH=$wsl_conf"
 )
+
+identity_args=(
+    --provision-wsl-identity
+    --expected-distro MiniOrangeOS-Dev
+    --registration-id '{11111111-2222-3333-4444-555555555555}'
+    --base-path-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+)
+before_identity_apt="$(apt_lines)"
+"${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" "${identity_args[@]}"
+[[ "$(apt_lines)" == "$before_identity_apt" ]] || { printf 'identity provision reached apt\n' >&2; exit 1; }
+[[ "$(stat -c '%F|%u|%a' "$identity_file")" == 'regular file|0|644' ]] || { printf 'identity metadata mismatch\n' >&2; exit 1; }
+identity_before="$(sha256sum "$identity_file")"
+"${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" "${identity_args[@]}"
+[[ "$(sha256sum "$identity_file")" == "$identity_before" ]] || { printf 'identity idempotency mismatch\n' >&2; exit 1; }
+if "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" --provision-wsl-identity --expected-distro MiniOrangeOS-Dev \
+    --registration-id '{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}' \
+    --base-path-sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; then
+    printf 'mismatched identity was overwritten\n' >&2
+    exit 1
+fi
+[[ "$(sha256sum "$identity_file")" == "$identity_before" ]] || { printf 'mismatched provision changed identity\n' >&2; exit 1; }
+expect_gate_failure wsl2-spoof-missing-record "${common[@]}" \
+    MINIOS_WSL_IDENTITY_FILE="$root/missing.identity" \
+    MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev-Test-Foreign \
+    "$script" --system-only
+mismatched_identity="$root/mismatched.identity"
+sed 's/^distro=.*/distro=MiniOrangeOS-Dev-Test-Foreign/' "$identity_file" >"$mismatched_identity"
+chmod 0644 "$mismatched_identity"
+expect_gate_failure wsl2-spoof-mismatched-record "${common[@]}" \
+    MINIOS_WSL_IDENTITY_FILE="$mismatched_identity" \
+    MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" --system-only
 
 create_os_case() {
     local name="$1"
@@ -1090,7 +1132,7 @@ tail -n 1 "$useradd_log" | grep -Fqx -- 'useradd <--create-home> <--shell> </bin
     "FAKE_MINIOS_MODE=missing" "FAKE_USER_STATE=$missing_state" \
     "FAKE_EXPECTED_HOME=$missing_home" "FAKE_WRONG_HOME=$missing_wrong_home" \
     "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_WSL_IDENTITY_FILE=$identity_file" "MINIOS_OS_RELEASE_FILE=$good_os" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$missing_home/environment" \
     "$script" --toolchain-only --target-user minios
 grep -Fq -- "root=$missing_home/environment" "$tool_log"
@@ -1128,7 +1170,7 @@ expect_gate_failure container-missing-user \
 if /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" FAKE_MINIOS_MODE=missing \
     "FAKE_USER_STATE=$missing_state" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_WSL_IDENTITY_FILE=$identity_file" "MINIOS_OS_RELEASE_FILE=$good_os" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --toolchain-only --target-user minios; then
     printf 'toolchain-only created missing user\n' >&2
     exit 1
@@ -1250,6 +1292,35 @@ exercise_state_failure state-writable sh -c 'mkdir -- "$1"; chown "minios:$2" "$
 exercise_state_failure lock-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; ln -s -- "$3" "$1/apt-packages.lock"' sh "$state_path" "$target_uid" "$protected/sentinel"
 exercise_state_failure partial-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; ln -s -- "$3" "$1/apt-packages.lock.partial.attack"' sh "$state_path" "$target_uid" "$protected/sentinel"
 rm -rf -- "$state_path"
+
+race_hook="$root/fake/state-race-hook"
+cat >"$race_hook" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == after-partial ]]
+mv -- "$FAKE_RACE_STATE" "$FAKE_RACE_ORIGINAL"
+ln -s -- "$FAKE_RACE_OUTSIDE" "$FAKE_RACE_STATE"
+EOF
+chmod 0755 "$race_hook"
+mkdir -- "$state_path"
+chown "minios:$target_uid" "$state_path"
+chmod 0755 "$state_path"
+race_original="$environment_root/state-original"
+race_apt_before="$(apt_lines)"
+if "${positive[@]}" MINIOS_PACKAGE_STATE_RACE_HOOK="$race_hook" \
+    MINIOS_PACKAGE_STATE_RACE_PHASE=after-partial \
+    "FAKE_RACE_STATE=$state_path" "FAKE_RACE_ORIGINAL=$race_original" \
+    "FAKE_RACE_OUTSIDE=$protected" "$script" --system-only; then
+    printf 'state parent race unexpectedly passed\n' >&2
+    exit 1
+fi
+[[ "$(apt_lines)" == "$((race_apt_before + 2))" ]] || { printf 'race did not occur after apt phases\n' >&2; exit 1; }
+[[ -L "$state_path" && "$(readlink -- "$state_path")" == "$protected" ]] || { printf 'race hook did not replace pathname\n' >&2; exit 1; }
+[[ ! -e "$protected/apt-packages.lock" && ! -L "$protected/apt-packages.lock" ]] || { printf 'race wrote external final lock\n' >&2; exit 1; }
+[[ -z "$(find "$protected" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'race wrote external partial\n' >&2; exit 1; }
+[[ -z "$(find "$race_original" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'anchored partial cleanup failed\n' >&2; exit 1; }
+rm -f -- "$state_path"
+rm -rf -- "$race_original"
 positive_apt_before="$(apt_lines)"
 "${positive[@]}" "$script" --system-only
 lock="$environment_root/state/apt-packages.lock"
@@ -1271,7 +1342,7 @@ printf 'checkpoint=lock-idempotent\n'
 grep -Fq -- '<install>' "$apt_log"
 grep -Fq -- '<build-essential>' "$apt_log"
 grep -Fq -- '<MINIOS_ENV_ROOT=' "$runuser_log"
-grep -Fq -- '--write-package-lock' "$runuser_log"
+grep -Fq -- '--prepare-package-state' "$runuser_log"
 grep -Fq -- 'default=minios' "$wsl_conf"
 printf 'checkpoint=system-evidence\n'
 
@@ -1294,7 +1365,7 @@ printf 'checkpoint=root-ancestor-missing-final\n'
 /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_WSL_IDENTITY_FILE=$identity_file" \
     "MINIOS_OS_RELEASE_FILE=$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
     "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --toolchain-only --target-user minios
@@ -1306,7 +1377,7 @@ before_hint="$(apt_lines)"
 hint_output="$(/usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     MINIOS_BOOTSTRAP_TEST_MODE=1 "MINIOS_OS_RELEASE_FILE=$good_os" \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_WSL_IDENTITY_FILE=$identity_file" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --target-user minios 2>&1 || true)"
 [[ "$hint_output" == *'wsl.exe -d MiniOrangeOS-Dev -u root'* ]] || { printf 'hint output missing command: %s\n' "$hint_output" >&2; exit 1; }

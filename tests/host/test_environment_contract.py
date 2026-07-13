@@ -701,6 +701,20 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                 ):
                     self.assertIn(token, content)
 
+    def test_verify_invokes_runtime_and_instance_identity_checks(self) -> None:
+        content = self._without_comments(self._read_required("environment/verify.sh"))
+        isolation_gate = content[
+            content.index('if [[ "${MINIOS_CONTAINER:-}"') : content.index(
+                "printf 'environment_kind=", content.index('if [[ "${MINIOS_CONTAINER:-}"')
+            )
+        ].replace("\\\n", " ")
+        self.assertRegex(
+            isolation_gate,
+            r"elif\s+\[\[[\s\S]*?\]\]\s*"
+            r"&&\s*verify_wsl2_runtime_identity\s*"
+            r"&&\s*verify_wsl_instance_identity\s*;\s*then",
+        )
+
     def test_package_state_is_prepared_and_validated_before_apt(self) -> None:
         content = self._without_comments(
             self._read_required("environment/bootstrap-inside.sh")
@@ -717,6 +731,62 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         )
         for token in ("realpath", "stat", "target_uid", "022", "symlink"):
             self.assertIn(token, state_gate)
+
+    def test_wsl_identity_record_is_provisioned_from_lxss_gate(self) -> None:
+        create = self._without_comments(
+            self._read_required("environment/wsl/create.ps1"), powershell=True
+        )
+        bootstrap = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        verify = self._without_comments(self._read_required("environment/verify.sh"))
+        provision_call = create.find("Invoke-WslIdentityProvision")
+        ownership_call = create.find("Assert-WslDistributionOwnership")
+        self.assertGreater(provision_call, ownership_call)
+        for token in (
+            "--provision-wsl-identity",
+            "--expected-distro",
+            "--registration-id",
+            "--base-path-sha256",
+        ):
+            self.assertIn(token, create)
+        for content in (bootstrap, verify):
+            self.assertIn("/etc/miniorangeos/instance.identity", content)
+            self.assertIn("registration_id", content)
+            self.assertIn("base_path_sha256", content)
+        self.assertIn("MINIOS_WSL_IDENTITY_FILE", bootstrap)
+        self.assertIn("测试覆盖仅允许", bootstrap)
+
+    def test_package_lock_mutation_is_anchored_to_locked_dirfd(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        opener = self._function_body(
+            content, "open_and_lock_package_state", powershell=False
+        )
+        writer = self._function_body(
+            content, "write_package_lock_through_dirfd", powershell=False
+        )
+        system_phase = self._function_body(
+            content, "run_system_phase", powershell=False
+        )
+        for token in ("/proc/self/fd/", "flock", "%d:%i", "package_state_identity"):
+            self.assertIn(token, opener)
+        for token in (
+            "package_state_anchor",
+            "mktemp",
+            "chown",
+            "sync -f",
+            "mv --",
+            "assert_package_state_path_matches_fd",
+        ):
+            self.assertIn(token, writer)
+        open_position = system_phase.find("open_and_lock_package_state")
+        apt_position = system_phase.find("apt-get update")
+        write_position = system_phase.find("write_package_lock_through_dirfd")
+        self.assertGreaterEqual(open_position, 0)
+        self.assertGreater(apt_position, open_position)
+        self.assertGreater(write_position, apt_position)
 
     def test_bootstrap_gates_identity_user_and_environment_before_mutation(
         self,
