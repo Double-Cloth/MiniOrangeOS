@@ -4,9 +4,9 @@
 
 分支：`feature/T02-minimal-build-system`
 
-状态：**验收通过，待合并**
+状态：**完成并合并**
 
-Merge SHA：待回填
+Merge SHA：`83323db3cc5f39b4ed9daeed0337f687be712235`
 
 ## 实现摘要
 
