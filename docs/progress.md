@@ -4,7 +4,7 @@
 
 | 任务 | 状态 | 分支 | 测试证据 | 合并 |
 |---|---|---|---|---|
-| T00 | 验收通过，待合并 | feature/T00-project-bootstrap | ProjectLayoutTests 11/11 PASS | 待最终审查与 no-ff 合并 |
+| T00 | 完成 | feature/T00-project-bootstrap | ProjectLayoutTests 11/11 PASS | `def1657`：`merge: complete T00 project bootstrap` |
 | T01–T74 | 未开始 | — | — | — |
 
 ## 里程碑

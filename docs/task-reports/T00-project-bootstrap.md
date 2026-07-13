@@ -4,7 +4,7 @@
 
 分支：`feature/T00-project-bootstrap`
 
-验收状态：验收通过，待最终全分支审查后执行推送与 no-ff 合并。
+验收状态：完成；任务分支已推送，并通过独立 `--no-ff` 合并进入 `main`。
 
 环境：Windows 权威工作树；`MiniOrangeOS-Dev` Ubuntu 24.04 执行 Linux 契约测试。
 
@@ -70,14 +70,16 @@ wsl.exe --list --verbose
 - `e633a7b`、`64ae3fa`：建立并修正工程规范与真实 Ubuntu 指引。
 - `0a7b447`、`ebbeb0f`：同步权威文档、记录入口与 T01 环境边界。
 - `f58447e`：将旧 T01 规则检查收窄到 T01 章节。
-- 当前报告提交：记录最终预合并验证、进度与实施计划校正；完整 SHA 以提交后日志为准。
+- `6bd73b4`：记录最终预合并验证、进度与实施计划校正。
+- `4781d0f`：统一提交格式和 T01 环境脚本契约，并扩展 UTF-8/LF 测试覆盖。
+- `f579299`：同步最终 11/11 契约测试计数。
+- `def1657`：`merge: complete T00 project bootstrap`，以 `--no-ff` 合并到 `main`。
 
 ## 剩余风险与后续范围
 
 - `/mnt/d` 的构建性能、大小写和 Linux 权限语义风险保留，由 T02 的并行/增量构建及后续 Shell 可执行位测试持续验证。
 - T01 尚未实现可重复环境创建、备份、工具链安装、真实 Ubuntu 容器复验和定向销毁脚本。
 - 用户 PATH 中存在项目目录之外的预存 `gdb`；本任务未安装、删除或重新配置该工具。后续验收继续按来源区分项目自有工具与用户既有工具。
-- T00 分支尚未推送、尚未切换到 `main`、尚未合并或删除；这些操作待最终全分支审查后执行。
 
 ## 文档同步
 
@@ -85,4 +87,7 @@ wsl.exe --list --verbose
 
 ## 推送与合并状态
 
-待最终全分支审查后执行。当前报告不声称分支已推送、T00 已合并或远端已更新。
+- `feature/T00-project-bootstrap` 已推送至 `origin`，分支头为 `f579299a20f884b92b5a9eae4d563bffe52c0f06`。
+- 最终全分支审查结论为 `Approved for no-ff merge`。
+- `main` 已创建合并提交 `def165725ed9f670abadc2cd7ae80cbc7150dcc9`，提交主题为 `merge: complete T00 project bootstrap`。
+- 合并结果已在 WSL 中重新运行 `ProjectLayoutTests`，11/11 PASS；`origin/main` 已包含该合并提交。
