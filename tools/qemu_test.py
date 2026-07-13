@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import re
 import secrets
@@ -24,6 +25,8 @@ CASE_PASS = re.compile(rb"^\[TEST\] case=([A-Za-z0-9_.-]+) PASS$")
 READ_SIZE = 65536
 LINE_LIMIT = 262144
 TERMINATE_GRACE_SECONDS = 0.35
+PR_SET_CHILD_SUBREAPER = 36
+EXPECTED_DEBUG_EXIT_CODE = 33
 
 
 class RunnerError(Exception):
@@ -165,6 +168,38 @@ def _test_hook(stage: str) -> None:
     subprocess.run([_safe_text(hook, "测试 hook"), stage], check=True)
 
 
+def _enable_subreaper() -> None:
+    """让孤儿后代回到 runner，避免容器 PID 1 不及时回收僵尸。"""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    prctl.restype = ctypes.c_int
+    if prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise RunnerError(
+            f"无法启用 CHILD_SUBREAPER：{os.strerror(error_number)}"
+        )
+
+
+def _log_test_hook(stage: str, temporary_name: str) -> None:
+    if os.environ.get("MINIOS_TEST_MODE") != "1":
+        return
+    hook = os.environ.get("MINIOS_QEMU_LOG_TEST_HOOK")
+    if not hook:
+        return
+    subprocess.run(
+        [_safe_text(hook, "日志测试 hook"), stage, temporary_name],
+        check=True,
+    )
+
+
 def _leader_exited(process_id: int) -> bool:
     """观察主进程退出但不回收，保持 PID/PGID 身份直到组清理完成。"""
 
@@ -176,12 +211,14 @@ def _leader_exited(process_id: int) -> bool:
     return result is not None
 
 
-def _group_members(group: int) -> set[int]:
-    members: set[int] = set()
+def _group_processes(group: int) -> dict[int, tuple[str, int]]:
+    """返回本组 PID 到 (state, ppid) 的瞬时快照。"""
+
+    members: dict[int, tuple[str, int]] = {}
     try:
         entries = os.scandir("/proc")
-    except OSError:
-        return members
+    except OSError as error:
+        raise RunnerError(f"无法枚举 QEMU 进程组：{error}") from error
     with entries:
         for entry in entries:
             if not entry.name.isdecimal():
@@ -191,12 +228,27 @@ def _group_members(group: int) -> set[int]:
                     encoding="ascii", errors="strict"
                 )
                 fields = stat_line[stat_line.rfind(")") + 2 :].split()
+                state = fields[0]
+                parent = int(fields[1])
                 process_group = int(fields[2])
             except (OSError, ValueError, IndexError, UnicodeError):
                 continue
             if process_group == group:
-                members.add(int(entry.name))
+                members[int(entry.name)] = (state, parent)
     return members
+
+
+def _reap_adopted_group_zombies(group: int, leader: int) -> None:
+    """只回收已由 subreaper 收养的本组僵尸，leader 始终留到最后。"""
+
+    runner = os.getpid()
+    for process_id, (state, parent) in _group_processes(group).items():
+        if process_id == leader or state != "Z" or parent != runner:
+            continue
+        try:
+            os.waitpid(process_id, os.WNOHANG)
+        except ChildProcessError:
+            continue
 
 
 def _signal_group(group: int, signum: int) -> None:
@@ -219,32 +271,47 @@ def _cleanup(process: subprocess.Popen[bytes]) -> None:
 
     _signal_group(group, signal.SIGTERM)
     deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
+    empty_observations = 0
     while time.monotonic() < deadline:
+        _reap_adopted_group_zombies(group, process.pid)
         leader_done = _leader_exited(process.pid)
-        descendants = _group_members(group) - {process.pid}
+        descendants = set(_group_processes(group)) - {process.pid}
         if leader_done and not descendants:
-            break
+            empty_observations += 1
+            if empty_observations >= 3:
+                break
+        else:
+            empty_observations = 0
         time.sleep(0.01)
 
-    if not _leader_exited(process.pid) or _group_members(group) - {process.pid}:
+    if not _leader_exited(process.pid) or set(_group_processes(group)) - {
+        process.pid
+    }:
         _signal_group(group, signal.SIGKILL)
 
     disappearance_deadline = time.monotonic() + 2.0
+    empty_observations = 0
     while time.monotonic() < disappearance_deadline:
+        _reap_adopted_group_zombies(group, process.pid)
         if _leader_exited(process.pid) and not (
-            _group_members(group) - {process.pid}
+            set(_group_processes(group)) - {process.pid}
         ):
-            break
+            empty_observations += 1
+            if empty_observations >= 3:
+                break
+        else:
+            empty_observations = 0
         time.sleep(0.01)
 
-    remaining = _group_members(group) - {process.pid}
-    if remaining:
-        raise RunnerError(f"QEMU 进程组仍有未清理成员：{sorted(remaining)}")
+    _reap_adopted_group_zombies(group, process.pid)
+    remaining = set(_group_processes(group)) - {process.pid}
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
         _signal_group(group, signal.SIGKILL)
         process.wait(timeout=1.0)
+    if remaining:
+        raise RunnerError(f"QEMU 进程组仍有未清理成员：{sorted(remaining)}")
 
 def _drain_serial(
     stream: object, capture: BoundedTail, parser: ProtocolParser
@@ -313,6 +380,7 @@ def _run_bound(
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
     try:
+        _enable_subreaper()
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -394,6 +462,14 @@ def _run_bound(
     if not leader_completed:
         print("QEMU 超时，未完成真实退出握手", file=sys.stderr)
         return 1
+    assert process is not None
+    if process.returncode != EXPECTED_DEBUG_EXIT_CODE:
+        print(
+            "QEMU 退出码错误："
+            f"expected={EXPECTED_DEBUG_EXIT_CODE} actual={process.returncode}",
+            file=sys.stderr,
+        )
+        return 1
     if parser.failed:
         print(f"QEMU 串口协议失败：{parser.failure_reason}", file=sys.stderr)
         return 1
@@ -408,7 +484,7 @@ def _run(arguments: argparse.Namespace) -> int:
     repo = os.path.abspath(_safe_text(arguments.repo, "repo"))
     with BoundBuild.open(repo, arguments.build_dir) as build:
         with build.open_file(arguments.image, "镜像") as image:
-            with build.bind_log(arguments.log) as log:
+            with build.bind_log(arguments.log, _log_test_hook) as log:
                 return _run_bound(arguments, image, log)
 
 
