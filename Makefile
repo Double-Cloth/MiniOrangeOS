@@ -106,6 +106,7 @@ KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
 KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
+STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
 STAGE2_OBJ := $(STAGE2_BUILD_DIR)/entry.o
 STAGE2_DEP := $(STAGE2_BUILD_DIR)/entry.d
 STAGE2_ELF := $(BOOT_BUILD_DIR)/stage2.elf
@@ -181,8 +182,11 @@ test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
 
-$(STAGE1_BIN): boot/stage1/boot.asm | prepare-build-dir
-	$(NASM) -f bin -o "$@" "$<"
+$(STAGE1_LAYOUT_INC): config/image-layout.json tools/generate_boot_layout.py | prepare-build-dir
+	$(PYTHON) tools/generate_boot_layout.py --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)" --layout "$<" --output "$@"
+
+$(STAGE1_BIN): boot/stage1/boot.asm $(STAGE1_LAYOUT_INC) | prepare-build-dir
+	$(NASM) -I "$(BOOT_BUILD_DIR)/" -f bin -o "$@" "$<"
 
 $(STAGE2_OBJ): boot/stage2/entry.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(STAGE2_DEP)" -MT "$@" -o "$@" "$<"

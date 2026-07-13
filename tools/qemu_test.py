@@ -328,12 +328,20 @@ def _drain_serial(
         parser.feed(data)
 
 
-def _command(qemu: str, image: str) -> list[str]:
+def _command(qemu: str, image: str, drive_interface: str = "ide") -> list[str]:
     image_path = os.path.abspath(image)
     if any(character in image_path for character in (",", "\r", "\n", "\x00")):
         raise RunnerError("镜像路径含 QEMU drive 不支持的字符")
     if not os.path.isfile(image_path):
         raise RunnerError(f"镜像不是普通文件：{image}")
+    if drive_interface == "ide":
+        drive = f"file={image_path},format=raw,if=ide,index=0,media=disk"
+        boot = "c"
+    elif drive_interface == "floppy":
+        drive = f"file={image_path},format=raw,if=floppy,index=0"
+        boot = "a"
+    else:
+        raise RunnerError("drive-interface 仅支持 ide 或 floppy")
     return [
         _safe_text(qemu, "QEMU 可执行文件"),
         "-machine",
@@ -341,9 +349,9 @@ def _command(qemu: str, image: str) -> list[str]:
         "-m",
         "32M",
         "-drive",
-        f"file={image_path},format=raw,if=ide,index=0,media=disk",
+        drive,
         "-boot",
-        "c",
+        boot,
         "-display",
         "none",
         "-monitor",
@@ -362,7 +370,7 @@ def _run_bound(
 ) -> int:
     timeout = _positive_integer(arguments.timeout, "timeout")
     maximum = _positive_integer(arguments.max_log_bytes, "max-log-bytes")
-    command = _command(arguments.qemu, image.proc_path)
+    command = _command(arguments.qemu, image.proc_path, arguments.drive_interface)
     capture = BoundedTail(maximum)
     parser = ProtocolParser()
     interrupted = 0
@@ -497,6 +505,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-log-bytes", default="1048576")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--build-dir", default="build")
+    parser.add_argument(
+        "--drive-interface", choices=("ide", "floppy"), default="ide"
+    )
     return parser
 
 

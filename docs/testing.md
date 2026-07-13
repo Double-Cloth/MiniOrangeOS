@@ -85,6 +85,16 @@ python3 -m unittest discover -s tests/host -v
 
 T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 T10 正式 Boot Sector 已完成。
 
+## T10 最终回归证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中执行：
+
+- T10 Stage 1 合同与运行时测试：9/9 PASS；全量宿主测试：194/194 PASS；T03 QEMU 回归：35/35 PASS；
+- Boot Sector 严格 512 bytes、末尾 `55 AA`，EDD 读取按 64+63 扇区拆分且不跨物理 64 KiB DMA 边界；
+- 真实 IDE 镜像由 16 位 Stage 2 fixture 验证 `CS/DS/ES/SS/SP/DL/DF/IF` 后输出完整测试协议并以 debug-exit 33 退出；
+- 真实 floppy 缺失 Loader 时输出 `[S1] disk error`、不输出 `loader loaded`，并由 T03 runner 超时清理；
+- 布局生成器的严格 JSON、特殊文件、失败保留旧输出和增量依赖均有回归覆盖。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

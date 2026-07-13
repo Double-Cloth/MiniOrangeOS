@@ -124,3 +124,11 @@
 - 初版协议解析可能在看到局部 PASS 后提前成功，且信号、孤儿后代、PGID 复用和日志/镜像路径替换存在边界缺口；最终改为严格状态机、精确 debug-exit 退出码、subreaper 与已验证 FD 路径。
 - WSL 重挂载会同步改变 DrvFS `st_dev`；构建 marker 仅在路径、inode、schema 不变且 repo/build 设备号成对变化时接受重基，复制 marker 和单边变化仍拒绝。
 - 公开 `make test-qemu` 暴露 DrvFS 在 rename 后写 FD 未关闭时目标名暂不可见；提交逻辑关闭已 rename 的 FD 后，从重新验证的同一目录核对最终完整身份。真实 v9fs 用例已覆盖。
+
+## 2026-07-14 / T10 BIOS Stage 1 边界
+
+任务：T10
+
+- 单次从物理 `0x8000` 读取 127 扇区会跨 64 KiB DMA 边界；最终拆成 64+63 两个 DAP，并把 Loader 保留区统一为 `0x8000–0x17FFF`、E820 缓冲移至 `0x18000`。
+- 初版真实测试只看到 Stage 1 自报成功，无法证明跳转；最终用 16 位 fixture 核验交接寄存器和 debug-exit，同时用 floppy 路径验证错误停机与进程清理。
+- 布局生成器最终绑定 T02 marker/目录 FD，拒绝特殊文件、重复键、非有限数和含歧义路径，失败不覆盖已有 include，也不在源码树生成 bytecode。
