@@ -320,10 +320,14 @@ class BootStage2Tests(unittest.TestCase):
         assert load_index is not None and ah_index is not None and int_index is not None
         self.assertLess(load_index, ah_index)
         self.assertLess(ah_index, int_index)
-        self.assertEqual(
-            instructions[int_index + 1 : int_index + 2],
-            ["ret"],
-            "INT 13h 后必须直接返回，使调用方可同时观察 CF 与 AH",
+        return_path = instructions[int_index + 1 :]
+        self.assertTrue(return_path and return_path[-1] == "ret", "EDD 接口必须返回调用方")
+        self.assertTrue(
+            all(
+                re.fullmatch(r"pop\s+(?:es|ds|bp|di|si|dx|cx|bx)", instruction)
+                for instruction in return_path[:-1]
+            ),
+            "INT 13h 后只能恢复不影响 flags/AH 的寄存器再返回",
         )
 
     def test_real_product_image_logs_s1_then_s2_and_times_out_safely(self) -> None:
