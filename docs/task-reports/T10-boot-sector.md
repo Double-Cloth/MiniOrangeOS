@@ -4,9 +4,9 @@
 
 分支：`feature/T10-boot-sector`
 
-状态：**验收通过，待合并**
+状态：**完成并合并**
 
-Merge SHA：待合并
+Merge SHA：`789f18fcfbaafcc13691d8d170f90115eaa958b4`
 
 ## 实现摘要
 

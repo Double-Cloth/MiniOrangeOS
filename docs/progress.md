@@ -8,7 +8,7 @@
 | T01 | 完成 | feature/T01-environment-toolchain | 正式 WSL 工具链/幂等、rootless Podman 生命周期、host 124/124 与 PowerShell 29/29 PASS | `c07fe81`：`merge: complete T01 environment toolchain` |
 | T02 | 完成 | feature/T02-minimal-build-system | build 25/25、host 149/149、PowerShell 29/29、真实 clean/all/image PASS | `83323db`：`merge: complete T02 minimal build system` |
 | T03 | 完成 | feature/T03-qemu-test-framework | qemu 35/35、host 185/185、PowerShell 29/29、真实 image/test-qemu/GDB PASS | `5577dc4`：`merge: complete T03 qemu test framework` |
-| T10 | 验收通过，待合并 | feature/T10-boot-sector | stage1 9/9、host 194/194、T03 qemu 35/35、真实 IDE handoff/floppy error PASS | 待合并 |
+| T10 | 完成 | feature/T10-boot-sector | stage1 9/9、host 194/194、T03 qemu 35/35、真实 IDE handoff/floppy error PASS | `789f18f`：`merge: complete T10 BIOS boot sector` |
 | T11–T74 | 未开始 | — | — | — |
 
 ## 里程碑
