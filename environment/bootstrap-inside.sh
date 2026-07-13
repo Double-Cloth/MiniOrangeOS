@@ -572,6 +572,12 @@ validate_user_owned_existing_components() {
 
 validate_environment_root() {
     local requested_root
+    local lexical_root
+    local resolved_root
+    if [[ ${MINIOS_ENV_ROOT+x} == x && -z "${MINIOS_ENV_ROOT}" ]]; then
+        fail 'MINIOS_ENV_ROOT 不能是空值'
+        return 1
+    fi
     if [[ "$environment_kind" == 'container' ]]; then
         requested_root="${MINIOS_ENV_ROOT:-/opt/miniorangeos-dev}"
     else
@@ -581,10 +587,15 @@ validate_environment_root() {
         fail "MINIOS_ENV_ROOT 必须是绝对路径：$requested_root"
         return 1
     fi
-    environment_root="$(realpath -m -- "$requested_root")" || {
-        fail "无法规范化 MINIOS_ENV_ROOT：$requested_root"
+    lexical_root="$(realpath -ms -- "$requested_root")" || {
+        fail "需要支持 -ms 的 GNU realpath 才能词法校验 MINIOS_ENV_ROOT：$requested_root"
         return 1
     }
+    if [[ "$requested_root" != "$lexical_root" ]]; then
+        fail "MINIOS_ENV_ROOT 必须是无点段、无重复分隔符的规范绝对路径：$requested_root"
+        return 1
+    fi
+    environment_root="$lexical_root"
     if [[ "$environment_kind" == 'container' \
         && "$environment_root" != '/opt/miniorangeos-dev' ]] \
         && ! is_test_path "$environment_root"; then
@@ -619,6 +630,21 @@ validate_environment_root() {
         fi
     fi
     assert_no_symlink_components "$environment_root" || return $?
+    if [[ -e "$environment_root" || -L "$environment_root" ]]; then
+        resolved_root="$(realpath -e -- "$environment_root")" || {
+            fail "无法解析现有 MINIOS_ENV_ROOT：$environment_root"
+            return 1
+        }
+    else
+        resolved_root="$(realpath -m -- "$environment_root")" || {
+            fail "无法解析缺失的 MINIOS_ENV_ROOT：$environment_root"
+            return 1
+        }
+    fi
+    if [[ "$resolved_root" != "$environment_root" ]]; then
+        fail "MINIOS_ENV_ROOT 解析结果与词法路径不一致：lexical=$environment_root resolved=$resolved_root"
+        return 1
+    fi
     export MINIOS_ENV_ROOT="$environment_root"
 }
 

@@ -790,6 +790,29 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("home_mode", resolve)
         self.assertIn("mode_is_root_safe", resolve)
 
+    def test_bootstrap_checks_lexical_environment_path_before_resolution(
+        self,
+    ) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        body = self._function_body(
+            content, "validate_environment_root", powershell=False
+        )
+        for token in (
+            "realpath -ms",
+            "lexical_root",
+            "resolved_root",
+            "assert_no_symlink_components",
+            "validate_user_owned_existing_components",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, body)
+        lexical_check = body.find("validate_user_owned_existing_components")
+        resolved_check = body.find("realpath -e")
+        self.assertGreaterEqual(lexical_check, 0)
+        self.assertGreater(resolved_check, lexical_check)
+
     def test_wsl_scripts_use_single_segment_test_names_and_skip_bootstrap(
         self,
     ) -> None:

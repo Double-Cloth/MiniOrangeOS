@@ -1133,6 +1133,30 @@ rmdir -- "$env_case_final"
 ln -s -- "$protected" "$env_case_final"
 expect_env_gate_failure symlink-final
 
+lexical_real="$root/home/minios/lexical-real"
+lexical_real_final="$lexical_real/final"
+mkdir -p -- "$lexical_real_final"
+chown -R "minios:$target_uid" "$lexical_real"
+chmod 0755 "$lexical_real" "$lexical_real_final"
+ln -s -- lexical-real "$root/home/minios/lexical-alias"
+env_case_final="$root/home/minios/lexical-alias/final"
+expect_env_gate_failure same-home-intermediate-symlink
+
+lexical_link_parent="$root/home/minios/lexical-link-parent"
+mkdir -- "$lexical_link_parent"
+chown "minios:$target_uid" "$lexical_link_parent"
+chmod 0755 "$lexical_link_parent"
+ln -s -- ../lexical-real/final "$lexical_link_parent/final"
+env_case_final="$lexical_link_parent/final"
+expect_env_gate_failure same-home-final-symlink
+
+env_case_final="$root/home/minios/lexical-real/../lexical-real/final"
+expect_env_gate_failure noncanonical-dot-segment
+env_case_final='relative/environment-root'
+expect_env_gate_failure relative-environment-root
+env_case_final=''
+expect_env_gate_failure empty-environment-root
+
 chmod 0775 "$root/home/minios"
 env_case_final="$root/home/minios/home-mode-final"
 expect_env_gate_failure writable-target-home
