@@ -640,7 +640,7 @@ try {
             $SystemStatus = $LASTEXITCODE
             Assert-True ($SystemStatus -ne 0) '普通用户执行 system-only 应失败'
             Assert-True (($SystemOutput -join "`n") -match 'FAIL') 'system-only 失败缺少诊断'
-            Assert-True (($SystemOutput -join "`n") -notmatch 'os-release') '真实标准 os-release 链未通过只读身份门'
+            Assert-True (($SystemOutput -join "`n") -match '--system-only 必须由 root') '真实 os-release 与可信 root-owned 用户祖先未通过只读门'
 
             $ToolchainOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $BootstrapPath --toolchain-only 2>&1)
             $ToolchainStatus = $LASTEXITCODE
@@ -1079,7 +1079,74 @@ fi
 [[ "$(wc -l <"$useradd_log")" == "$before_useradd" ]] || { printf 'forbidden phase invoked useradd\n' >&2; exit 1; }
 printf 'checkpoint=missing-user-gates\n'
 
-environment_root="$root/home/minios/custom env"
+create_env_case() {
+    local name="$1"
+    env_case_parent="$root/home/minios/env-case-$name"
+    env_case_middle="$env_case_parent/middle"
+    env_case_final="$env_case_middle/final"
+    mkdir -p -- "$env_case_final"
+    chown -R "minios:$target_uid" "$env_case_parent"
+    chmod 0755 "$env_case_parent" "$env_case_middle" "$env_case_final"
+}
+expect_env_gate_failure() {
+    local description="$1"
+    expect_gate_failure "$description" "${common[@]}" \
+        MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+        "MINIOS_ENV_ROOT=$env_case_final" "$script" --system-only
+}
+
+create_env_case root-intermediate-0775
+chown root:root "$env_case_middle"
+chmod 0775 "$env_case_middle"
+expect_env_gate_failure root-intermediate-0775
+
+create_env_case root-intermediate-0777
+chown root:root "$env_case_middle"
+chmod 0777 "$env_case_middle"
+expect_env_gate_failure root-intermediate-0777
+
+create_env_case other-owner-intermediate
+nobody_uid="$(id -u nobody)"
+chown "$nobody_uid:$nobody_uid" "$env_case_middle"
+expect_env_gate_failure other-owner-intermediate
+
+create_env_case target-writable-intermediate
+chmod 0775 "$env_case_middle"
+expect_env_gate_failure target-writable-intermediate
+
+create_env_case file-intermediate
+rmdir -- "$env_case_final" "$env_case_middle"
+printf 'not-directory\n' >"$env_case_middle"
+chown "minios:$target_uid" "$env_case_middle"
+expect_env_gate_failure file-intermediate
+
+create_env_case root-owned-final
+chown root:root "$env_case_final"
+expect_env_gate_failure root-owned-final
+
+create_env_case writable-final
+chmod 0775 "$env_case_final"
+expect_env_gate_failure writable-final
+
+create_env_case symlink-final
+rmdir -- "$env_case_final"
+ln -s -- "$protected" "$env_case_final"
+expect_env_gate_failure symlink-final
+
+chmod 0775 "$root/home/minios"
+env_case_final="$root/home/minios/home-mode-final"
+expect_env_gate_failure writable-target-home
+chmod 0755 "$root/home/minios"
+
+protected_after_ancestor_cases="$(stat -c '%u|%a|%s' "$protected/sentinel")|$(cat "$protected/sentinel")"
+[[ "$protected_before" == "$protected_after_ancestor_cases" ]] || { printf 'ancestor cases changed protected target\n' >&2; exit 1; }
+
+environment_root="$root/home/minios/.local/share/miniorangeos-dev"
+mkdir -p -- "$environment_root"
+chown root:root "$root/home/minios/.local" "$root/home/minios/.local/share"
+chmod 0755 "$root/home/minios/.local" "$root/home/minios/.local/share"
+chown "minios:$target_uid" "$environment_root"
+chmod 0755 "$environment_root"
 positive_apt_before="$(apt_lines)"
 positive=(
     "${common[@]}"
@@ -1108,6 +1175,22 @@ grep -Fq -- '<MINIOS_ENV_ROOT=' "$runuser_log"
 grep -Fq -- '--write-package-lock' "$runuser_log"
 grep -Fq -- 'default=minios' "$wsl_conf"
 printf 'checkpoint=system-evidence\n'
+
+missing_final_parent="$root/home/minios/root-owned-missing-final"
+missing_final_root="$missing_final_parent/environment"
+mkdir -- "$missing_final_parent"
+chown root:root "$missing_final_parent"
+chmod 0755 "$missing_final_parent"
+missing_final_apt_before="$(apt_lines)"
+if missing_final_output="$("${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    MINIOS_ENV_ROOT="$missing_final_root" "$script" --system-only 2>&1)"; then
+    printf 'root-owned ancestor with missing final unexpectedly passed\n' >&2
+    exit 1
+fi
+[[ "$missing_final_output" == *'Permission denied'* || "$missing_final_output" == *'FAIL'* ]] || { printf 'missing final failure lacked clear diagnostic: %s\n' "$missing_final_output" >&2; exit 1; }
+[[ "$(apt_lines)" == "$((missing_final_apt_before + 2))" ]] || { printf 'missing final did not fail in lowered phase\n' >&2; exit 1; }
+[[ ! -e "$missing_final_root" && ! -L "$missing_final_root" ]] || { printf 'root wrote missing user environment root\n' >&2; exit 1; }
+printf 'checkpoint=root-ancestor-missing-final\n'
 
 /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \

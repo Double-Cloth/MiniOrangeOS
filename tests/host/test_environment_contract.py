@@ -764,6 +764,32 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             preflight.find("ensure_target_user"),
         )
 
+    def test_bootstrap_allows_only_safe_root_or_target_owned_ancestors(
+        self,
+    ) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        body = self._function_body(
+            content, "validate_user_owned_existing_components", powershell=False
+        )
+        for token in (
+            "item_uid",
+            "target_uid",
+            "'0'",
+            "current",
+            "candidate",
+            "mode_is_root_safe",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, body)
+        self.assertIn("最终 environment root 必须由目标用户拥有", body)
+        resolve = self._function_body(
+            content, "resolve_target_user", powershell=False
+        )
+        self.assertIn("home_mode", resolve)
+        self.assertIn("mode_is_root_safe", resolve)
+
     def test_wsl_scripts_use_single_segment_test_names_and_skip_bootstrap(
         self,
     ) -> None:

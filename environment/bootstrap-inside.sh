@@ -394,13 +394,24 @@ resolve_target_user() {
     fi
     assert_no_symlink_components "$passwd_home" || return $?
     local home_stat
-    home_stat="$(lstat_path "$passwd_home")" || return $?
-    if [[ "$home_stat" != "directory|$passwd_uid" ]]; then
-        fail "目标用户 home owner/type 不匹配：$passwd_home $home_stat"
+    local home_type
+    local home_uid
+    local home_mode
+    home_stat="$(stat -c '%F|%u|%a' -- "$passwd_home")" || {
+        fail "无法读取目标用户 home 元数据：$passwd_home"
+        return 1
+    }
+    IFS='|' read -r home_type home_uid home_mode <<<"$home_stat"
+    if [[ "$home_type" != 'directory' || "$home_uid" != "$passwd_uid" ]] \
+        || ! mode_is_root_safe "$home_mode"; then
+        fail "目标用户 home owner/type/mode 不匹配：$passwd_home $home_stat"
         return 1
     fi
     target_uid="$passwd_uid"
-    target_home="$(realpath -e -- "$passwd_home")"
+    target_home="$(realpath -e -- "$passwd_home")" || {
+        fail "无法规范化目标用户 home：$passwd_home"
+        return 1
+    }
 }
 
 validate_target_user_name() {
@@ -513,6 +524,20 @@ validate_user_owned_existing_components() {
     local relative="${candidate#"$base"}"
     local component
     local item_stat
+    local item_type
+    local item_uid
+    local item_mode
+    assert_no_symlink_components "$base" || return $?
+    item_stat="$(stat -c '%F|%u|%a' -- "$base")" || {
+        fail "无法重新读取目标用户 home 元数据：$base"
+        return 1
+    }
+    IFS='|' read -r item_type item_uid item_mode <<<"$item_stat"
+    if [[ "$item_type" != 'directory' || "$item_uid" != "$target_uid" ]] \
+        || ! mode_is_root_safe "$item_mode"; then
+        fail "目标用户 home 必须保持 target-owned 且不可由组/其他用户写：$base $item_stat"
+        return 1
+    fi
     relative="${relative#/}"
     IFS='/' read -r -a components <<<"$relative"
     for component in "${components[@]}"; do
@@ -523,9 +548,22 @@ validate_user_owned_existing_components() {
                 fail "用户路径组件是 symlink：$current"
                 return 1
             fi
-            item_stat="$(lstat_path "$current")" || return $?
-            if [[ "$item_stat" != "directory|$target_uid" ]]; then
-                fail "用户路径组件 owner/type 不匹配：$current $item_stat"
+            item_stat="$(stat -c '%F|%u|%a' -- "$current")" || {
+                fail "无法读取用户路径组件元数据：$current"
+                return 1
+            }
+            IFS='|' read -r item_type item_uid item_mode <<<"$item_stat"
+            if [[ "$item_type" != 'directory' ]] || ! mode_is_root_safe "$item_mode"; then
+                fail "用户路径组件必须是不可由组/其他用户写的普通目录：$current $item_stat"
+                return 1
+            fi
+            if [[ "$current" == "$candidate" ]]; then
+                if [[ "$item_uid" != "$target_uid" ]]; then
+                    fail "最终 environment root 必须由目标用户拥有：$current $item_stat"
+                    return 1
+                fi
+            elif [[ "$item_uid" != "$target_uid" && "$item_uid" != '0' ]]; then
+                fail "用户路径中间组件只能由目标用户或 UID0 拥有：$current $item_stat"
                 return 1
             fi
         fi
@@ -543,7 +581,10 @@ validate_environment_root() {
         fail "MINIOS_ENV_ROOT 必须是绝对路径：$requested_root"
         return 1
     fi
-    environment_root="$(realpath -m -- "$requested_root")"
+    environment_root="$(realpath -m -- "$requested_root")" || {
+        fail "无法规范化 MINIOS_ENV_ROOT：$requested_root"
+        return 1
+    }
     if [[ "$environment_kind" == 'container' \
         && "$environment_root" != '/opt/miniorangeos-dev' ]] \
         && ! is_test_path "$environment_root"; then
@@ -563,9 +604,17 @@ validate_environment_root() {
         fi
         assert_no_symlink_components "$environment_root" || return $?
         local root_stat
-        root_stat="$(lstat_path "$environment_root")" || return $?
-        if [[ "$root_stat" != "directory|$target_uid" ]]; then
-            fail "容器 environment root owner/type 不匹配：$root_stat"
+        local root_type
+        local root_uid
+        local root_mode
+        root_stat="$(stat -c '%F|%u|%a' -- "$environment_root")" || {
+            fail "无法读取容器 environment root 元数据：$environment_root"
+            return 1
+        }
+        IFS='|' read -r root_type root_uid root_mode <<<"$root_stat"
+        if [[ "$root_type" != 'directory' || "$root_uid" != "$target_uid" ]] \
+            || ! mode_is_root_safe "$root_mode"; then
+            fail "容器 environment root owner/type/mode 不匹配：$root_stat"
             return 1
         fi
     fi
