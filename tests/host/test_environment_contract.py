@@ -841,6 +841,37 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         )
         self.assertIn("org.miniorangeos.project=MiniOrangeOS", content)
         self.assertIn("org.miniorangeos.task=T01", content)
+        self.assertIn("org.miniorangeos.source-version=T01", content)
+        self.assertIn("MINIOS_CONTAINER=1", content)
+        self.assertIn("MINIOS_ENV_ROOT=/opt/miniorangeos-dev", content)
+        self.assertIn("bootstrap-inside.sh --system-only", content)
+        self.assertIn("bootstrap-inside.sh --toolchain-only", content)
+        self.assertRegex(content, r"(?m)^USER minios\s*$")
+        self.assertRegex(content, r"(?m)^WORKDIR /workspace\s*$")
+        self.assertNotRegex(content, r"(?m)^USER root\s*$[\s\S]*\Z")
+
+    def test_ubuntu_adapters_share_strict_backend_library(self) -> None:
+        library = self._read_required("environment/ubuntu/lib.sh")
+        for token in (
+            "MINIOS_CONTAINER_BACKEND",
+            "podman",
+            "docker",
+            "container-storage",
+            "graphroot",
+            "runroot",
+            "miniorangeos-dev-builder",
+            "container.env",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, library)
+        for relative_path in (
+            "environment/ubuntu/create.sh",
+            "environment/ubuntu/run.sh",
+            "environment/ubuntu/destroy.sh",
+        ):
+            with self.subTest(path=relative_path):
+                content = self._read_required(relative_path)
+                self.assertIn('source "$SCRIPT_DIR/lib.sh"', content)
 
     def test_ubuntu_destroy_has_four_independent_boundaries(self) -> None:
         content = self._without_comments(
