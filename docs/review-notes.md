@@ -17,3 +17,11 @@
 - i686-elf 工具链的组成和隔离路径；
 - GNU Make 依赖、并行和增量构建行为；
 - QEMU 串口、debug-exit、超时和 GDB 回环调试链。
+
+## T01 心得
+
+- 真实 Ubuntu 的 `/etc/os-release` 是受信相对 symlink，安全校验应绑定精确目标，而不是一律拒绝 symlink。
+- T00 由 root 创建的只读中间目录可以安全存在，但最终环境根必须属于目标用户；路径逐级 ownership 比笼统 `chown` 更可审计。
+- 可恢复容器生命周期需要同时绑定锁、intent、state、镜像 ID 与标签，单靠镜像名称不足以证明 ownership。
+- rootless Podman 的 runroot 长度和 overlay subuid 清理只有真实集成会暴露；fake backend 必须模拟这些失败边界。
+- WSL2 验收证明用户态与 Microsoft 内核组合，不等于原生 Linux CI 证据。

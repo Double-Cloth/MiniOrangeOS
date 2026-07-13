@@ -1,3 +1,6 @@
+Exit code: 0
+Wall time: 0.6 seconds
+Output:
 # 开发环境与可逆清理设计
 
 > 来源：计划书第 14、15、22.7 节。本文档只描述环境和操作约束，不包含安装脚本实现。
@@ -10,8 +13,8 @@ MiniOrangeOS 的开发环境必须可复现、可审计、可整体删除。Wind
 
 - 文件编辑与 Git：Windows 权威工作树 `D:\DC\program-projects\OTHER\MiniOrangeOS`，只使用 Windows Git。
 - Linux 构建与测试：专用 WSL2 Ubuntu 24.04 发行版 `MiniOrangeOS-Dev`，通过 `/mnt/d/DC/program-projects/OTHER/MiniOrangeOS` 访问同一工作树，不运行 Git。
-- 真实 Linux 复验：Ubuntu 24.04 主机上的 rootless OCI 容器。
-- CI：Linux runner，构建与复验环境保持一致。
+- T01 容器复验：独立 Ubuntu 24.04 WSL2 测试发行版中的 rootless Podman；不冒充原生 Linux 内核证据。
+- CI：后续 Linux runner 补齐原生 Linux 内核差异。
 
 ## 路径与载荷边界
 
@@ -81,9 +84,9 @@ docker system prune -a
 rm -rf ~/.local/share
 ```
 
-## 后续脚本契约
+## 已实现公开接口
 
-以下脚本和配置由 T01 实现；T00 只记录路径与职责，不声明文件已经存在或可执行：
+以下脚本和配置已由 T01 实现并通过契约与真实环境验收：
 
 | 文件 | 职责 |
 |---|---|
@@ -99,6 +102,26 @@ rm -rf ~/.local/share
 | `environment/with-env.sh` | 临时注入项目工具链和 venv 后执行命令，不修改全局环境 |
 | `environment/verify.sh` | 输出环境指纹，校验工具路径和版本，拒绝越界路径 |
 | `tools/build_toolchain.sh` | 在 `$MINIOS_ENV_ROOT/toolchain` 可重复构建 i686-elf 工具链 |
+
+常用命令：
+
+```powershell
+environment/wsl/create.ps1 -Bootstrap
+environment/wsl/enter.ps1
+environment/wsl/backup.ps1
+environment/wsl/destroy.ps1
+environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
+```
+
+```bash
+./environment/with-env.sh i686-elf-gcc --version
+./environment/verify.sh
+./environment/ubuntu/create.sh
+./environment/ubuntu/run.sh ./environment/verify.sh
+./environment/ubuntu/destroy.sh --all
+```
+
+`destroy.ps1` 默认只 preview，必须同时提供 `-Apply` 和精确确认名。`environment/ubuntu/destroy.sh` 默认保留镜像；`environment/ubuntu/destroy.sh --all` 只删除由 state、镜像 ID、标签、intent 和专用 storage 共同证明属于本项目的资源，不使用全局 prune。
 
 ## 环境验证最低输出
 
@@ -122,6 +145,13 @@ result=PASS
 ```
 
 如果在 Windows 原生环境、非目标 WSL 发行版、未隔离容器或工具链路径越界时运行，必须返回非零状态。
+
+## T01 真实验收
+
+- 正式 prefix：`/home/minios/.local/share/miniorangeos-dev/toolchain`；目标 `i686-elf`，GCC 13.2.0、GNU ld 2.42、libgcc 与 ELF32 freestanding 编译 PASS。
+- 正式 WSL 首次成功 bootstrap 约 6 分 15 秒，紧接第二次约 5 秒并返回 `toolchain_status=up-to-date`。
+- `MiniOrangeOS-Dev-Test-ContainerHost` 在 **Ubuntu 24.04 WSL2** 上使用 **rootless Podman** 4.9.3 完成 create、幂等 create、run 和 destroy；默认 Podman 资源未变化，测试发行版已定向注销。
+- 运行内核为 Microsoft WSL2，不代表已覆盖**原生 Linux 内核**；该差异由后续 **Linux CI** 跟踪，见 `docs/decisions/0002-wsl-only-t01-container-host.md`。
 
 ## 删除验收
 

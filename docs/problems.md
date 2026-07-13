@@ -32,6 +32,9 @@
 | CI 与本地漂移 | 本地过 CI 挂 | 环境指纹 diff | 固定容器，不手工修 CI |
 | `/mnt/d` 构建性能和权限语义差异 | 并行或增量构建异常、Shell 不可执行、大小写冲突 | 行尾、可执行位、大小写和增量构建测试 | 使用 metadata 挂载和严格 `.gitattributes`；不允许维护第二份工作树 |
 | 清理误删资源 | 容器/WSL 消失 | 标签白名单、dry-run | 禁止全局 prune |
+| `/mnt/d` 构建较慢或语义漂移 | 大型 context/增量构建慢，大小写、symlink 或权限异常 | 与 ext4/Linux CI 对比，持续运行 LF/权限/增量测试 | 构建缓存放 WSL ext4；不复制权威工作树 |
+| WSL 与原生 Linux 内核差异 | WSL2 通过但 Linux CI/runtime 失败 | 记录内核与 runtime 指纹，在原生 Linux CI 重跑 | 不把 WSL 结果表述为原生内核证据 |
+| Windows 预存工具造成误判 | `Get-Command gdb` 命中外部 MinGW | 校验来源路径，只拒绝项目载荷或项目 PATH 污染 | 不删除用户既有工具；项目命令只经 `with-env.sh` 注入 |
 
 ## 功能收缩顺序
 
@@ -83,3 +86,13 @@
 问题：
 - ...
 ```
+
+## 2026-07-13 / T01 真实集成问题
+
+任务：T01
+
+- Podman 拒绝超过 50 字符的 runroot；修复为经 owner/mode/symlink 校验的 `$XDG_RUNTIME_DIR/miniorangeos-t01`。
+- fake backend 曾放过不存在的 `image rmi`；收紧测试并改为 Podman/Docker 均支持的 `image rm`。
+- rootless overlay 含 subuid-owned 文件，宿主 `rm -rf` 无权清理；改为仅对已验证专用 `--root/--runroot` 执行一次 `podman system reset --force`，不使用全局 prune。
+
+最终 create/run/destroy 通过，默认 Podman images/containers/volumes 未变化，测试发行版已定向清理。

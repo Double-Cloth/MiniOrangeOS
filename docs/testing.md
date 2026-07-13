@@ -1,3 +1,6 @@
+Exit code: 0
+Wall time: 1.3 seconds
+Output:
 # 测试策略与验收协议
 
 > 覆盖任务：T03、T70-T72，并约束所有功能任务。
@@ -30,6 +33,8 @@ make test
 - 真实 Ubuntu 24.04 主机上的项目隔离容器；
 - Linux CI runner。
 
+T01 的容器集成在 `MiniOrangeOS-Dev-Test-ContainerHost`（**Ubuntu 24.04 WSL2**）使用 **rootless Podman** 4.9.3 实测固定镜像 create/run/destroy。内核为 `6.6.87.2-microsoft-standard-WSL2`，因此不是**原生 Linux 内核**证据；后续 **Linux CI** 必须补齐 namespace、cgroup、overlay 和 OCI runtime 差异。
+
 Windows 原生命令只承担 Windows Git 和静态文件检查，不得作为 Linux 构建、QEMU、GDB 或测试通过的证据。Windows 发起 WSL 测试时使用固定工作树映射：
 
 ```powershell
@@ -37,6 +42,20 @@ wsl.exe -d MiniOrangeOS-Dev -- bash -lc '
 cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS
 <linux-test-command>
 '
+```
+
+T01 回归入口还包括：
+
+```powershell
+powershell -NoProfile -File tests/host/test_wsl_lifecycle.ps1
+```
+
+```bash
+python3 -m unittest discover -s tests/host -v
+./environment/verify.sh
+./environment/with-env.sh i686-elf-gcc --version
+./environment/with-env.sh i686-elf-ld --version
+./environment/ubuntu/run.sh ./environment/verify.sh
 ```
 
 ## 串口测试协议
