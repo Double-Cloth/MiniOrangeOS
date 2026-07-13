@@ -114,7 +114,13 @@ mkdir -p "$runtime" "$builders_dir"
 image_field() {
   field=$1
   override=$2
-  if [ -n "$override" ]; then printf '%s\\n' "$override"; else cat "$runtime/image.$field"; fi
+  if [ "$override" = __MISSING__ ]; then
+    return
+  elif [ -n "$override" ]; then
+    printf '%s\\n' "$override"
+  else
+    cat "$runtime/image.$field"
+  fi
 }
 
 remove_image() {
@@ -3070,6 +3076,13 @@ exit 0
                 "description": "项目标签不匹配",
                 "state_image_name": "miniorangeos-dev:ubuntu-24.04",
                 "inspected_label": "OtherProject",
+                "inspected_image_id": OWNED_IMAGE_ID,
+                "expect_probe": True,
+            },
+            {
+                "description": "项目标签缺失",
+                "state_image_name": "miniorangeos-dev:ubuntu-24.04",
+                "inspected_label": "__MISSING__",
                 "inspected_image_id": OWNED_IMAGE_ID,
                 "expect_probe": True,
             },
