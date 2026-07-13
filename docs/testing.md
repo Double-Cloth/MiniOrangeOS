@@ -95,6 +95,16 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 - 真实 floppy 缺失 Loader 时输出 `[S1] disk error`、不输出 `loader loaded`，并由 T03 runner 超时清理；
 - 布局生成器的严格 JSON、特殊文件、失败保留旧输出和增量依赖均有回归覆盖。
 
+## T11 最终回归证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中执行：
+
+- T11 Stage 2 合同与运行时测试：8/8 PASS；全量宿主测试：202/202 PASS；PowerShell 生命周期：29/29 PASS；
+- `environment/verify.sh`、干净 `make -j4 image` 与公开 `make test-qemu QEMU_TIMEOUT=5`：PASS；
+- 正式镜像按顺序输出两条 S1 与两条 S2 日志，并保留 BIOS 启动盘号 `0x80`；
+- 动态 QEMU fixture 直接链接正式 BIOS wrapper，验证字符接口寄存器/栈合同、EDD `CF/AH`、保留寄存器及 LBA0 `55 AA`；
+- `stage2.bin` 为 283 bytes，SHA-256 为 `db4cfa3c59e3a1ef624b1774f98f7be5f0c7f26214ddf48f128b03c8c668cfe4`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
