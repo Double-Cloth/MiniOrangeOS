@@ -22,6 +22,23 @@ make test
 
 应依次执行环境检查、构建检查、宿主测试、QEMU 测试和镜像测试。
 
+## 有效证据边界
+
+只有以下 Linux 环境产生的构建和测试日志可作为 PASS 证据：
+
+- 专用 `MiniOrangeOS-Dev` WSL2 发行版；
+- 真实 Ubuntu 24.04 主机上的项目隔离容器；
+- Linux CI runner。
+
+Windows 原生命令只承担 Windows Git 和静态文件检查，不得作为 Linux 构建、QEMU、GDB 或测试通过的证据。Windows 发起 WSL 测试时使用固定工作树映射：
+
+```powershell
+wsl.exe -d MiniOrangeOS-Dev -- bash -lc '
+cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS
+<linux-test-command>
+'
+```
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
@@ -129,4 +146,3 @@ CI 不依赖 Windows runner，不使用 Windows 原生工具链。
 ```
 
 不得用“理论上可行”“应当通过”代替测试结果。
-

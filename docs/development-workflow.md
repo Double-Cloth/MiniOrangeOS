@@ -8,15 +8,30 @@
 
 1. 阅读计划书对应任务。
 2. 阅读本目录对应专题文档。
-3. 检查当前分支和工作树。
-4. 创建任务分支。
+3. 在 Windows 权威工作树中使用 Windows Git 检查当前分支和工作树。
+4. 使用 Windows Git 创建任务分支。
 5. 先写或补测试，再写最小实现。
-6. 运行任务要求的测试。
+6. 通过 `wsl.exe` 在 `MiniOrangeOS-Dev` 中运行任务要求的 Linux 构建和测试。
 7. 更新文档和来源登记。
-8. 提交 Git。
+8. 使用 Windows Git 提交。
 9. 按报告模板总结。
 
 不得直接在 `main` 上实现功能。不得跳过测试后声明完成。
+
+## 工作树与命令边界
+
+- 唯一权威工作树：`D:\DC\program-projects\OTHER\MiniOrangeOS`。
+- 文件修改和 Git 由 Windows 侧执行；WSL 不运行 Git，不维护第二份活动工作树。
+- Linux 构建、QEMU、GDB 和测试通过 `MiniOrangeOS-Dev` 执行，工作树路径为 `/mnt/d/DC/program-projects/OTHER/MiniOrangeOS`。
+
+测试命令形式：
+
+```powershell
+wsl.exe -d MiniOrangeOS-Dev -- bash -lc '
+cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS
+<linux-test-command>
+'
+```
 
 ## 分支命名
 
@@ -63,6 +78,10 @@ mm: validate usercopy page ranges
 fs: implement direct block read path
 docs: sync filesystem layout contract
 ```
+
+## 合并
+
+只有当前任务测试和已有回归测试在有效 Linux 环境中真实通过、文档已同步且工作树无未解释文件时，才允许使用 Windows Git 推送任务分支并自动执行 `--no-ff` 合并。测试失败或未运行时不得合并。
 
 ## 任务报告模板
 
@@ -113,4 +132,3 @@ docs: sync filesystem layout contract
 - 禁止为适配 Windows 建立 Windows 原生构建链。
 - 禁止在未定位问题时用大延时、关闭优化或跳过断言掩盖缺陷。
 - 禁止用“后续补充”替代当前任务完成定义。
-
