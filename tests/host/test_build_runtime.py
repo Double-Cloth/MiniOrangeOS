@@ -1432,15 +1432,27 @@ class BuildRuntimeTests(unittest.TestCase):
                         foreign_marker, (output_parent / IMAGE_NAME).read_bytes()
                     )
                     self.assertEqual(foreign_marker, foreign_output.read_bytes())
+                    original_temporary = [
+                        path
+                        for path in original_parent.iterdir()
+                        if ".tmp-" in path.name
+                    ]
+                    expected_residue = (
+                        1
+                        if hook_name == "output-after-validation-before-commit"
+                        else 0
+                    )
+                    self.assertEqual(expected_residue, len(original_temporary))
+                    for path in original_temporary:
+                        status = path.lstat()
+                        self.assertTrue(stat.S_ISREG(status.st_mode))
+                        self.assertEqual(1, status.st_nlink)
+                        self.assertTrue(path.name.startswith(f".{IMAGE_NAME}.tmp-"))
                     self.assertEqual(
                         [],
                         [
                             path
-                            for parent in (
-                                original_parent,
-                                output_parent,
-                                foreign_parent,
-                            )
+                            for parent in (output_parent, foreign_parent)
                             for path in parent.iterdir()
                             if ".tmp-" in path.name
                         ],

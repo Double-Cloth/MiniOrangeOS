@@ -387,6 +387,29 @@ def _test_hook(stage: str) -> None:
         time.sleep(0.01)
 
 
+def _cleanup_test_hook(stage: str, temporary_name: str) -> None:
+    if os.environ.get("MINIOS_TEST_MODE") != "1":
+        return
+    if os.environ.get("MINIOS_IMAGE_CLEANUP_TEST_HOOK") != stage:
+        return
+    ready = Path(os.environ["MINIOS_IMAGE_CLEANUP_TEST_HOOK_READY"])
+    proceed = Path(os.environ["MINIOS_IMAGE_CLEANUP_TEST_HOOK_CONTINUE"])
+    log = Path(os.environ["MINIOS_IMAGE_CLEANUP_TEST_HOOK_LOG"])
+    name_file = Path(os.environ["MINIOS_IMAGE_CLEANUP_TEST_TEMP_NAME_FILE"])
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(stage + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    name_file.write_text(temporary_name + "\n", encoding="utf-8")
+    ready.write_text("ready\n", encoding="utf-8")
+    deadline = time.monotonic() + 20
+    while not proceed.is_file():
+        _raise_if_interrupted()
+        if time.monotonic() >= deadline:
+            _fail(f"测试 hook 等待超时：{stage}")
+        time.sleep(0.01)
+
+
 def _open_artifact(
     build: DirectoryBinding,
     name: str,
@@ -592,43 +615,10 @@ def _unlink_from_bound_parent(parent: DirectoryBinding, name: str) -> None:
         pass
     except OSError:
         pass
-
-    # DrvFS 在目录被重命名后无法通过旧 dirfd 执行 unlinkat；在已验证的上级目录中按 inode 找回它。
-    try:
-        grandparent_path, _old_name = _parent_path_and_name(
-            parent.path, "输出父目录"
-        )
-        grandparent = _open_directory_path(grandparent_path, "输出父目录的上级目录")
-    except (ImageError, OSError):
-        return
-    try:
-        expected = parent.identities[-1]
-        for entry_name in os.listdir(grandparent.descriptor):
-            try:
-                status = os.stat(
-                    entry_name,
-                    dir_fd=grandparent.descriptor,
-                    follow_symlinks=False,
-                )
-            except OSError:
-                continue
-            if not stat.S_ISDIR(status.st_mode):
-                continue
-            if DirectoryIdentity.from_status(status) != expected:
-                continue
-            try:
-                # 先用 dirfd/inode 绑定当前名称；最终路径调用是 DrvFS 对 rename 后 unlinkat 的兼容回退。
-                current_path = grandparent_path / entry_name
-                if DirectoryIdentity.from_status(current_path.stat()) != expected:
-                    return
-                # DrvFS 在旧目录句柄仍打开时会让当前名称不可见，先释放该已绑定句柄。
-                parent.close()
-                os.unlink(current_path / name)
-            except FileNotFoundError:
-                pass
-            return
-    finally:
-        grandparent.close()
+    _cleanup_test_hook("cleanup-after-bound-unlink-failed-before-return", name)
+    # DrvFS 会把 rename 后的目录 fd 重新解释为同名 replacement。任何重定位后删除
+    # 都可能作用于外来目录，因此只保留随机临时文件并失败关闭。
+    return
 
 
 def _cleanup_temporary(
