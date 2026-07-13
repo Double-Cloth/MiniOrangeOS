@@ -6,36 +6,56 @@ NASM ?= nasm
 PYTHON ?= python3
 BUILD_DIR ?= build
 
-# GNU Make 会在目标图展开时拆分含空白的路径。必须在展开任何路径和执行
-# 任何配方之前明确拒绝，避免半构建或清理错误位置。
-ifneq ($(words $(CURDIR)),1)
+# GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
+# 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
+make_dollar := $$
+left_parenthesis := (
+right_parenthesis := )
+unsafe_make_value = $(findstring $(make_dollar),$(value $(1)))$(findstring `,$(value $(1)))$(findstring ;,$(value $(1)))$(findstring ",$(value $(1)))$(findstring ',$(value $(1)))$(findstring &,$(value $(1)))$(findstring |,$(value $(1)))$(findstring <,$(value $(1)))$(findstring >,$(value $(1)))$(findstring $(left_parenthesis),$(value $(1)))$(findstring $(right_parenthesis),$(value $(1)))
+
+ifneq ($(call unsafe_make_value,CURDIR),)
+$(error CURDIR 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value CURDIR)),1)
 $(error CURDIR 含空格路径不支持)
 endif
-ifneq ($(strip $(CURDIR)),$(CURDIR))
+ifneq ($(strip $(value CURDIR)),$(value CURDIR))
 $(error CURDIR 含空格路径不支持)
 endif
-ifneq ($(words $(BUILD_DIR)),1)
+ifneq ($(call unsafe_make_value,BUILD_DIR),)
+$(error BUILD_DIR 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value BUILD_DIR)),1)
 $(error BUILD_DIR 含空格路径不支持)
 endif
-ifneq ($(strip $(BUILD_DIR)),$(BUILD_DIR))
+ifneq ($(strip $(value BUILD_DIR)),$(value BUILD_DIR))
 $(error BUILD_DIR 含空格路径不支持)
 endif
-ifneq ($(words $(CROSS_COMPILE)),1)
+ifneq ($(call unsafe_make_value,CROSS_COMPILE),)
+$(error CROSS_COMPILE 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value CROSS_COMPILE)),1)
 $(error CROSS_COMPILE 含空格路径不支持)
 endif
-ifneq ($(strip $(CROSS_COMPILE)),$(CROSS_COMPILE))
+ifneq ($(strip $(value CROSS_COMPILE)),$(value CROSS_COMPILE))
 $(error CROSS_COMPILE 含空格路径不支持)
 endif
-ifneq ($(words $(NASM)),1)
+ifneq ($(call unsafe_make_value,NASM),)
+$(error NASM 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value NASM)),1)
 $(error NASM 含空格路径不支持)
 endif
-ifneq ($(strip $(NASM)),$(NASM))
+ifneq ($(strip $(value NASM)),$(value NASM))
 $(error NASM 含空格路径不支持)
 endif
-ifneq ($(words $(PYTHON)),1)
+ifneq ($(call unsafe_make_value,PYTHON),)
+$(error PYTHON 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value PYTHON)),1)
 $(error PYTHON 含空格路径不支持)
 endif
-ifneq ($(strip $(PYTHON)),$(PYTHON))
+ifneq ($(strip $(value PYTHON)),$(value PYTHON))
 $(error PYTHON 含空格路径不支持)
 endif
 
@@ -143,7 +163,7 @@ $(KERNEL_SYM): $(KERNEL_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
-	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir $(BUILD_DIR) --output $(BUILD_DIR)/miniorangeos.img
+	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
 
 clean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target clean

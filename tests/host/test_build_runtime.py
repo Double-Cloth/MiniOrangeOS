@@ -325,6 +325,36 @@ class BuildRuntimeTests(unittest.TestCase):
             "含空格路径拒绝前后工作区 lstat 快照发生变化",
         )
 
+    def _assert_unsafe_make_value_rejection(
+        self,
+        workspace: Path,
+        target: str,
+        variable: str,
+        value: str,
+        marker: Path,
+    ) -> None:
+        snapshot_root = workspace.parent
+        before = self._lstat_snapshot(snapshot_root)
+        result = self._make(workspace, target, f"{variable}={value}")
+        self.assertNotEqual(0, result.returncode)
+        output = result.stdout + result.stderr
+        self.assertRegex(
+            output,
+            r"(?is)(?:危险字符.*不支持|不支持.*危险字符|unsafe.*(?:make|shell).*(?:value|variable)|(?:make|shell).*(?:value|variable).*unsafe)",
+            "危险 Make 变量没有在 parse-time 给出清晰拒绝信息",
+        )
+        self.assertLessEqual(
+            len(output.encode("utf-8")),
+            4096,
+            "危险 Make 变量拒绝产生了异常庞大的诊断",
+        )
+        self.assertFalse(marker.exists(), "危险 Make 变量执行了注入 helper")
+        self.assertEqual(
+            before,
+            self._lstat_snapshot(snapshot_root),
+            "危险 Make 变量拒绝前后工作区 lstat 快照发生变化",
+        )
+
     def _image_command(
         self, workspace: Path, build_dir: Path, output: Path, layout: Path | None = None
     ) -> list[str]:
@@ -917,6 +947,50 @@ class BuildRuntimeTests(unittest.TestCase):
                     snapshot_root,
                     before,
                 )
+
+    def test_make_variables_reject_command_injection_before_side_effects(self) -> None:
+        variables = (
+            ("BUILD_DIR", "unsafe-build"),
+            ("CROSS_COMPILE", "i686-elf-"),
+            ("NASM", "nasm"),
+            ("PYTHON", "python3"),
+        )
+        targets = ("all", "image", "clean", "distclean")
+        for variable_index, (variable, base) in enumerate(variables):
+            for payload_index, payload_name in enumerate(
+                ("backtick", "make-shell", "shell-dollar", "semicolon")
+            ):
+                target = targets[(variable_index + payload_index) % len(targets)]
+                with self.subTest(
+                    variable=variable,
+                    payload=payload_name,
+                    target=target,
+                ):
+                    with self._workspace() as workspace:
+                        marker = workspace / "make-variable-injection-ran"
+                        helper = workspace / "make-variable-injection-helper"
+                        helper.write_text(
+                            "#!/usr/bin/env bash\n"
+                            "set -eu\n"
+                            f": > {shlex.quote(str(marker))}\n",
+                            encoding="utf-8",
+                        )
+                        helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+                        if payload_name == "backtick":
+                            value = f"{base}`{helper}`"
+                        elif payload_name == "make-shell":
+                            value = f"{base}$(shell {helper})"
+                        elif payload_name == "shell-dollar":
+                            value = f"{base}$$({helper})"
+                        else:
+                            value = f"{base};{helper}"
+                        self._assert_unsafe_make_value_rejection(
+                            workspace,
+                            target,
+                            variable,
+                            value,
+                            marker,
+                        )
 
     def test_image_tool_rejects_invalid_inputs_without_clobbering_output(self) -> None:
         with self._workspace() as workspace:
