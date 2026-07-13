@@ -131,6 +131,16 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn("MiniOrangeOS-Dev", content)
         self.assertIn("/mnt/d/DC/program-projects/OTHER/MiniOrangeOS", content)
 
+    def test_readme_records_real_ubuntu_verification(self) -> None:
+        path = ROOT / "README.md"
+        self.assertTrue(path.is_file(), "缺少文件：README.md")
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("rootless OCI", content)
+        self.assertIn("environment/ubuntu/create.sh", content)
+        self.assertIn("environment/ubuntu/run.sh", content)
+        self.assertIn("environment/ubuntu/destroy.sh --all", content)
+        self.assertIn("T01 完成后可用", content)
+
     def test_project_plan_has_stable_name(self) -> None:
         self.assertTrue((ROOT / "PROJECT_PLAN.md").is_file())
         self.assertFalse((ROOT / "MiniOrangeOS_Codex_Project_Plan_v1.1.md").exists())
