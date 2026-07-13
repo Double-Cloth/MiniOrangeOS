@@ -752,6 +752,42 @@ class BuildRuntimeTests(unittest.TestCase):
                     result = self._make(workspace, "all", *variables)
                     self._assert_success(result)
                     self.assertTrue((build_dir / BUILD_MARKER).is_file())
+                    disabled_control = workspace / f"cleanup-hook-disabled-{target}"
+                    disabled_control.mkdir()
+                    disabled_ready = disabled_control / "ready"
+                    disabled_continue = disabled_control / "continue"
+                    disabled_log = disabled_control / "hook.log"
+                    disabled_env = os.environ.copy()
+                    disabled_env.pop("MINIOS_TEST_MODE", None)
+                    disabled_env.update(
+                        {
+                            "MINIOS_CLEAN_TEST_HOOK": hook_name,
+                            "MINIOS_TEST_HOOK_READY": str(disabled_ready),
+                            "MINIOS_TEST_HOOK_CONTINUE": str(disabled_continue),
+                            "MINIOS_TEST_HOOK_LOG": str(disabled_log),
+                        }
+                    )
+                    result = self._run(
+                        workspace,
+                        "make",
+                        target,
+                        *variables,
+                        env=disabled_env,
+                    )
+                    self._assert_success(result)
+                    self.assertFalse(build_dir.exists())
+                    self.assertFalse(
+                        disabled_ready.exists(),
+                        "未启用测试模式时 cleanup hook 仍创建 ready",
+                    )
+                    self.assertFalse(
+                        disabled_log.exists(),
+                        "未启用测试模式时 cleanup hook 仍写入 log",
+                    )
+
+                    result = self._make(workspace, "all", *variables)
+                    self._assert_success(result)
+                    self.assertTrue((build_dir / BUILD_MARKER).is_file())
                     result = self._run_hooked_process(
                         workspace,
                         command,
