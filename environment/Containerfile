@@ -1,0 +1,25 @@
+FROM ubuntu:noble-20260509.1@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
+
+LABEL org.opencontainers.image.title=MiniOrangeOS \
+      org.opencontainers.image.version=T01 \
+      org.miniorangeos.project=MiniOrangeOS \
+      org.miniorangeos.task=T01 \
+      org.miniorangeos.source-version=T01
+
+ENV MINIOS_CONTAINER=1 \
+    MINIOS_ENV_ROOT=/opt/miniorangeos-dev
+
+# 只复制昂贵依赖层的真实输入；adapter 或 README 变化不使 apt/GCC 层失效。
+COPY environment/versions.env /tmp/miniorangeos-source/environment/versions.env
+COPY environment/lib/common.sh /tmp/miniorangeos-source/environment/lib/common.sh
+COPY environment/bootstrap-inside.sh /tmp/miniorangeos-source/environment/bootstrap-inside.sh
+COPY tools/build_toolchain.sh /tmp/miniorangeos-source/tools/build_toolchain.sh
+
+RUN useradd --create-home --shell /bin/bash -- minios \
+    && install -d -m 0755 -o minios -g minios /opt/miniorangeos-dev \
+    && /tmp/miniorangeos-source/environment/bootstrap-inside.sh --system-only --target-user minios
+
+USER minios
+RUN /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
+
+WORKDIR /workspace

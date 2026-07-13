@@ -178,7 +178,11 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertNotIn("Windows 只允许使用专用 WSL2", t01_content)
         self.assertIn("Windows Git 负责版本控制和文件编辑", t01_content)
         self.assertIn("不安装 Windows 原生编译、调试或虚拟化工具链", t01_content)
-        self.assertIn("Linux 构建和测试仅在专用 WSL 或真实 Ubuntu 隔离模型中执行", t01_content)
+        self.assertNotIn("专用 WSL 或真实 Ubuntu 隔离模型", t01_content)
+        self.assertIn("Linux 构建和测试仅在 WSL 隔离模型中执行", t01_content)
+        self.assertIn("独立 Ubuntu 24.04 WSL2 测试发行版", t01_content)
+        self.assertIn("rootless Podman", t01_content)
+        self.assertIn("不冒充原生 Linux 内核", t01_content)
 
     def test_development_workflow_records_commit_contract(self) -> None:
         path = ROOT / "docs/development-workflow.md"

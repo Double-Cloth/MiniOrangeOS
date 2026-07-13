@@ -30,6 +30,8 @@ make test
 - 真实 Ubuntu 24.04 主机上的项目隔离容器；
 - Linux CI runner。
 
+T01 的容器集成在 `MiniOrangeOS-Dev-Test-ContainerHost`（**Ubuntu 24.04 WSL2**）使用 **rootless Podman** 4.9.3 实测固定镜像 create/run/destroy。内核为 `6.6.87.2-microsoft-standard-WSL2`，因此不是**原生 Linux 内核**证据；后续 **Linux CI** 必须补齐 namespace、cgroup、overlay 和 OCI runtime 差异。
+
 Windows 原生命令只承担 Windows Git 和静态文件检查，不得作为 Linux 构建、QEMU、GDB 或测试通过的证据。Windows 发起 WSL 测试时使用固定工作树映射：
 
 ```powershell
@@ -38,6 +40,30 @@ cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS
 <linux-test-command>
 '
 ```
+
+T01 回归入口还包括：
+
+```powershell
+powershell -NoProfile -File tests/host/test_wsl_lifecycle.ps1
+```
+
+```bash
+python3 -m unittest discover -s tests/host -v
+./environment/verify.sh
+./environment/with-env.sh i686-elf-gcc --version
+./environment/with-env.sh i686-elf-ld --version
+./environment/ubuntu/run.sh ./environment/verify.sh
+```
+
+## T01 最终回归证据
+
+2026-07-14 在 Windows 权威工作树对应的正式 `MiniOrangeOS-Dev` WSL2 中执行：
+
+- `python3 -m unittest discover -s tests/host -v`：124/124 PASS；
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\host\test_wsl_lifecycle.ps1`：29/29 PASS；
+- `./environment/verify.sh`：PASS，GCC 13.2.0、GNU ld 2.42、ELF32 freestanding compile、Windows/Linux 全局污染检查均通过。
+
+身份加固合入后、identity-only 迁移前，正式发行版 `verify.sh` 按预期 FAIL；执行 `create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap` 后恢复 PASS。该入口仍 provision/validate root-owned identity，但不运行 apt 或工具链；回归同时覆盖缺失/伪造 identity 拒绝，以及正式 identity 与精确 Lxss 注册事实绑定。
 
 ## 串口测试协议
 
