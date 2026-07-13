@@ -59,6 +59,7 @@ class BoundLog:
     name: str
     validate_directory: Callable[[], None]
     original_target: tuple[int, int, int, int] | None
+    test_hook: Callable[[str, str], None] | None = None
 
     def _target_identity(self) -> tuple[int, int, int, int] | None:
         try:
@@ -99,16 +100,66 @@ class BoundLog:
                     raise PathBoundaryError("日志写入没有取得进展")
                 view = view[written:]
             os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = -1
+            expected = os.fstat(descriptor)
+            expected_identity = (
+                expected.st_dev,
+                expected.st_ino,
+                expected.st_mode,
+                expected.st_nlink,
+                expected.st_size,
+            )
+            if self.test_hook is not None:
+                self.test_hook("before-log-commit", temporary_name)
             self.validate_directory()
             self._validate_target()
+            temporary_status = os.stat(
+                temporary_name,
+                dir_fd=self.directory_descriptor,
+                follow_symlinks=False,
+            )
+            temporary_identity = (
+                temporary_status.st_dev,
+                temporary_status.st_ino,
+                temporary_status.st_mode,
+                temporary_status.st_nlink,
+                temporary_status.st_size,
+            )
+            if temporary_identity != expected_identity or not stat.S_ISREG(
+                temporary_status.st_mode
+            ):
+                raise PathBoundaryError("日志临时文件在提交前发生变化")
             os.replace(
                 temporary_name,
                 self.name,
                 src_dir_fd=self.directory_descriptor,
                 dst_dir_fd=self.directory_descriptor,
             )
+            committed = os.stat(
+                self.name,
+                dir_fd=self.directory_descriptor,
+                follow_symlinks=False,
+            )
+            committed_identity = (
+                committed.st_dev,
+                committed.st_ino,
+                committed.st_mode,
+                committed.st_nlink,
+                committed.st_size,
+            )
+            current_descriptor = os.fstat(descriptor)
+            descriptor_identity = (
+                current_descriptor.st_dev,
+                current_descriptor.st_ino,
+                current_descriptor.st_mode,
+                current_descriptor.st_nlink,
+                current_descriptor.st_size,
+            )
+            if (
+                committed_identity != descriptor_identity
+                or not stat.S_ISREG(committed.st_mode)
+                or committed.st_nlink != 1
+            ):
+                raise PathBoundaryError("最终日志身份与已写入临时文件不匹配")
             os.fsync(self.directory_descriptor)
             self.validate_directory()
         finally:
@@ -252,7 +303,11 @@ class BoundBuild:
         finally:
             os.close(descriptor)
 
-    def bind_log(self, argument: str) -> BoundLog:
+    def bind_log(
+        self,
+        argument: str,
+        test_hook: Callable[[str, str], None] | None = None,
+    ) -> BoundLog:
         parts = self._parts(argument, "日志")
         descriptor = os.dup(self.build_descriptor)
         try:
@@ -301,6 +356,7 @@ class BoundBuild:
                 parts[-1],
                 validate_directory,
                 original_target,
+                test_hook,
             )
         except (PathBoundaryError, OSError) as error:
             os.close(descriptor)
