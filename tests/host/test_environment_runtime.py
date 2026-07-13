@@ -243,7 +243,17 @@ case " $* " in
       : > "$runtime/container-stop.failed"
       exit 76
     fi
+    if [ "${FAKE_CONTAINER_STOP_AUTO_REMOVE:-0}" = 1 ]; then
+      rm -rf "$container_dir"
+      exit 0
+    fi
     printf 'false\n' > "$container_dir/running"
+    if [ "${FAKE_CONTAINER_STOP_REPLACE_FOREIGN:-0}" = 1 ]; then
+      printf 'org.miniorangeos.project=Foreign\n' > "$container_dir/label"
+      printf 'T99\n' > "$container_dir/task-label"
+      printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+        > "$container_dir/intent-label"
+    fi
     ;;
   *" container rm "*)
     requested=''
@@ -3709,6 +3719,105 @@ exit 0
                     self.assertEqual(0, second.returncode, second.stderr)
                     self.assertFalse(stale.exists())
                     self.assertFalse(state.exists())
+
+    def test_ubuntu_destroy_accepts_stop_auto_remove_in_one_pass(self) -> None:
+        for backend in ("podman", "docker"):
+            with (
+                self.subTest(backend=backend),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env.update(
+                    {
+                        "MINIOS_CONTAINER_BACKEND": backend,
+                        "FAKE_CONTAINER_STOP_AUTO_REMOVE": "1",
+                    }
+                )
+                self._write_container_state(environment_root, backend=backend)
+                stale = self._write_fake_container(temporary_root, running=True)
+
+                result = self._run_required(
+                    "environment/ubuntu/destroy.sh", "--all", env=env
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(stale.exists())
+                self.assertFalse((environment_root / "state/container.env").exists())
+                self.assertFalse((environment_root / "container-storage").exists())
+                calls = self._container_calls(fake_log)
+                self.assertEqual(
+                    1,
+                    len(
+                        [
+                            call
+                            for call in calls
+                            if "container" in call and "stop" in call
+                        ]
+                    ),
+                )
+                self.assertFalse(
+                    any("container" in call and "rm" in call for call in calls)
+                )
+                self.assertTrue(any(self._is_image_remove_call(c) for c in calls))
+
+    def test_ubuntu_destroy_revalidates_foreign_replacement_after_stop(self) -> None:
+        for backend in ("podman", "docker"):
+            with (
+                self.subTest(backend=backend),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env.update(
+                    {
+                        "MINIOS_CONTAINER_BACKEND": backend,
+                        "FAKE_CONTAINER_STOP_REPLACE_FOREIGN": "1",
+                    }
+                )
+                self._write_container_state(environment_root, backend=backend)
+                replacement = self._write_fake_container(
+                    temporary_root, running=True
+                )
+
+                result = self._run_required(
+                    "environment/ubuntu/destroy.sh", "--all", env=env
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertTrue(replacement.is_dir())
+                state = environment_root / "state/container.env"
+                self.assertIn(
+                    "MINIOS_CONTAINER_PHASE=destroying\n",
+                    state.read_text(encoding="utf-8"),
+                )
+                calls = self._container_calls(fake_log)
+                self.assertEqual(
+                    1,
+                    len(
+                        [
+                            call
+                            for call in calls
+                            if "container" in call and "stop" in call
+                        ]
+                    ),
+                )
+                self.assertFalse(
+                    any(
+                        ("container" in call and "rm" in call)
+                        or self._is_image_remove_call(call)
+                        or self._is_storage_reset_call(call)
+                        or ("buildx" in call and "rm" in call)
+                        for call in calls
+                    ),
+                    calls,
+                )
 
     def test_ubuntu_destroy_rejects_foreign_stale_container_before_mutation(self) -> None:
         cases = (

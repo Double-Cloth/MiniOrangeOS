@@ -741,12 +741,27 @@ container_probe_loaded_resources() {
 
 container_remove_owned_containers() {
     local candidate
+
+    # 初始候选已在任何 mutation 前完成全量 ownership 验证。running 容器
+    # 带 --rm，stop 后可能自动消失，因此不能继续使用旧候选列表无条件 rm。
     for candidate in "${CONTAINER_RUNNING_CONTAINERS[@]}"; do
         "${CONTAINER_COMMAND[@]}" container stop "$candidate" || return $?
     done
+
+    # stop 是第一个安全竞态边界：重新按 name/label 两路枚举，并在删除任何
+    # 幸存者前重新验证所有当前候选。自动消失视为成功，foreign replacement
+    # 或新出现的 ownership mismatch 会在这里 fail closed。
+    container_discover_owned_containers || return $?
     for candidate in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
         "${CONTAINER_COMMAND[@]}" container rm "$candidate" || return $?
     done
+    # rm 后建立第二个安全竞态边界，禁止遗留或并发出现的项目候选进入后续
+    # image/builder/storage mutation；合法并发也必须由下一次 lifecycle 重试处理。
+    container_discover_owned_containers || return $?
+    if ((${#CONTAINER_OWNED_CONTAINERS[@]} != 0)); then
+        container_fail '项目容器清理后仍有新候选，拒绝继续删除镜像或存储'
+        return 1
+    fi
 }
 
 container_cleanup_loaded_resources() {
