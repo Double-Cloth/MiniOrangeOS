@@ -846,6 +846,18 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("MINIOS_ENV_ROOT=/opt/miniorangeos-dev", content)
         self.assertIn("bootstrap-inside.sh --system-only", content)
         self.assertIn("bootstrap-inside.sh --toolchain-only", content)
+        self.assertNotRegex(content, r"(?m)^COPY\s+environment/?\s")
+        for build_input in (
+            "environment/versions.env",
+            "environment/lib/common.sh",
+            "environment/bootstrap-inside.sh",
+            "tools/build_toolchain.sh",
+        ):
+            with self.subTest(build_input=build_input):
+                self.assertRegex(
+                    content,
+                    rf"(?m)^COPY\s+{re.escape(build_input)}\s+",
+                )
         self.assertRegex(content, r"(?m)^USER minios\s*$")
         self.assertRegex(content, r"(?m)^WORKDIR /workspace\s*$")
         self.assertNotRegex(content, r"(?m)^USER root\s*$[\s\S]*\Z")

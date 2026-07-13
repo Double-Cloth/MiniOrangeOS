@@ -11,6 +11,7 @@ fi
 
 container_load_state
 container_validate_loaded_state_boundaries
+container_require_ready_phase
 container_select_backend "$STATE_CONTAINER_BACKEND"
 container_verify_state_ownership
 
@@ -20,4 +21,4 @@ readonly run_name="$MINIOS_CONTAINER_NAME-run-$$"
     --label "$MINIOS_CONTAINER_LABEL" \
     --volume "$MINIOS_REPO_ROOT:/workspace:ro" \
     --workdir /workspace \
-    "$MINIOS_CONTAINER_IMAGE" "$@"
+    "$STATE_CONTAINER_LIVE_REF" "$@"

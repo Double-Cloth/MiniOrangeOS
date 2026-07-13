@@ -29,6 +29,10 @@ readonly MINIOS_CONTAINER_STATE_FILE="$MINIOS_CONTAINER_STATE_DIR/container.env"
 readonly MINIOS_CONTAINERFILE="$MINIOS_REPO_ROOT/environment/Containerfile"
 
 CONTAINER_BACKEND=''
+CONTAINER_LIVE_REF=''
+CONTAINER_IMAGE_PRESENT=0
+CONTAINER_IMAGE_ID=''
+CONTAINER_BUILDER_PRESENT=0
 declare -a CONTAINER_COMMAND=()
 
 container_fail() {
@@ -125,6 +129,30 @@ container_validate_resource_boundaries() {
     container_assert_directory_metadata "$MINIOS_CONTAINER_STATE_DIR" || return $?
 }
 
+container_validate_destroying_boundaries() {
+    if [[ -e "$MINIOS_CONTAINER_STORAGE_ROOT" \
+        || -L "$MINIOS_CONTAINER_STORAGE_ROOT" ]]; then
+        container_validate_resource_boundaries
+        return $?
+    fi
+    container_assert_owned_path "$MINIOS_CONTAINER_STORAGE_ROOT" \
+        "$MINIOS_ENV_ROOT/container-storage" || return $?
+    container_assert_owned_path "$MINIOS_CONTAINER_GRAPHROOT" \
+        "$MINIOS_ENV_ROOT/container-storage/graphroot" || return $?
+    container_assert_owned_path "$MINIOS_CONTAINER_RUNROOT" \
+        "$MINIOS_ENV_ROOT/container-storage/runroot" || return $?
+    if [[ -e "$MINIOS_CONTAINER_GRAPHROOT" || -L "$MINIOS_CONTAINER_GRAPHROOT" \
+        || -e "$MINIOS_CONTAINER_RUNROOT" || -L "$MINIOS_CONTAINER_RUNROOT" ]]; then
+        container_fail 'storage root 缺失时 graphroot/runroot 也必须缺失'
+        return 1
+    fi
+    container_assert_owned_path "$MINIOS_CONTAINER_STATE_DIR" \
+        "$MINIOS_ENV_ROOT/state" || return $?
+    container_assert_owned_path "$MINIOS_CONTAINER_STATE_FILE" \
+        "$MINIOS_ENV_ROOT/state/container.env" || return $?
+    container_assert_directory_metadata "$MINIOS_CONTAINER_STATE_DIR"
+}
+
 container_assert_state_metadata() {
     local file_type
     local file_uid
@@ -186,6 +214,7 @@ container_try_podman() {
         return 1
     fi
     CONTAINER_BACKEND='podman'
+    CONTAINER_LIVE_REF="localhost/$MINIOS_CONTAINER_IMAGE"
     CONTAINER_COMMAND=(
         podman --root "$MINIOS_CONTAINER_GRAPHROOT"
         --runroot "$MINIOS_CONTAINER_RUNROOT"
@@ -196,6 +225,7 @@ container_try_docker() {
     command -v docker >/dev/null 2>&1 || return 1
     docker info --format '{{.ServerVersion}}' >/dev/null 2>&1 || return $?
     CONTAINER_BACKEND='docker'
+    CONTAINER_LIVE_REF="$MINIOS_CONTAINER_IMAGE"
     CONTAINER_COMMAND=(docker)
 }
 
@@ -232,19 +262,29 @@ container_select_backend() {
     esac
 }
 
+container_expected_live_ref() {
+    local backend="$1"
+    case "$backend" in
+        podman) printf 'localhost/%s\n' "$MINIOS_CONTAINER_IMAGE" ;;
+        docker) printf '%s\n' "$MINIOS_CONTAINER_IMAGE" ;;
+        *) container_fail "无法为未知 backend 生成 live ref：$backend"; return 1 ;;
+    esac
+}
+
 container_inspect_image() {
-    local expected_id="${1:-}"
+    local live_ref="$1"
+    local expected_id="${2:-}"
     local actual_id
     local actual_label
     local actual_names
 
     actual_id="$("${CONTAINER_COMMAND[@]}" image inspect \
-        --format '{{.Id}}' "$MINIOS_CONTAINER_IMAGE")" || return $?
+        --format '{{.Id}}' "$live_ref")" || return $?
     actual_label="$("${CONTAINER_COMMAND[@]}" image inspect \
         --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_LABEL_KEY\" }}" \
-        "$MINIOS_CONTAINER_IMAGE")" || return $?
+        "$live_ref")" || return $?
     actual_names="$("${CONTAINER_COMMAND[@]}" image inspect \
-        --format '{{join .RepoTags "\n"}}' "$MINIOS_CONTAINER_IMAGE")" || return $?
+        --format '{{join .RepoTags "\n"}}' "$live_ref")" || return $?
 
     if [[ -z "$actual_id" || "$actual_id" =~ [[:space:]] ]]; then
         container_fail "镜像 inspect 未返回单一 image ID：${actual_id:-missing}"
@@ -254,7 +294,7 @@ container_inspect_image() {
         container_fail "镜像 OCI label 不属于项目：${actual_label:-missing}"
         return 1
     fi
-    if ! grep -Fqx -- "$MINIOS_CONTAINER_IMAGE" <<<"$actual_names"; then
+    if ! grep -Fqx -- "$live_ref" <<<"$actual_names"; then
         container_fail "镜像名称不匹配：${actual_names:-missing}"
         return 1
     fi
@@ -265,9 +305,78 @@ container_inspect_image() {
     printf '%s\n' "$actual_id"
 }
 
+container_probe_image() {
+    local live_ref="$1"
+    local status
+    local image_ids
+    CONTAINER_IMAGE_PRESENT=0
+    CONTAINER_IMAGE_ID=''
+    if [[ "$CONTAINER_BACKEND" == 'podman' ]]; then
+        if "${CONTAINER_COMMAND[@]}" image exists "$live_ref"; then
+            CONTAINER_IMAGE_PRESENT=1
+        else
+            status=$?
+            if ((status == 1)); then
+                return 0
+            fi
+            container_fail "Podman image exists 探测失败：status=$status"
+            return "$status"
+        fi
+    else
+        if image_ids="$(docker image ls --quiet --no-trunc "$live_ref")"; then
+            :
+        else
+            status=$?
+            container_fail "Docker image ls 探测失败：status=$status"
+            return "$status"
+        fi
+        if [[ -z "$image_ids" ]]; then
+            return 0
+        fi
+        if [[ "$image_ids" =~ [[:space:]] ]]; then
+            container_fail "Docker live ref 命中多个 image ID：$live_ref"
+            return 1
+        fi
+        CONTAINER_IMAGE_PRESENT=1
+        CONTAINER_IMAGE_ID="$image_ids"
+        return 0
+    fi
+    CONTAINER_IMAGE_ID="$("${CONTAINER_COMMAND[@]}" image inspect \
+        --format '{{.Id}}' "$live_ref")" || return $?
+    if [[ -z "$CONTAINER_IMAGE_ID" || "$CONTAINER_IMAGE_ID" =~ [[:space:]] ]]; then
+        container_fail "live image ID 探测结果非法：${CONTAINER_IMAGE_ID:-missing}"
+        return 1
+    fi
+}
+
+container_probe_docker_builder() {
+    local names
+    local matches
+    local status
+    CONTAINER_BUILDER_PRESENT=0
+    if names="$(docker buildx ls --format '{{.Name}}')"; then
+        :
+    else
+        status=$?
+        container_fail "Docker Buildx builder 探测失败：status=$status"
+        return "$status"
+    fi
+    matches="$(grep -Fxc -- "$MINIOS_CONTAINER_BUILDER" <<<"$names" || true)"
+    if [[ "$matches" == '0' ]]; then
+        return 0
+    fi
+    if [[ "$matches" != '1' ]]; then
+        container_fail "固定 Buildx builder 名称出现多次：$MINIOS_CONTAINER_BUILDER"
+        return 1
+    fi
+    CONTAINER_BUILDER_PRESENT=1
+}
+
+STATE_CONTAINER_PHASE=''
 STATE_CONTAINER_BACKEND=''
 STATE_CONTAINER_NAME=''
 STATE_CONTAINER_IMAGE=''
+STATE_CONTAINER_LIVE_REF=''
 STATE_CONTAINER_LABEL=''
 STATE_CONTAINER_IMAGE_ID=''
 STATE_CONTAINER_BASE_DIGEST=''
@@ -303,9 +412,11 @@ container_load_state() {
         fi
         seen+="$key|"
         case "$key" in
+            MINIOS_CONTAINER_PHASE) STATE_CONTAINER_PHASE="$value" ;;
             MINIOS_CONTAINER_BACKEND) STATE_CONTAINER_BACKEND="$value" ;;
             MINIOS_CONTAINER_NAME) STATE_CONTAINER_NAME="$value" ;;
             MINIOS_CONTAINER_IMAGE) STATE_CONTAINER_IMAGE="$value" ;;
+            MINIOS_CONTAINER_LIVE_REF) STATE_CONTAINER_LIVE_REF="$value" ;;
             MINIOS_CONTAINER_LABEL) STATE_CONTAINER_LABEL="$value" ;;
             MINIOS_CONTAINER_IMAGE_ID) STATE_CONTAINER_IMAGE_ID="$value" ;;
             MINIOS_CONTAINER_BASE_DIGEST) STATE_CONTAINER_BASE_DIGEST="$value" ;;
@@ -320,7 +431,8 @@ container_load_state() {
 
     local required
     for required in \
-        STATE_CONTAINER_BACKEND STATE_CONTAINER_NAME STATE_CONTAINER_IMAGE \
+        STATE_CONTAINER_PHASE STATE_CONTAINER_BACKEND STATE_CONTAINER_NAME \
+        STATE_CONTAINER_IMAGE STATE_CONTAINER_LIVE_REF \
         STATE_CONTAINER_LABEL STATE_CONTAINER_IMAGE_ID \
         STATE_CONTAINER_BASE_DIGEST STATE_CONTAINER_STORAGE_ROOT \
         STATE_CONTAINER_GRAPHROOT STATE_CONTAINER_RUNROOT \
@@ -333,6 +445,12 @@ container_load_state() {
 }
 
 container_validate_loaded_state_boundaries() {
+    local expected_live_ref
+    if [[ "$STATE_CONTAINER_PHASE" != 'ready' \
+        && "$STATE_CONTAINER_PHASE" != 'destroying' ]]; then
+        container_fail "container state phase 非法：$STATE_CONTAINER_PHASE"
+        return 1
+    fi
     if [[ "$STATE_CONTAINER_BACKEND" != 'podman' \
         && "$STATE_CONTAINER_BACKEND" != 'docker' ]]; then
         container_fail "container state backend 非法：$STATE_CONTAINER_BACKEND"
@@ -350,6 +468,11 @@ container_validate_loaded_state_boundaries() {
         container_fail 'container state 固定标识不匹配'
         return 1
     fi
+    expected_live_ref="$(container_expected_live_ref "$STATE_CONTAINER_BACKEND")" || return $?
+    if [[ "$STATE_CONTAINER_LIVE_REF" != "$expected_live_ref" ]]; then
+        container_fail "container live ref 不是 backend canonical 值：actual=$STATE_CONTAINER_LIVE_REF expected=$expected_live_ref"
+        return 1
+    fi
     container_assert_owned_path "$STATE_CONTAINER_STORAGE_ROOT" \
         "$MINIOS_CONTAINER_STORAGE_ROOT" || return $?
     container_assert_owned_path "$STATE_CONTAINER_GRAPHROOT" \
@@ -360,7 +483,8 @@ container_validate_loaded_state_boundaries() {
 
 container_verify_state_ownership() {
     local live_id
-    live_id="$(container_inspect_image "$STATE_CONTAINER_IMAGE_ID")" || return $?
+    live_id="$(container_inspect_image \
+        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_IMAGE_ID")" || return $?
     if [[ "$STATE_CONTAINER_IMAGE" != "$MINIOS_CONTAINER_IMAGE" \
         || "$STATE_CONTAINER_LABEL" != "$MINIOS_CONTAINER_LABEL" ]]; then
         container_fail 'container state 的 image name 或 OCI label 不匹配'
@@ -370,8 +494,10 @@ container_verify_state_ownership() {
 }
 
 container_write_state() {
-    local backend="$1"
-    local image_id="$2"
+    local phase="$1"
+    local backend="$2"
+    local live_ref="$3"
+    local image_id="$4"
     local partial
     container_prepare_directory "$MINIOS_CONTAINER_STATE_DIR" \
         "$MINIOS_ENV_ROOT/state" || return $?
@@ -381,9 +507,11 @@ container_write_state() {
     fi
     partial="$(mktemp "$MINIOS_CONTAINER_STATE_DIR/container.env.partial.XXXXXX")" || return $?
     if ! printf '%s\n' \
+        "MINIOS_CONTAINER_PHASE=$phase" \
         "MINIOS_CONTAINER_BACKEND=$backend" \
         "MINIOS_CONTAINER_NAME=$MINIOS_CONTAINER_NAME" \
         "MINIOS_CONTAINER_IMAGE=$MINIOS_CONTAINER_IMAGE" \
+        "MINIOS_CONTAINER_LIVE_REF=$live_ref" \
         "MINIOS_CONTAINER_LABEL=$MINIOS_CONTAINER_LABEL" \
         "MINIOS_CONTAINER_IMAGE_ID=$image_id" \
         "MINIOS_CONTAINER_BASE_DIGEST=$MINIOS_CONTAINER_BASE_DIGEST" \
@@ -401,4 +529,18 @@ container_write_state() {
         rm -f -- "$partial"
         return 1
     }
+}
+
+container_transition_phase() {
+    local phase="$1"
+    container_write_state "$phase" "$STATE_CONTAINER_BACKEND" \
+        "$STATE_CONTAINER_LIVE_REF" "$STATE_CONTAINER_IMAGE_ID" || return $?
+    STATE_CONTAINER_PHASE="$phase"
+}
+
+container_require_ready_phase() {
+    if [[ "$STATE_CONTAINER_PHASE" != 'ready' ]]; then
+        container_fail "container state phase 必须为 ready，实际 $STATE_CONTAINER_PHASE"
+        return 1
+    fi
 }
