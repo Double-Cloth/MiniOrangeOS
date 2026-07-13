@@ -109,7 +109,8 @@ backend=$(basename "$0")
 runtime=$FAKE_CONTAINER_RUNTIME_DIR
 image_marker=$runtime/image.exists
 builders_dir=$runtime/builders
-mkdir -p "$runtime" "$builders_dir"
+containers_dir=$runtime/containers
+mkdir -p "$runtime" "$builders_dir" "$containers_dir"
 
 image_field() {
   field=$1
@@ -192,6 +193,70 @@ case " $* " in
     done
     [ -n "$requested" ] && [ ! -e "$builders_dir/$requested" ] || exit 65
     : > "$builders_dir/$requested"
+    ;;
+  *" container ls "*)
+    filter=''
+    previous=''
+    for argument in "$@"; do
+      if [ "$previous" = --filter ]; then filter=$argument; fi
+      previous=$argument
+    done
+    for container_dir in "$containers_dir"/*; do
+      [ -d "$container_dir" ] || continue
+      name=$(cat "$container_dir/name")
+      label=$(cat "$container_dir/label")
+      case "$filter" in
+        name=*)
+          prefix=${filter#name=^}
+          case "$name" in "$prefix"*) printf '%s\n' "$name" ;; esac
+          ;;
+        label=*)
+          [ "$label" = "${filter#label=}" ] && printf '%s\n' "$name"
+          ;;
+        *) exit 69 ;;
+      esac
+    done
+    ;;
+  *" container inspect "*)
+    requested=''
+    for requested in "$@"; do :; done
+    requested=${requested#/}
+    container_dir=$containers_dir/$requested
+    [ -d "$container_dir" ] || exit 1
+    case "$*" in
+      *org.miniorangeos.task*) cat "$container_dir/task-label" ;;
+      *org.miniorangeos.intent*) cat "$container_dir/intent-label" ;;
+      *org.miniorangeos.project*) sed 's/^[^=]*=//' "$container_dir/label" ;;
+      *State.Running*) cat "$container_dir/running" ;;
+      *Image*) cat "$container_dir/image-id" ;;
+      *Name*) cat "$container_dir/name" ;;
+      *) exit 69 ;;
+    esac
+    ;;
+  *" container stop "*)
+    requested=''
+    for requested in "$@"; do :; done
+    container_dir=$containers_dir/$requested
+    [ -d "$container_dir" ] || exit 1
+    if [ "${FAKE_FAIL_CONTAINER_STOP_ONCE:-0}" = 1 ] \
+      && [ ! -e "$runtime/container-stop.failed" ]; then
+      : > "$runtime/container-stop.failed"
+      exit 76
+    fi
+    printf 'false\n' > "$container_dir/running"
+    ;;
+  *" container rm "*)
+    requested=''
+    for requested in "$@"; do :; done
+    container_dir=$containers_dir/$requested
+    [ -d "$container_dir" ] || exit 1
+    [ "$(cat "$container_dir/running")" = false ] || exit 72
+    if [ "${FAKE_FAIL_CONTAINER_RM_ONCE:-0}" = 1 ] \
+      && [ ! -e "$runtime/container-rm.failed" ]; then
+      : > "$runtime/container-rm.failed"
+      exit 76
+    fi
+    rm -rf "$container_dir"
     ;;
   *" image exists "*)
     if [ "${FAKE_IMAGE_PROBE_EXIT:-0}" -ne 0 ]; then
@@ -451,6 +516,35 @@ esac
             }
         )
         return env, fake_log, command_directory
+
+    def _write_fake_container(
+        self,
+        temporary_root: Path,
+        *,
+        name: str = "miniorangeos-dev-run-1234",
+        label: str = "org.miniorangeos.project=MiniOrangeOS",
+        task_label: str = "T01",
+        intent: str = OWNED_INTENT,
+        image_id: str = OWNED_IMAGE_ID,
+        running: bool = True,
+    ) -> Path:
+        container_directory = (
+            temporary_root / "fake-container-runtime" / "containers" / name
+        )
+        container_directory.mkdir(parents=True, exist_ok=True)
+        values = {
+            "name": name,
+            "label": label,
+            "task-label": task_label,
+            "intent-label": intent,
+            "image-id": image_id,
+            "running": "true" if running else "false",
+        }
+        for field, value in values.items():
+            (container_directory / field).write_text(
+                f"{value}\n", encoding="utf-8", newline="\n"
+            )
+        return container_directory
 
     def _container_calls(self, fake_log: Path) -> list[list[str]]:
         if not fake_log.exists():
@@ -2765,6 +2859,7 @@ exit 0
                 self.assertIn(
                     f"org.miniorangeos.intent={OWNED_INTENT}", call
                 )
+                self.assertIn("org.miniorangeos.task=T01", call)
                 self.assertIn(f"{ROOT}:/workspace:ro", call)
                 self.assertIn("argument with spaces", call)
                 self.assertIn("; touch /tmp/must-not-run", call)
@@ -3525,6 +3620,223 @@ exit 0
                 self.assertTrue(
                     any("inspect" in command.split() for command in commands),
                     f"正常 state 必须到达 fake {backend} inspect",
+                )
+
+    def test_ubuntu_destroy_removes_owned_stale_containers_before_image(self) -> None:
+        for backend in ("podman", "docker"):
+            for running in (True, False):
+                with (
+                    self.subTest(backend=backend, running=running),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    self._write_container_state(environment_root, backend=backend)
+                    stale = self._write_fake_container(
+                        temporary_root,
+                        name="miniorangeos-dev-run-4321",
+                        running=running,
+                    )
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertFalse(stale.exists())
+                    calls = self._container_calls(fake_log)
+                    stop_calls = [
+                        call for call in calls if "container" in call and "stop" in call
+                    ]
+                    rm_calls = [
+                        call for call in calls if "container" in call and "rm" in call
+                    ]
+                    self.assertEqual(1 if running else 0, len(stop_calls))
+                    self.assertEqual(1, len(rm_calls))
+                    container_rm_index = calls.index(rm_calls[0])
+                    image_rm_index = next(
+                        index
+                        for index, call in enumerate(calls)
+                        if self._is_image_remove_call(call)
+                    )
+                    self.assertLess(container_rm_index, image_rm_index)
+
+    def test_ubuntu_destroy_stale_container_retry_is_idempotent(self) -> None:
+        for backend in ("podman", "docker"):
+            for fail_stage in ("stop", "rm"):
+                with (
+                    self.subTest(backend=backend, fail_stage=fail_stage),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, _, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    env[
+                        "FAKE_FAIL_CONTAINER_STOP_ONCE"
+                        if fail_stage == "stop"
+                        else "FAKE_FAIL_CONTAINER_RM_ONCE"
+                    ] = "1"
+                    self._write_container_state(environment_root, backend=backend)
+                    stale = self._write_fake_container(temporary_root)
+
+                    first = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertNotEqual(0, first.returncode)
+                    self.assertTrue(stale.is_dir())
+                    self.assertEqual(
+                        "true\n" if fail_stage == "stop" else "false\n",
+                        (stale / "running").read_text(encoding="utf-8"),
+                    )
+                    state = environment_root / "state/container.env"
+                    self.assertIn(
+                        "MINIOS_CONTAINER_PHASE=destroying\n",
+                        state.read_text(encoding="utf-8"),
+                    )
+
+                    second = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertEqual(0, second.returncode, second.stderr)
+                    self.assertFalse(stale.exists())
+                    self.assertFalse(state.exists())
+
+    def test_ubuntu_destroy_rejects_foreign_stale_container_before_mutation(self) -> None:
+        cases = (
+            {"name": "foreign-run-1"},
+            {
+                "name": "miniorangeos-dev-run-1",
+                "label": "org.miniorangeos.project=Foreign",
+            },
+            {"name": "miniorangeos-dev-run-invalid"},
+            {"name": "miniorangeos-dev-run-2", "task_label": "T99"},
+            {"name": "miniorangeos-dev-run-3", "intent": FOREIGN_INTENT},
+            {"name": "miniorangeos-dev-run-4", "image_id": FOREIGN_IMAGE_ID},
+        )
+        for backend in ("podman", "docker"):
+            for case in cases:
+                with (
+                    self.subTest(backend=backend, case=case),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    self._write_container_state(environment_root, backend=backend)
+                    stale = self._write_fake_container(temporary_root, **case)
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(stale.is_dir())
+                    calls = self._container_calls(fake_log)
+                    self.assertFalse(
+                        any(
+                            ("container" in call and ("stop" in call or "rm" in call))
+                            or self._is_image_remove_call(call)
+                            or self._is_storage_reset_call(call)
+                            or ("buildx" in call and "rm" in call)
+                            for call in calls
+                        ),
+                        calls,
+                    )
+
+    def test_ready_resource_drift_destroy_completes_for_both_backends(self) -> None:
+        cases = (
+            ("podman", "image"),
+            ("docker", "image"),
+            ("docker", "builder"),
+            ("docker", "image-and-builder"),
+        )
+        for backend, missing in cases:
+            with (
+                self.subTest(backend=backend, missing=missing),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = backend
+                self._write_container_state(environment_root, backend=backend)
+                runtime = temporary_root / "fake-container-runtime"
+                if "image" in missing:
+                    for path in runtime.glob("image.*"):
+                        path.unlink()
+                if "builder" in missing:
+                    shutil.rmtree(runtime / "builders")
+                    (runtime / "builders").mkdir()
+
+                result = self._run_required(
+                    "environment/ubuntu/destroy.sh", "--all", env=env
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse((environment_root / "state/container.env").exists())
+                self.assertFalse((environment_root / "container-storage").exists())
+                calls = self._container_calls(fake_log)
+                if "image" in missing:
+                    self.assertFalse(any(self._is_image_remove_call(c) for c in calls))
+                if "builder" in missing:
+                    self.assertFalse(
+                        any("buildx" in c and "rm" in c for c in calls)
+                    )
+
+    def test_ready_resource_drift_create_recovers_and_rebuilds(self) -> None:
+        cases = (
+            ("podman", "image"),
+            ("docker", "image"),
+            ("docker", "builder"),
+            ("docker", "image-and-builder"),
+        )
+        for backend, missing in cases:
+            with (
+                self.subTest(backend=backend, missing=missing),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, _, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = backend
+                self._write_container_state(environment_root, backend=backend)
+                runtime = temporary_root / "fake-container-runtime"
+                if "image" in missing:
+                    for path in runtime.glob("image.*"):
+                        path.unlink()
+                if "builder" in missing:
+                    shutil.rmtree(runtime / "builders")
+                    (runtime / "builders").mkdir()
+
+                result = self._run_required(
+                    "environment/ubuntu/create.sh", env=env
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                state = environment_root / "state/container.env"
+                self.assertIn(
+                    "MINIOS_CONTAINER_PHASE=ready\n",
+                    state.read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    "build\n",
+                    (runtime / "build.count").read_text(encoding="utf-8"),
                 )
 
 

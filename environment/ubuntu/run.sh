@@ -23,6 +23,7 @@ readonly run_name="$MINIOS_CONTAINER_NAME-run-$$"
 "${CONTAINER_COMMAND[@]}" run --rm \
     --name "$run_name" \
     --label "$MINIOS_CONTAINER_LABEL" \
+    --label "$MINIOS_CONTAINER_TASK_LABEL" \
     --label "$MINIOS_CONTAINER_INTENT_LABEL_KEY=$STATE_CONTAINER_INTENT" \
     --volume "$MINIOS_REPO_ROOT:/workspace:ro" \
     --workdir /workspace \
