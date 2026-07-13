@@ -18,6 +18,11 @@ fi
 container_load_state
 container_validate_loaded_state_boundaries
 
+if [[ "$STATE_CONTAINER_PHASE" == 'creating' ]]; then
+    container_fail 'container state 正在 creating；请运行 create.sh 执行自动 recovery'
+    exit 1
+fi
+
 [[ "$STATE_CONTAINER_STORAGE_ROOT" == "$MINIOS_ENV_ROOT/container-storage" ]] || exit 1
 [[ "$STATE_CONTAINER_GRAPHROOT" == "$MINIOS_ENV_ROOT/container-storage/graphroot" ]] || exit 1
 [[ "$STATE_CONTAINER_RUNROOT" == "$MINIOS_ENV_ROOT/container-storage/runroot" ]] || exit 1
@@ -55,15 +60,7 @@ if [[ "$STATE_CONTAINER_PHASE" == 'ready' ]]; then
     fi
     container_transition_phase destroying
 else
-    if [[ "$STATE_CONTAINER_BACKEND" == 'podman' \
-        && ! -e "$MINIOS_CONTAINER_STORAGE_ROOT" \
-        && ! -L "$MINIOS_CONTAINER_STORAGE_ROOT" ]]; then
-        rm -f -- "$MINIOS_CONTAINER_STATE_FILE"
-        printf 'container_destroy=complete backend=podman image=%s\n' \
-            "$STATE_CONTAINER_LIVE_REF"
-        exit 0
-    fi
-    container_validate_destroying_boundaries
+    container_validate_partial_storage_boundaries
     container_select_backend "$STATE_CONTAINER_BACKEND"
     container_probe_image "$STATE_CONTAINER_LIVE_REF"
     if ((CONTAINER_IMAGE_PRESENT == 1)); then
@@ -78,6 +75,8 @@ else
     fi
 fi
 
+container_validate_partial_storage_boundaries
+
 if [[ "$STATE_CONTAINER_IMAGE" != 'miniorangeos-dev:ubuntu-24.04' \
     || "$STATE_CONTAINER_LABEL" != 'org.miniorangeos.project=MiniOrangeOS' ]]; then
     container_fail 'container state 的固定镜像名或项目 label 不匹配'
@@ -88,9 +87,9 @@ if [[ "$STATE_CONTAINER_BACKEND" == 'docker' && $builder_present -eq 1 ]]; then
     docker buildx rm --force "$MINIOS_CONTAINER_BUILDER"
 fi
 if ((image_present == 1)); then
-    "${CONTAINER_COMMAND[@]}" image rmi "$STATE_CONTAINER_IMAGE_ID"
+    "${CONTAINER_COMMAND[@]}" image rmi "$STATE_CONTAINER_LIVE_REF"
 fi
-rm -rf -- "$MINIOS_CONTAINER_STORAGE_ROOT"
+container_remove_storage_components
 rm -f -- "$MINIOS_CONTAINER_STATE_FILE"
 printf 'container_destroy=complete backend=%s image=%s\n' \
     "$STATE_CONTAINER_BACKEND" "$STATE_CONTAINER_LIVE_REF"

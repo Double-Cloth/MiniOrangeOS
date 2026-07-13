@@ -14,6 +14,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+OWNED_IMAGE_ID = "sha256:" + "1" * 64
+NEW_IMAGE_ID = "sha256:" + "2" * 64
+FOREIGN_IMAGE_ID = "sha256:" + "3" * 64
+OTHER_IMAGE_TAG = "example.invalid/unrelated:keep"
 
 
 class EnvironmentRuntimeTests(unittest.TestCase):
@@ -110,21 +114,39 @@ image_field() {
 remove_image() {
   requested=$1
   current_id=$(cat "$runtime/image.id")
-  current_ref=$(cat "$runtime/image.ref")
-  if [ "$requested" != "$current_id" ] && [ "$requested" != "$current_ref" ]; then
+  if [ "$requested" = "$current_id" ]; then
+    rm -f "$image_marker" "$runtime/image.id" "$runtime/image.refs" \
+      "$runtime/image.label" "$runtime/image.task-label"
+    return
+  fi
+  if ! grep -Fqx -- "$requested" "$runtime/image.refs"; then
     exit 66
   fi
   if [ "${FAKE_FAIL_IMAGE_RMI_ONCE:-0}" = 1 ] && [ ! -e "$runtime/rmi.failed" ]; then
     : > "$runtime/rmi.failed"
     exit 75
   fi
-  rm -f "$image_marker" "$runtime/image.id" "$runtime/image.ref" "$runtime/image.label"
+  remaining=$(grep -Fvx -- "$requested" "$runtime/image.refs" || true)
+  if [ -n "$remaining" ]; then
+    printf '%s\n' "$remaining" > "$runtime/image.refs"
+  else
+    rm -f "$image_marker" "$runtime/image.id" "$runtime/image.refs" \
+      "$runtime/image.label" "$runtime/image.task-label"
+  fi
 }
 
 case " $* " in
   *" info "*)
     if [ "${FAKE_CONTAINER_INFO_EXIT:-0}" -ne 0 ]; then
       exit "$FAKE_CONTAINER_INFO_EXIT"
+    fi
+    if [ "${FAKE_INFO_TOUCH_STORAGE:-0}" = 1 ]; then
+      case " $* " in
+        *" --root "*)
+          mkdir -p "$MINIOS_ENV_ROOT/container-storage/graphroot" \
+            "$MINIOS_ENV_ROOT/container-storage/runroot"
+          ;;
+      esac
     fi
     if [ "$backend" = podman ]; then
       printf '%s\\n' "${FAKE_PODMAN_ROOTLESS:-true}"
@@ -147,22 +169,39 @@ case " $* " in
     : > "$builder_marker"
     ;;
   *" image exists "*)
-    [ -e "$image_marker" ]
+    if [ "${FAKE_IMAGE_PROBE_EXIT:-0}" -ne 0 ]; then
+      exit "$FAKE_IMAGE_PROBE_EXIT"
+    fi
+    requested=''
+    for requested in "$@"; do :; done
+    [ -e "$image_marker" ] && grep -Fqx -- "$requested" "$runtime/image.refs"
     ;;
   *" image ls "*)
-    if [ -e "$image_marker" ]; then cat "$runtime/image.id"; fi
+    if [ "${FAKE_IMAGE_PROBE_EXIT:-0}" -ne 0 ]; then
+      exit "$FAKE_IMAGE_PROBE_EXIT"
+    fi
+    requested=''
+    for requested in "$@"; do :; done
+    if [ -e "$image_marker" ] && grep -Fqx -- "$requested" "$runtime/image.refs"; then
+      cat "$runtime/image.id"
+    fi
     ;;
   *" image inspect "*)
     if [ "${FAKE_CONTAINER_INSPECT_EXIT:-0}" -ne 0 ]; then
       exit "$FAKE_CONTAINER_INSPECT_EXIT"
     fi
-    [ -e "$image_marker" ] || exit 1
+    requested=''
+    for requested in "$@"; do :; done
+    [ -e "$image_marker" ] && grep -Fqx -- "$requested" "$runtime/image.refs" || exit 1
     case "$*" in
+      *org.miniorangeos.task*)
+        image_field task-label "${FAKE_CONTAINER_TASK_LABEL:-}"
+        ;;
       *Labels*|*labels*|*label*)
         image_field label "${FAKE_CONTAINER_LABEL:-}"
         ;;
       *RepoTags*|*repoTags*|*name*)
-        image_field ref "${FAKE_CONTAINER_IMAGE_NAME:-}"
+        image_field refs "${FAKE_CONTAINER_IMAGE_NAME:-}"
         if [ "${FAKE_BREAK_STATE_WRITE_AFTER_INSPECT:-0}" = 1 ]; then
           chmod 0555 "$MINIOS_ENV_ROOT/state"
         fi
@@ -170,6 +209,8 @@ case " $* " in
       *Id*|*ID*|*id*)
         if [ "${FAKE_CONTAINER_IMAGE_ID+x}" = x ]; then
           printf '%s\\n' "$FAKE_CONTAINER_IMAGE_ID"
+        elif [ "$backend" = podman ]; then
+          sed 's/^sha256://' "$runtime/image.id"
         else
           cat "$runtime/image.id"
         fi
@@ -181,6 +222,10 @@ case " $* " in
     if [ "${FAKE_CONTAINER_BUILD_EXIT:-0}" -ne 0 ]; then
       exit "$FAKE_CONTAINER_BUILD_EXIT"
     fi
+    /usr/bin/grep -Fqx 'MINIOS_CONTAINER_PHASE=creating' \
+      "$MINIOS_ENV_ROOT/state/container.env"
+    /usr/bin/grep -Fqx 'MINIOS_CONTAINER_IMAGE_ID=pending' \
+      "$MINIOS_ENV_ROOT/state/container.env"
     iidfile=''
     previous=''
     for argument in "$@"; do
@@ -188,18 +233,19 @@ case " $* " in
       previous=$argument
     done
     [ -n "$iidfile" ] || exit 64
-    image_id=${FAKE_CONTAINER_BUILD_IMAGE_ID:-sha256:new-image-id}
+    image_id=${FAKE_CONTAINER_BUILD_IMAGE_ID:-sha256:2222222222222222222222222222222222222222222222222222222222222222}
     if [ "$backend" = podman ]; then
       image_ref=localhost/miniorangeos-dev:ubuntu-24.04
     else
       image_ref=miniorangeos-dev:ubuntu-24.04
     fi
     printf '%s\\n' "$image_id" > "$runtime/image.id"
-    printf '%s\\n' "$image_ref" > "$runtime/image.ref"
+    printf '%s\\n' "$image_ref" > "$runtime/image.refs"
     printf '%s\\n' MiniOrangeOS > "$runtime/image.label"
+    printf '%s\\n' T01 > "$runtime/image.task-label"
     : > "$image_marker"
     case "${FAKE_CONTAINER_IID_MODE:-valid}" in
-      valid) printf '%s\\n' "$image_id" > "$iidfile" ;;
+      valid) printf '%s\\n' "${FAKE_CONTAINER_IID_VALUE:-$image_id}" > "$iidfile" ;;
       missing) : ;;
       invalid) printf '%s\\n' 'not-an-image-id' > "$iidfile" ;;
       *) exit 63 ;;
@@ -231,7 +277,7 @@ esac
         *,
         image_name: str = "miniorangeos-dev:ubuntu-24.04",
         label: str = "org.miniorangeos.project=MiniOrangeOS",
-        image_id: str = "sha256:owned-image-id",
+        image_id: str = OWNED_IMAGE_ID,
         backend: str = "podman",
         storage_root: str | None = None,
         builder: str = "miniorangeos-dev-builder",
@@ -272,11 +318,14 @@ esac
         (fake_runtime / "image.id").write_text(
             f"{image_id}\n", encoding="utf-8", newline="\n"
         )
-        (fake_runtime / "image.ref").write_text(
+        (fake_runtime / "image.refs").write_text(
             f"{actual_live_ref}\n", encoding="utf-8", newline="\n"
         )
         (fake_runtime / "image.label").write_text(
             "MiniOrangeOS\n", encoding="utf-8", newline="\n"
+        )
+        (fake_runtime / "image.task-label").write_text(
+            "T01\n", encoding="utf-8", newline="\n"
         )
         if backend == "docker":
             (fake_runtime / "builder.exists").touch()
@@ -1283,6 +1332,31 @@ exit 0
                 else:
                     self.assertTrue(any("buildx" in call for call in calls))
 
+    def test_ubuntu_create_detects_podman_before_project_storage_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            environment_root = temporary_root / "environment"
+            env, fake_log, _ = self._container_env(
+                temporary_root, environment_root, "podman"
+            )
+            env["MINIOS_CONTAINER_BACKEND"] = "podman"
+            env["FAKE_INFO_TOUCH_STORAGE"] = "1"
+
+            result = self._run_required(
+                "environment/ubuntu/create.sh", env=env
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            info_calls = [
+                call for call in self._container_calls(fake_log) if "info" in call
+            ]
+            self.assertEqual(1, len(info_calls))
+            self.assertNotIn("--root", info_calls[0])
+            state = (environment_root / "state/container.env").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("MINIOS_CONTAINER_PHASE=ready\n", state)
+
     def test_ubuntu_create_records_inspected_image_for_both_backends(self) -> None:
         for backend in ("podman", "docker"):
             with (
@@ -1308,7 +1382,7 @@ exit 0
                     for line in state_path.read_text(encoding="utf-8").splitlines()
                 )
                 self.assertEqual("ready", state["MINIOS_CONTAINER_PHASE"])
-                self.assertEqual("sha256:new-image-id", state["MINIOS_CONTAINER_IMAGE_ID"])
+                self.assertEqual(NEW_IMAGE_ID, state["MINIOS_CONTAINER_IMAGE_ID"])
                 self.assertEqual(backend, state["MINIOS_CONTAINER_BACKEND"])
                 expected_live_ref = (
                     "localhost/miniorangeos-dev:ubuntu-24.04"
@@ -1332,6 +1406,210 @@ exit 0
                 self.assertIn(str(ROOT), flattened)
                 self.assertIn("--iidfile", flattened)
                 self.assertIn(expected_live_ref, flattened)
+
+    def test_ubuntu_normalizes_bare_or_prefixed_real_image_ids(self) -> None:
+        for backend in ("podman", "docker"):
+            for iid_value in (NEW_IMAGE_ID, NEW_IMAGE_ID.removeprefix("sha256:")):
+                with (
+                    self.subTest(backend=backend, iid_value=iid_value),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, _, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    env["FAKE_CONTAINER_IID_VALUE"] = iid_value
+
+                    result = self._run_required(
+                        "environment/ubuntu/create.sh", env=env
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    state = (environment_root / "state/container.env").read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertIn(
+                        f"MINIOS_CONTAINER_IMAGE_ID={NEW_IMAGE_ID}\n", state
+                    )
+
+    def test_ubuntu_rejects_noncanonical_image_id_formats(self) -> None:
+        invalid_ids = (
+            "sha256:1234",
+            "sha256:" + "A" * 64,
+            "sha256:" + "g" * 64,
+        )
+        for phase in ("ready", "destroying"):
+            for image_id in ("pending", *invalid_ids):
+                with (
+                    self.subTest(phase=phase, image_id=image_id),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, "docker"
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = "docker"
+                    self._write_container_state(
+                        environment_root,
+                        backend="docker",
+                        phase=phase,
+                        image_id=image_id,
+                    )
+
+                    result = self._run_required(
+                        "environment/ubuntu/run.sh", "true", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertRegex(
+                        (result.stdout + result.stderr).lower(),
+                        r"(?:image.id|镜像.*id|pending|格式|非法)",
+                    )
+                    self.assertEqual([], self._container_calls(fake_log))
+
+        for backend in ("podman", "docker"):
+            for image_id in invalid_ids:
+                with (
+                    self.subTest(backend=backend, inspect_id=image_id),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, _, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    env["FAKE_CONTAINER_IMAGE_ID"] = image_id
+
+                    result = self._run_required(
+                        "environment/ubuntu/create.sh", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    state_path = environment_root / "state/container.env"
+                    if state_path.exists():
+                        self.assertNotIn(
+                            "MINIOS_CONTAINER_PHASE=ready\n",
+                            state_path.read_text(encoding="utf-8"),
+                        )
+
+    def test_ubuntu_create_recovers_persistent_creating_intent(self) -> None:
+        stages = ("intent", "partial-storage", "builder", "load-pending", "iid")
+        for backend in ("podman", "docker"):
+            for stage in stages:
+                if stage == "builder" and backend != "docker":
+                    continue
+                with (
+                    self.subTest(backend=backend, stage=stage),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    recorded_id = NEW_IMAGE_ID if stage == "iid" else "pending"
+                    self._write_container_state(
+                        environment_root,
+                        backend=backend,
+                        phase="creating",
+                        image_id=recorded_id,
+                    )
+                    runtime = temporary_root / "fake-container-runtime"
+                    if stage in {"intent", "partial-storage", "builder"}:
+                        for name in (
+                            "image.exists",
+                            "image.id",
+                            "image.refs",
+                            "image.label",
+                            "image.task-label",
+                        ):
+                            (runtime / name).unlink(missing_ok=True)
+                    if stage == "intent":
+                        shutil.rmtree(environment_root / "container-storage")
+                        (runtime / "builder.exists").unlink(missing_ok=True)
+                    elif stage == "partial-storage":
+                        shutil.rmtree(
+                            environment_root / "container-storage/runroot"
+                        )
+                        (runtime / "builder.exists").unlink(missing_ok=True)
+                    elif stage in {"load-pending", "iid"}:
+                        (runtime / "image.id").write_text(
+                            f"{NEW_IMAGE_ID}\n", encoding="utf-8", newline="\n"
+                        )
+
+                    result = self._run_required(
+                        "environment/ubuntu/create.sh", env=env
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    state = (environment_root / "state/container.env").read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertIn("MINIOS_CONTAINER_PHASE=ready\n", state)
+                    calls = self._container_calls(fake_log)
+                    self.assertTrue(any("build" in call for call in calls))
+                    if stage in {"load-pending", "iid"}:
+                        rmi_calls = [call for call in calls if "rmi" in call]
+                        self.assertTrue(rmi_calls)
+                        expected_ref = (
+                            "localhost/miniorangeos-dev:ubuntu-24.04"
+                            if backend == "podman"
+                            else "miniorangeos-dev:ubuntu-24.04"
+                        )
+                        self.assertEqual(expected_ref, rmi_calls[0][-1])
+
+    def test_ubuntu_create_preserves_mismatched_creating_intent(self) -> None:
+        cases = (
+            (OWNED_IMAGE_ID, {"FAKE_CONTAINER_IMAGE_ID": FOREIGN_IMAGE_ID}),
+            ("pending", {"FAKE_CONTAINER_TASK_LABEL": "OtherTask"}),
+        )
+        for backend in ("podman", "docker"):
+            for recorded_id, overrides in cases:
+                with (
+                    self.subTest(backend=backend, recorded_id=recorded_id),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    env.update(overrides)
+                    self._write_container_state(
+                        environment_root,
+                        backend=backend,
+                        phase="creating",
+                        image_id=recorded_id,
+                    )
+
+                    result = self._run_required(
+                        "environment/ubuntu/create.sh", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(
+                        (environment_root / "state/container.env").is_file()
+                    )
+                    diagnostic = (result.stdout + result.stderr).lower()
+                    self.assertRegex(
+                        diagnostic, r"(?:image.id|label|task|归属|不一致)"
+                    )
+                    calls = self._container_calls(fake_log)
+                    self.assertFalse(any("rmi" in call for call in calls))
+                    self.assertFalse(any("build" in call for call in calls))
+                    self.assertTrue(
+                        (environment_root / "container-storage").is_dir()
+                    )
+                    if backend == "docker":
+                        self.assertTrue(
+                            (temporary_root / "fake-container-runtime/builder.exists").exists()
+                        )
 
     def test_podman_requires_canonical_live_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1399,7 +1677,7 @@ exit 0
                         phase="destroying" if case == "destroying" else "ready",
                     )
                     if case == "id-mismatch":
-                        env["FAKE_CONTAINER_IMAGE_ID"] = "sha256:foreign-image-id"
+                        env["FAKE_CONTAINER_IMAGE_ID"] = FOREIGN_IMAGE_ID
 
                     result = self._run_required(
                         "environment/ubuntu/create.sh", env=env
@@ -1419,7 +1697,7 @@ exit 0
         cases = (
             ("name", {"FAKE_CONTAINER_IMAGE_NAME": "foreign:latest"}),
             ("label", {"FAKE_CONTAINER_LABEL": "OtherProject"}),
-            ("id", {"FAKE_CONTAINER_IMAGE_ID": "sha256:foreign-image-id"}),
+            ("id", {"FAKE_CONTAINER_IMAGE_ID": FOREIGN_IMAGE_ID}),
             ("iid-missing", {"FAKE_CONTAINER_IID_MODE": "missing"}),
             ("iid-invalid", {"FAKE_CONTAINER_IID_MODE": "invalid"}),
             ("state-write", {}),
@@ -1442,10 +1720,22 @@ exit 0
                             command_directory / "mv",
                             "#!/bin/sh\n"
                             "set -eu\n"
+                            "source=''\n"
                             "target=''\n"
-                            "for target in \"$@\"; do :; done\n"
+                            "for argument in \"$@\"; do\n"
+                            "  case \"$argument\" in\n"
+                            "    -*) ;;\n"
+                            "    *) if [ -z \"$source\" ]; then source=$argument; "
+                            "else target=$argument; fi ;;\n"
+                            "  esac\n"
+                            "done\n"
                             "case \"$target\" in\n"
-                            "  */state/container.env) exit 77 ;;\n"
+                            "  */state/container.env)\n"
+                            "    if /usr/bin/grep -Fqx "
+                            "'MINIOS_CONTAINER_PHASE=ready' \"$source\"; then\n"
+                            "      exit 77\n"
+                            "    fi\n"
+                            "    ;;\n"
                             "esac\n"
                             "exec /usr/bin/mv \"$@\"\n",
                         )
@@ -1455,44 +1745,78 @@ exit 0
                     )
 
                     self.assertNotEqual(0, result.returncode)
-                    self.assertFalse((environment_root / "state/container.env").exists())
                     calls = self._container_calls(fake_log)
                     rmi_calls = [call for call in calls if "rmi" in call]
-                    self.assertTrue(rmi_calls, calls)
-                    self.assertIn("sha256:new-image-id", rmi_calls[-1])
-                    self.assertFalse((environment_root / "container-storage").exists())
+                    expected_live_ref = (
+                        "localhost/miniorangeos-dev:ubuntu-24.04"
+                        if backend == "podman"
+                        else "miniorangeos-dev:ubuntu-24.04"
+                    )
                     runtime = temporary_root / "fake-container-runtime"
-                    self.assertFalse((runtime / "image.exists").exists())
-                    if backend == "docker":
-                        self.assertFalse((runtime / "builder.exists").exists())
+                    if case in {"name", "label", "id"}:
+                        state = environment_root / "state/container.env"
+                        self.assertTrue(state.is_file())
+                        self.assertIn(
+                            "MINIOS_CONTAINER_PHASE=creating\n",
+                            state.read_text(encoding="utf-8"),
+                        )
+                        self.assertEqual([], rmi_calls)
+                        self.assertTrue(
+                            (environment_root / "container-storage").exists()
+                        )
+                        self.assertTrue((runtime / "image.exists").exists())
+                    else:
+                        self.assertFalse(
+                            (environment_root / "state/container.env").exists()
+                        )
+                        self.assertTrue(rmi_calls, calls)
+                        self.assertEqual(expected_live_ref, rmi_calls[-1][-1])
+                        self.assertFalse(
+                            (environment_root / "container-storage").exists()
+                        )
+                        self.assertFalse((runtime / "image.exists").exists())
+                        if backend == "docker":
+                            self.assertFalse((runtime / "builder.exists").exists())
 
-    def test_ubuntu_run_rejects_destroying_phase(self) -> None:
+    def test_ubuntu_run_rejects_nonready_phase(self) -> None:
         for backend in ("podman", "docker"):
-            with (
-                self.subTest(backend=backend),
-                tempfile.TemporaryDirectory() as temporary_directory,
+            for phase, image_id in (
+                ("creating", "pending"),
+                ("destroying", OWNED_IMAGE_ID),
             ):
-                temporary_root = Path(temporary_directory)
-                environment_root = temporary_root / "environment"
-                env, fake_log, _ = self._container_env(
-                    temporary_root, environment_root, backend
-                )
-                env["MINIOS_CONTAINER_BACKEND"] = backend
-                self._write_container_state(
-                    environment_root, backend=backend, phase="destroying"
-                )
+                with (
+                    self.subTest(backend=backend, phase=phase),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    self._write_container_state(
+                        environment_root,
+                        backend=backend,
+                        phase=phase,
+                        image_id=image_id,
+                    )
 
-                result = self._run_required(
-                    "environment/ubuntu/run.sh", "true", env=env
-                )
+                    result = self._run_required(
+                        "environment/ubuntu/run.sh", "true", env=env
+                    )
 
-                self.assertNotEqual(0, result.returncode)
-                self.assertIn(
-                    "destroying", (result.stdout + result.stderr).lower()
-                )
-                self.assertFalse(any("run" in call for call in self._container_calls(fake_log)))
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(
+                        phase, (result.stdout + result.stderr).lower()
+                    )
+                    self.assertFalse(
+                        any(
+                            "run" in call
+                            for call in self._container_calls(fake_log)
+                        )
+                    )
 
-    def test_ubuntu_create_does_not_write_state_on_inspect_mismatch(self) -> None:
+    def test_ubuntu_create_preserves_creating_state_on_inspect_mismatch(self) -> None:
         cases = (
             ("FAKE_CONTAINER_LABEL", "OtherProject"),
             ("FAKE_CONTAINER_IMAGE_NAME", "foreign:latest"),
@@ -1506,7 +1830,7 @@ exit 0
                 ):
                     temporary_root = Path(temporary_directory)
                     environment_root = temporary_root / "environment"
-                    env, _, _ = self._container_env(
+                    env, fake_log, _ = self._container_env(
                         temporary_root, environment_root, backend
                     )
                     env["MINIOS_CONTAINER_BACKEND"] = backend
@@ -1517,7 +1841,22 @@ exit 0
                     )
 
                     self.assertNotEqual(0, result.returncode)
-                    self.assertFalse((environment_root / "state/container.env").exists())
+                    state_path = environment_root / "state/container.env"
+                    self.assertTrue(state_path.is_file())
+                    self.assertIn(
+                        "MINIOS_CONTAINER_PHASE=creating\n",
+                        state_path.read_text(encoding="utf-8"),
+                    )
+                    self.assertIn(
+                        f"MINIOS_CONTAINER_IMAGE_ID={NEW_IMAGE_ID}\n",
+                        state_path.read_text(encoding="utf-8"),
+                    )
+                    self.assertFalse(
+                        any(
+                            "rmi" in call
+                            for call in self._container_calls(fake_log)
+                        )
+                    )
 
     def test_ubuntu_create_propagates_backend_and_build_failures(self) -> None:
         cases = (
@@ -1599,7 +1938,7 @@ exit 0
                     temporary_root, environment_root, backend
                 )
                 env["MINIOS_CONTAINER_BACKEND"] = backend
-                env["FAKE_CONTAINER_IMAGE_ID"] = "sha256:foreign-image-id"
+                env["FAKE_CONTAINER_IMAGE_ID"] = FOREIGN_IMAGE_ID
                 self._write_container_state(environment_root, backend=backend)
 
                 result = self._run_required(
@@ -1670,6 +2009,162 @@ exit 0
                         any("buildx" in call and "rm" in call for call in calls)
                     )
 
+    def test_ubuntu_destroy_untags_only_canonical_ref_for_multitag_image(self) -> None:
+        for backend in ("podman", "docker"):
+            with (
+                self.subTest(backend=backend),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = backend
+                self._write_container_state(environment_root, backend=backend)
+                runtime = temporary_root / "fake-container-runtime"
+                refs = runtime / "image.refs"
+                refs.write_text(
+                    refs.read_text(encoding="utf-8") + f"{OTHER_IMAGE_TAG}\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+                result = self._run_required(
+                    "environment/ubuntu/destroy.sh", "--all", env=env
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(
+                    (environment_root / "state/container.env").exists()
+                )
+                self.assertTrue((runtime / "image.exists").exists())
+                self.assertEqual(
+                    f"{OTHER_IMAGE_TAG}\n", refs.read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    f"{OWNED_IMAGE_ID}\n",
+                    (runtime / "image.id").read_text(encoding="utf-8"),
+                )
+                rmi_calls = [
+                    call for call in self._container_calls(fake_log) if "rmi" in call
+                ]
+                expected_ref = (
+                    "localhost/miniorangeos-dev:ubuntu-24.04"
+                    if backend == "podman"
+                    else "miniorangeos-dev:ubuntu-24.04"
+                )
+                self.assertEqual([expected_ref], [call[-1] for call in rmi_calls])
+                self.assertNotIn("--force", rmi_calls[0])
+
+    def test_creating_recovery_propagates_image_probe_failure(self) -> None:
+        for backend in ("podman", "docker"):
+            with (
+                self.subTest(backend=backend),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                env, fake_log, _ = self._container_env(
+                    temporary_root, environment_root, backend
+                )
+                env["MINIOS_CONTAINER_BACKEND"] = backend
+                env["FAKE_IMAGE_PROBE_EXIT"] = "79"
+                self._write_container_state(
+                    environment_root,
+                    backend=backend,
+                    phase="creating",
+                    image_id="pending",
+                )
+
+                result = self._run_required(
+                    "environment/ubuntu/create.sh", env=env
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertTrue(
+                    (environment_root / "state/container.env").exists()
+                )
+                self.assertTrue(
+                    (environment_root / "container-storage").exists()
+                )
+                calls = self._container_calls(fake_log)
+                self.assertFalse(any("rmi" in call for call in calls))
+                self.assertFalse(any("build" in call for call in calls))
+
+    def test_ubuntu_destroy_retries_with_independently_missing_storage_parts(self) -> None:
+        for backend in ("podman", "docker"):
+            for remaining in ("graphroot", "runroot", "root-only"):
+                with (
+                    self.subTest(backend=backend, remaining=remaining),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, _, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    self._write_container_state(
+                        environment_root, backend=backend, phase="destroying"
+                    )
+                    storage = environment_root / "container-storage"
+                    if remaining != "graphroot":
+                        shutil.rmtree(storage / "graphroot")
+                    if remaining != "runroot":
+                        shutil.rmtree(storage / "runroot")
+                    runtime = temporary_root / "fake-container-runtime"
+                    for name in (
+                        "image.exists",
+                        "image.id",
+                        "image.refs",
+                        "image.label",
+                        "image.task-label",
+                        "builder.exists",
+                    ):
+                        (runtime / name).unlink(missing_ok=True)
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertFalse(storage.exists())
+                    self.assertFalse(
+                        (environment_root / "state/container.env").exists()
+                    )
+
+    def test_ubuntu_destroy_rejects_creating_with_recovery_instruction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            environment_root = temporary_root / "environment"
+            env, fake_log, _ = self._container_env(
+                temporary_root, environment_root, "docker"
+            )
+            env["MINIOS_CONTAINER_BACKEND"] = "docker"
+            self._write_container_state(
+                environment_root,
+                backend="docker",
+                phase="creating",
+                image_id="pending",
+            )
+
+            result = self._run_required(
+                "environment/ubuntu/destroy.sh", "--all", env=env
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertRegex(
+                (result.stdout + result.stderr).lower(),
+                r"(?:create|recovery|恢复)",
+            )
+            self.assertTrue((environment_root / "state/container.env").exists())
+            calls = self._container_calls(fake_log)
+            self.assertFalse(any("rmi" in call for call in calls))
+            self.assertFalse(
+                any("buildx" in call and "rm" in call for call in calls)
+            )
+
     def test_docker_destroy_retries_after_builder_removed_and_image_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -1704,7 +2199,7 @@ exit 0
             calls = self._container_calls(fake_log)
             removed_targets = [call[-1] for call in calls if "rmi" in call]
             self.assertEqual(
-                ["sha256:owned-image-id", "sha256:owned-image-id"],
+                ["miniorangeos-dev:ubuntu-24.04"] * 2,
                 removed_targets,
             )
 
@@ -1755,7 +2250,7 @@ exit 0
             self.assertFalse((environment_root / "container-storage").exists())
             calls = self._container_calls(fake_log)
             self.assertEqual(
-                ["sha256:owned-image-id"],
+                ["localhost/miniorangeos-dev:ubuntu-24.04"],
                 [call[-1] for call in calls if "rmi" in call],
             )
 
@@ -1912,19 +2407,22 @@ exit 0
                 "description": "state 镜像名不匹配",
                 "state_image_name": "foreign-project:latest",
                 "inspected_label": "MiniOrangeOS",
-                "inspected_image_id": "sha256:owned-image-id",
+                "inspected_image_id": OWNED_IMAGE_ID,
+                "expect_probe": False,
             },
             {
                 "description": "项目标签不匹配",
                 "state_image_name": "miniorangeos-dev:ubuntu-24.04",
                 "inspected_label": "OtherProject",
-                "inspected_image_id": "sha256:owned-image-id",
+                "inspected_image_id": OWNED_IMAGE_ID,
+                "expect_probe": True,
             },
             {
                 "description": "镜像 ID 不匹配",
                 "state_image_name": "miniorangeos-dev:ubuntu-24.04",
                 "inspected_label": "MiniOrangeOS",
-                "inspected_image_id": "sha256:foreign-image-id",
+                "inspected_image_id": FOREIGN_IMAGE_ID,
+                "expect_probe": True,
             },
         )
         for backend in ("podman", "docker"):
@@ -1968,15 +2466,23 @@ exit 0
                     self.assertNotEqual(
                         0, result.returncode, str(case["description"])
                     )
-                    self.assertTrue(
-                        fake_log.is_file(),
-                        f"destroy --all 必须调用 fake {backend} 检查 ownership",
+                    commands = (
+                        fake_log.read_text(encoding="utf-8").splitlines()
+                        if fake_log.is_file()
+                        else []
                     )
-                    commands = fake_log.read_text(encoding="utf-8").splitlines()
-                    self.assertTrue(
-                        any("inspect" in command.split() for command in commands),
-                        f"负面测试必须到达 fake {backend} ownership inspect",
-                    )
+                    if case["expect_probe"]:
+                        self.assertTrue(
+                            any(
+                                "inspect" in command.split()
+                                for command in commands
+                            ),
+                            f"live ownership 负例必须到达 fake {backend} inspect",
+                        )
+                    else:
+                        self.assertEqual(
+                            [], commands, "非法 state 固定字段必须在 backend 前拒绝"
+                        )
                     removal_tokens = {"rm", "rmi"}
                     self.assertFalse(
                         any(
