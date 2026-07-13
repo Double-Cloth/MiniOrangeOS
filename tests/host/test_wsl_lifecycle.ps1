@@ -1317,8 +1317,28 @@ for race_phase in before-open after-open after-partial; do
     [[ ! -e "$protected/apt-packages.lock" && ! -L "$protected/apt-packages.lock" ]] || { printf 'race wrote external final lock: %s\n' "$race_phase" >&2; exit 1; }
     [[ -z "$(find "$protected" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'race wrote external partial: %s\n' "$race_phase" >&2; exit 1; }
     [[ -z "$(find "$race_original" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'anchored partial cleanup failed: %s\n' "$race_phase" >&2; exit 1; }
+    [[ "$(stat -c '%u|%a' "$race_original")" == "$target_uid|755" ]] || { printf 'anchored state metadata was not restored: %s\n' "$race_phase" >&2; exit 1; }
     rm -f -- "$state_path"
     rm -rf -- "$race_original"
+done
+for helper_failure in signal-after-create replace-partial; do
+    mkdir -- "$state_path"
+    chown "minios:$target_uid" "$state_path"
+    chmod 0755 "$state_path"
+    helper_original="$environment_root/state-unused-$helper_failure"
+    helper_apt_before="$(apt_lines)"
+    if "${positive[@]}" MINIOS_PACKAGE_STATE_RACE_PHASE="$helper_failure" \
+        "FAKE_RACE_STATE=$state_path" "FAKE_RACE_ORIGINAL=$helper_original" \
+        "FAKE_RACE_OUTSIDE=$protected" "$script" --system-only; then
+        printf 'helper failure probe unexpectedly passed: %s\n' "$helper_failure" >&2
+        exit 1
+    fi
+    [[ "$(apt_lines)" == "$((helper_apt_before + 2))" ]] || { printf 'helper failure did not run after apt: %s\n' "$helper_failure" >&2; exit 1; }
+    [[ -d "$state_path" && ! -L "$state_path" ]] || { printf 'helper failure replaced state path: %s\n' "$helper_failure" >&2; exit 1; }
+    [[ "$(stat -c '%u|%a' "$state_path")" == "$target_uid|755" ]] || { printf 'helper failure did not restore state metadata: %s\n' "$helper_failure" >&2; exit 1; }
+    [[ ! -e "$state_path/apt-packages.lock" && ! -L "$state_path/apt-packages.lock" ]] || { printf 'helper failure committed final lock: %s\n' "$helper_failure" >&2; exit 1; }
+    [[ -z "$(find "$state_path" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'helper failure left partial: %s\n' "$helper_failure" >&2; exit 1; }
+    rm -rf -- "$state_path"
 done
 positive_apt_before="$(apt_lines)"
 apt_background_pid_file="$root/apt-background.pid"

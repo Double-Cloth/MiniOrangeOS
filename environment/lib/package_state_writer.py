@@ -16,6 +16,7 @@ from dataclasses import dataclass
 LOCK_NAME = "apt-packages.lock"
 PARTIAL_PREFIX = f"{LOCK_NAME}.partial."
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+HANDLED_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM, signal.SIGHUP))
 
 
 class WriterError(RuntimeError):
@@ -41,7 +42,14 @@ def parse_arguments() -> Arguments:
     parser.add_argument("--target-gid", required=True, type=int)
     parser.add_argument("--test-root")
     parser.add_argument(
-        "--race-phase", choices=("before-open", "after-open", "after-partial")
+        "--race-phase",
+        choices=(
+            "before-open",
+            "after-open",
+            "after-partial",
+            "signal-after-create",
+            "replace-partial",
+        ),
     )
     parser.add_argument("--race-state")
     parser.add_argument("--race-original")
@@ -112,7 +120,9 @@ def path_components(environment_root: str) -> list[str]:
     return [part for part in root.split("/") if part] + ["state"]
 
 
-def open_validated_chain(args: Arguments) -> tuple[list[int], list[tuple[int, int]]]:
+def open_validated_chain(
+    args: Arguments, *, state_restricted: bool = False
+) -> tuple[list[int], list[tuple[int, int]]]:
     components = path_components(args.environment_root)
     descriptors: list[int] = []
     identities: list[tuple[int, int]] = []
@@ -128,10 +138,17 @@ def open_validated_chain(args: Arguments) -> tuple[list[int], list[tuple[int, in
             opened = os.open(component, DIRECTORY_FLAGS, dir_fd=descriptors[-1])
             descriptors.append(opened)
             item = os.fstat(opened)
-            require_target = index >= len(components) - 2
+            is_state = index == len(components) - 1
+            require_target = index == len(components) - 2 or (
+                is_state and not state_restricted
+            )
             validate_directory(
                 item, current, args.target_uid, require_target=require_target
             )
+            if is_state and state_restricted and (
+                item.st_uid != 0 or stat.S_IMODE(item.st_mode) != 0o700
+            ):
+                raise WriterError("当前 package-state 路径不是锚定的 root-only 目录")
             identities.append(identity(item))
         return descriptors, identities
     except BaseException:
@@ -140,9 +157,14 @@ def open_validated_chain(args: Arguments) -> tuple[list[int], list[tuple[int, in
 
 
 def assert_chain_unchanged(
-    args: Arguments, expected_identities: list[tuple[int, int]]
+    args: Arguments,
+    expected_identities: list[tuple[int, int]],
+    *,
+    state_restricted: bool = False,
 ) -> None:
-    current_fds, current_identities = open_validated_chain(args)
+    current_fds, current_identities = open_validated_chain(
+        args, state_restricted=state_restricted
+    )
     try:
         if current_identities != expected_identities:
             raise WriterError("package-state 当前路径与锚定目录链 inode 不一致")
@@ -243,35 +265,83 @@ def validate_written_file(descriptor: int, target_uid: int, expected_size: int) 
         raise WriterError("package lock partial 写入后元数据不可信")
 
 
+def replace_partial_for_test(
+    args: Arguments, state_fd: int, partial_name: str, size: int
+) -> None:
+    if args.race_phase != "replace-partial":
+        return
+    os.unlink(partial_name, dir_fd=state_fd)
+    replacement = os.open(
+        partial_name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_NOFOLLOW
+        | os.O_CLOEXEC,
+        0o600,
+        dir_fd=state_fd,
+    )
+    try:
+        write_all(replacement, b"X" * size)
+        os.fchmod(replacement, 0o644)
+        os.fchown(replacement, args.target_uid, args.target_gid)
+        os.fsync(replacement)
+    finally:
+        os.close(replacement)
+
+
 def install_signal_handlers() -> None:
     def interrupted(signum: int, _frame: object) -> None:
         raise WriterError(f"收到信号 {signum}，中止 package lock 写入")
 
-    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    for signum in HANDLED_SIGNALS:
         signal.signal(signum, interrupted)
 
 
 def write_package_lock(args: Arguments, content: bytes) -> None:
     if not content or not content.endswith(b"\n") or b"\0" in content:
         raise WriterError("package lock 输入必须是非空、换行结尾且不含 NUL 的内容")
+    validate_test_race_paths(args)
     run_test_race(args, "before-open")
     descriptors, identities = open_validated_chain(args)
     state_fd = descriptors[-1]
+    original_state = os.fstat(state_fd)
+    original_state_mode = stat.S_IMODE(original_state.st_mode)
+    state_restricted = False
     partial_fd: int | None = None
     partial_name: str | None = None
     try:
         fcntl.flock(state_fd, fcntl.LOCK_EX)
+        state_restricted = True
+        os.fchown(state_fd, 0, 0)
+        os.fchmod(state_fd, 0o700)
+        restricted = os.fstat(state_fd)
+        if restricted.st_uid != 0 or stat.S_IMODE(restricted.st_mode) != 0o700:
+            raise WriterError("无法把锚定 package-state 临时收紧为 root-only")
         validate_existing_entries(state_fd, args.target_uid)
         run_test_race(args, "after-open")
-        assert_chain_unchanged(args, identities)
-        partial_fd, partial_name = create_partial(state_fd)
+        assert_chain_unchanged(args, identities, state_restricted=True)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
+        try:
+            partial_fd, partial_name = create_partial(state_fd)
+            if args.race_phase == "signal-after-create":
+                os.kill(os.getpid(), signal.SIGTERM)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         write_all(partial_fd, content)
         os.fchmod(partial_fd, 0o644)
         os.fchown(partial_fd, args.target_uid, args.target_gid)
         os.fsync(partial_fd)
         validate_written_file(partial_fd, args.target_uid, len(content))
         run_test_race(args, "after-partial")
-        assert_chain_unchanged(args, identities)
+        assert_chain_unchanged(args, identities, state_restricted=True)
+        expected_partial_identity = identity(os.fstat(partial_fd))
+        replace_partial_for_test(args, state_fd, partial_name, len(content))
+        named_partial = os.stat(
+            partial_name, dir_fd=state_fd, follow_symlinks=False
+        )
+        if identity(named_partial) != expected_partial_identity:
+            raise WriterError("package lock partial 名称已被替换")
         os.replace(
             partial_name,
             LOCK_NAME,
@@ -283,25 +353,40 @@ def write_package_lock(args: Arguments, content: bytes) -> None:
         final = os.stat(LOCK_NAME, dir_fd=state_fd, follow_symlinks=False)
         if (
             not stat.S_ISREG(final.st_mode)
+            or identity(final) != expected_partial_identity
             or final.st_uid != args.target_uid
             or stat.S_IMODE(final.st_mode) != 0o644
             or final.st_size != len(content)
         ):
             raise WriterError("原子替换后的 package lock 元数据不可信")
-        assert_chain_unchanged(args, identities)
+        assert_chain_unchanged(args, identities, state_restricted=True)
     finally:
-        if partial_fd is not None:
+        try:
+            if partial_fd is not None:
+                try:
+                    os.close(partial_fd)
+                except OSError:
+                    pass
+            if partial_name is not None:
+                try:
+                    os.unlink(partial_name, dir_fd=state_fd)
+                    os.fsync(state_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            restore_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
             try:
-                os.close(partial_fd)
-            except OSError:
-                pass
-        if partial_name is not None:
-            try:
-                os.unlink(partial_name, dir_fd=state_fd)
-                os.fsync(state_fd)
-            except FileNotFoundError:
-                pass
-        close_descriptors(descriptors)
+                if state_restricted:
+                    os.fchmod(state_fd, original_state_mode)
+                    os.fchown(
+                        state_fd, original_state.st_uid, original_state.st_gid
+                    )
+                    os.fsync(state_fd)
+            finally:
+                try:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, restore_mask)
+                finally:
+                    close_descriptors(descriptors)
 
 
 def main() -> int:

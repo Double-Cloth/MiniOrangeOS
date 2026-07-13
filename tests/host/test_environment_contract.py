@@ -785,6 +785,9 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             "dst_dir_fd=",
             "os.unlink",
             "signal.signal",
+            "signal.pthread_sigmask",
+            "expected_partial_identity",
+            "state_restricted",
         ):
             self.assertIn(token, writer)
         apt_position = system_phase.find("apt-get update")
