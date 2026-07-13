@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 OWNED_IMAGE_ID = "sha256:" + "1" * 64
 NEW_IMAGE_ID = "sha256:" + "2" * 64
 FOREIGN_IMAGE_ID = "sha256:" + "3" * 64
+OWNED_CONTAINER_ID = "4" * 64
+SECOND_CONTAINER_ID = "5" * 64
+FOREIGN_CONTAINER_ID = "6" * 64
 OTHER_IMAGE_TAG = "example.invalid/unrelated:keep"
 OWNED_INTENT = "a" * 32
 FOREIGN_INTENT = "b" * 32
@@ -112,6 +115,38 @@ builders_dir=$runtime/builders
 containers_dir=$runtime/containers
 mkdir -p "$runtime" "$builders_dir" "$containers_dir"
 
+resolve_container() {
+  requested=${1#/}
+  resolved=''
+  matches=0
+  for candidate_dir in "$containers_dir"/*; do
+    [ -d "$candidate_dir" ] || continue
+    candidate_name=$(cat "$candidate_dir/name")
+    candidate_id=$(cat "$candidate_dir/id")
+    if [ "$requested" = "$candidate_name" ] || [ "$requested" = "$candidate_id" ]; then
+      resolved=$candidate_dir
+      matches=$((matches + 1))
+    fi
+  done
+  [ "$matches" -eq 1 ] || exit 1
+  container_dir=$resolved
+}
+
+replace_with_foreign_container() {
+  replaced_name=$(cat "$container_dir/name")
+  rm -rf "$container_dir"
+  container_dir="$containers_dir/$replaced_name"
+  mkdir -p "$container_dir"
+  printf '%s\n' "$replaced_name" > "$container_dir/name"
+  printf '%s\n' '6666666666666666666666666666666666666666666666666666666666666666' > "$container_dir/id"
+  printf '%s\n' 'org.miniorangeos.project=Foreign' > "$container_dir/label"
+  printf '%s\n' 'T99' > "$container_dir/task-label"
+  printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' > "$container_dir/intent-label"
+  printf '%s\n' 'sha256:3333333333333333333333333333333333333333333333333333333333333333' > "$container_dir/image-id"
+  printf '%s\n' "${FAKE_REPLACEMENT_RUNNING:-false}" > "$container_dir/running"
+  printf '%s\n' 'true' > "$container_dir/auto-remove"
+}
+
 image_field() {
   field=$1
   override=$2
@@ -196,23 +231,29 @@ case " $* " in
     ;;
   *" container ls "*)
     filter=''
+    format=''
     previous=''
     for argument in "$@"; do
       if [ "$previous" = --filter ]; then filter=$argument; fi
+      if [ "$previous" = --format ]; then format=$argument; fi
       previous=$argument
     done
     for container_dir in "$containers_dir"/*; do
       [ -d "$container_dir" ] || continue
       name=$(cat "$container_dir/name")
+      id=$(cat "$container_dir/id")
       label=$(cat "$container_dir/label")
+      value=$name
+      [ "$format" != '{{.ID}}' ] || value=$id
       case "$filter" in
         name=*)
           prefix=${filter#name=^}
-          case "$name" in "$prefix"*) printf '%s\n' "$name" ;; esac
+          case "$name" in "$prefix"*) printf '%s\n' "$value" ;; esac
           ;;
         label=*)
-          [ "$label" = "${filter#label=}" ] && printf '%s\n' "$name"
+          [ "$label" = "${filter#label=}" ] && printf '%s\n' "$value"
           ;;
+        '') printf '%s\n' "$value" ;;
         *) exit 69 ;;
       esac
     done
@@ -220,24 +261,43 @@ case " $* " in
   *" container inspect "*)
     requested=''
     for requested in "$@"; do :; done
-    requested=${requested#/}
-    container_dir=$containers_dir/$requested
-    [ -d "$container_dir" ] || exit 1
+    resolve_container "$requested"
     case "$*" in
       *org.miniorangeos.task*) cat "$container_dir/task-label" ;;
       *org.miniorangeos.intent*) cat "$container_dir/intent-label" ;;
       *org.miniorangeos.project*) sed 's/^[^=]*=//' "$container_dir/label" ;;
       *State.Running*) cat "$container_dir/running" ;;
+      *HostConfig.AutoRemove*) cat "$container_dir/auto-remove" ;;
       *Image*) cat "$container_dir/image-id" ;;
+      *Id*)
+        if [ "${FAKE_CONTAINER_INSPECT_ID+x}" = x ]; then
+          printf '%s\n' "$FAKE_CONTAINER_INSPECT_ID"
+        else
+          cat "$container_dir/id"
+        fi
+        if [ "${FAKE_CONTAINER_REPLACE_AFTER_ID_INSPECT:-0}" = 1 ] \
+          && [ ! -e "$runtime/replaced.after-id" ]; then
+          : > "$runtime/replaced.after-id"
+          replace_with_foreign_container
+        fi
+        ;;
       *Name*) cat "$container_dir/name" ;;
       *) exit 69 ;;
     esac
+    if [ "${FAKE_CONTAINER_REPLACE_AFTER_RUNNING_INSPECT:-0}" = 1 ] \
+      && [ ! -e "$runtime/replaced.after-running" ]; then
+      case "$*" in
+        *State.Running*)
+          : > "$runtime/replaced.after-running"
+          replace_with_foreign_container
+          ;;
+      esac
+    fi
     ;;
   *" container stop "*)
     requested=''
     for requested in "$@"; do :; done
-    container_dir=$containers_dir/$requested
-    [ -d "$container_dir" ] || exit 1
+    resolve_container "$requested"
     if [ "${FAKE_FAIL_CONTAINER_STOP_ONCE:-0}" = 1 ] \
       && [ ! -e "$runtime/container-stop.failed" ]; then
       : > "$runtime/container-stop.failed"
@@ -249,17 +309,14 @@ case " $* " in
     fi
     printf 'false\n' > "$container_dir/running"
     if [ "${FAKE_CONTAINER_STOP_REPLACE_FOREIGN:-0}" = 1 ]; then
-      printf 'org.miniorangeos.project=Foreign\n' > "$container_dir/label"
-      printf 'T99\n' > "$container_dir/task-label"
-      printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
-        > "$container_dir/intent-label"
+      replace_with_foreign_container
     fi
     ;;
   *" container rm "*)
     requested=''
     for requested in "$@"; do :; done
-    container_dir=$containers_dir/$requested
-    [ -d "$container_dir" ] || exit 1
+    resolve_container "$requested"
+    removed_name=$(cat "$container_dir/name")
     [ "$(cat "$container_dir/running")" = false ] || exit 72
     if [ "${FAKE_FAIL_CONTAINER_RM_ONCE:-0}" = 1 ] \
       && [ ! -e "$runtime/container-rm.failed" ]; then
@@ -267,6 +324,20 @@ case " $* " in
       exit 76
     fi
     rm -rf "$container_dir"
+    if [ "${FAKE_CONTAINER_RM_CREATE_FOREIGN:-0}" = 1 ] \
+      && [ ! -e "$runtime/replaced.after-rm" ]; then
+      : > "$runtime/replaced.after-rm"
+      container_dir="$containers_dir/$removed_name"
+      mkdir -p "$container_dir"
+      printf '%s\n' "$removed_name" > "$container_dir/name"
+      printf '%s\n' '6666666666666666666666666666666666666666666666666666666666666666' > "$container_dir/id"
+      printf '%s\n' 'org.miniorangeos.project=Foreign' > "$container_dir/label"
+      printf '%s\n' 'T99' > "$container_dir/task-label"
+      printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' > "$container_dir/intent-label"
+      printf '%s\n' 'sha256:3333333333333333333333333333333333333333333333333333333333333333' > "$container_dir/image-id"
+      printf '%s\n' 'false' > "$container_dir/running"
+      printf '%s\n' 'true' > "$container_dir/auto-remove"
+    fi
     ;;
   *" image exists "*)
     if [ "${FAKE_IMAGE_PROBE_EXIT:-0}" -ne 0 ]; then
@@ -536,7 +607,9 @@ esac
         task_label: str = "T01",
         intent: str = OWNED_INTENT,
         image_id: str = OWNED_IMAGE_ID,
+        container_id: str = OWNED_CONTAINER_ID,
         running: bool = True,
+        auto_remove: bool = True,
     ) -> Path:
         container_directory = (
             temporary_root / "fake-container-runtime" / "containers" / name
@@ -544,11 +617,13 @@ esac
         container_directory.mkdir(parents=True, exist_ok=True)
         values = {
             "name": name,
+            "id": container_id,
             "label": label,
             "task-label": task_label,
             "intent-label": intent,
             "image-id": image_id,
             "running": "true" if running else "false",
+            "auto-remove": "true" if auto_remove else "false",
         }
         for field, value in values.items():
             (container_directory / field).write_text(
@@ -3667,6 +3742,9 @@ exit 0
                     ]
                     self.assertEqual(1 if running else 0, len(stop_calls))
                     self.assertEqual(1, len(rm_calls))
+                    if stop_calls:
+                        self.assertEqual(OWNED_CONTAINER_ID, stop_calls[0][-1])
+                    self.assertEqual(OWNED_CONTAINER_ID, rm_calls[0][-1])
                     container_rm_index = calls.index(rm_calls[0])
                     image_rm_index = next(
                         index
@@ -3764,6 +3842,175 @@ exit 0
                 )
                 self.assertTrue(any(self._is_image_remove_call(c) for c in calls))
 
+    def test_ubuntu_destroy_binds_cleanup_to_immutable_container_id(self) -> None:
+        cases = (
+            (
+                "after-id-inspect",
+                True,
+                "FAKE_CONTAINER_REPLACE_AFTER_ID_INSPECT",
+                "true",
+            ),
+            (
+                "after-running-inspect-before-stop",
+                True,
+                "FAKE_CONTAINER_REPLACE_AFTER_RUNNING_INSPECT",
+                "true",
+            ),
+            (
+                "after-running-inspect-before-rm",
+                False,
+                "FAKE_CONTAINER_REPLACE_AFTER_RUNNING_INSPECT",
+                "false",
+            ),
+            (
+                "after-stop",
+                True,
+                "FAKE_CONTAINER_STOP_REPLACE_FOREIGN",
+                "false",
+            ),
+            (
+                "after-rm-new-candidate",
+                False,
+                "FAKE_CONTAINER_RM_CREATE_FOREIGN",
+                "false",
+            ),
+        )
+        for backend in ("podman", "docker"):
+            for stage, running, hook, replacement_running in cases:
+                with (
+                    self.subTest(backend=backend, stage=stage),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env.update(
+                        {
+                            "MINIOS_CONTAINER_BACKEND": backend,
+                            hook: "1",
+                            "FAKE_REPLACEMENT_RUNNING": replacement_running,
+                        }
+                    )
+                    self._write_container_state(environment_root, backend=backend)
+                    replacement = self._write_fake_container(
+                        temporary_root, running=running
+                    )
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(replacement.is_dir(), result.stderr)
+                    self.assertEqual(
+                        FOREIGN_CONTAINER_ID + "\n",
+                        (replacement / "id").read_text(encoding="utf-8"),
+                    )
+                    self.assertEqual(
+                        replacement_running + "\n",
+                        (replacement / "running").read_text(encoding="utf-8"),
+                    )
+                    calls = self._container_calls(fake_log)
+                    mutations = [
+                        call
+                        for call in calls
+                        if ("container" in call and ("stop" in call or "rm" in call))
+                    ]
+                    self.assertTrue(
+                        all(call[-1] == OWNED_CONTAINER_ID for call in mutations),
+                        mutations,
+                    )
+                    self.assertFalse(
+                        any(
+                            self._is_image_remove_call(call)
+                            or self._is_storage_reset_call(call)
+                            or ("buildx" in call and "rm" in call)
+                            for call in calls
+                        ),
+                        calls,
+                    )
+
+    def test_ubuntu_destroy_rejects_invalid_duplicate_or_inconsistent_container_ids(
+        self,
+    ) -> None:
+        invalid_ids = ("short", "A" * 64, "sha256:" + "4" * 64)
+        for backend in ("podman", "docker"):
+            for invalid_id in invalid_ids:
+                with (
+                    self.subTest(backend=backend, case="invalid", value=invalid_id),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env.update(
+                        {
+                            "MINIOS_CONTAINER_BACKEND": backend,
+                            "FAKE_CONTAINER_INSPECT_ID": invalid_id,
+                        }
+                    )
+                    self._write_container_state(environment_root, backend=backend)
+                    stale = self._write_fake_container(temporary_root)
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(stale.is_dir())
+                    calls = self._container_calls(fake_log)
+                    self.assertFalse(
+                        any(
+                            "container" in call
+                            and ("stop" in call or "rm" in call)
+                            for call in calls
+                        ),
+                        calls,
+                    )
+
+            for case in ("duplicate", "name-id-mismatch"):
+                with (
+                    self.subTest(backend=backend, case=case),
+                    tempfile.TemporaryDirectory() as temporary_directory,
+                ):
+                    temporary_root = Path(temporary_directory)
+                    environment_root = temporary_root / "environment"
+                    env, fake_log, _ = self._container_env(
+                        temporary_root, environment_root, backend
+                    )
+                    env["MINIOS_CONTAINER_BACKEND"] = backend
+                    self._write_container_state(environment_root, backend=backend)
+                    stale = self._write_fake_container(temporary_root)
+                    if case == "duplicate":
+                        self._write_fake_container(
+                            temporary_root,
+                            name="miniorangeos-dev-run-5678",
+                            container_id=OWNED_CONTAINER_ID,
+                            running=False,
+                        )
+                    else:
+                        env["FAKE_CONTAINER_INSPECT_ID"] = SECOND_CONTAINER_ID
+
+                    result = self._run_required(
+                        "environment/ubuntu/destroy.sh", "--all", env=env
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(stale.is_dir())
+                    calls = self._container_calls(fake_log)
+                    self.assertFalse(
+                        any(
+                            "container" in call
+                            and ("stop" in call or "rm" in call)
+                            for call in calls
+                        ),
+                        calls,
+                    )
+
     def test_ubuntu_destroy_revalidates_foreign_replacement_after_stop(self) -> None:
         for backend in ("podman", "docker"):
             with (
@@ -3830,6 +4077,7 @@ exit 0
             {"name": "miniorangeos-dev-run-2", "task_label": "T99"},
             {"name": "miniorangeos-dev-run-3", "intent": FOREIGN_INTENT},
             {"name": "miniorangeos-dev-run-4", "image_id": FOREIGN_IMAGE_ID},
+            {"name": "miniorangeos-dev-run-5", "auto_remove": False},
         )
         for backend in ("podman", "docker"):
             for case in cases:

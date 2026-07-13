@@ -43,7 +43,8 @@ CONTAINER_OWNED_IMAGE_PRESENT=0
 CONTAINER_OWNED_BUILDER_PRESENT=0
 declare -a CONTAINER_COMMAND=()
 declare -a CONTAINER_OWNED_CONTAINERS=()
-declare -a CONTAINER_RUNNING_CONTAINERS=()
+declare -a CONTAINER_OWNED_CONTAINER_IDS=()
+declare -a CONTAINER_RUNNING_CONTAINER_IDS=()
 
 container_fail() {
     minios_die "$*"
@@ -61,6 +62,15 @@ container_normalize_image_id() {
         return 1
     fi
     printf 'sha256:%s\n' "$digest"
+}
+
+container_normalize_container_id() {
+    local value="$1"
+    if [[ ! "$value" =~ ^[0-9a-f]{64}$ ]]; then
+        container_fail "container ID 必须是 lowercase 64-hex：${value:-missing}"
+        return 1
+    fi
+    printf '%s\n' "$value"
 }
 
 container_validate_intent() {
@@ -638,19 +648,128 @@ container_append_candidate_name() {
     CONTAINER_OWNED_CONTAINERS+=("$candidate")
 }
 
-container_discover_owned_containers() {
-    local candidates
-    local candidate
+container_container_id_present() {
+    local expected_id="$1"
+    local listed_ids
+    local listed_id
+    local normalized_id
+    local count=0
+    local status
+
+    CONTAINER_CONTAINER_ID_PRESENT=0
+    if listed_ids="$("${CONTAINER_COMMAND[@]}" container ls --all --no-trunc \
+        --format '{{.ID}}')"; then
+        :
+    else
+        status=$?
+        container_fail "容器 ID 枚举失败：status=$status"
+        return "$status"
+    fi
+    while IFS= read -r listed_id; do
+        [[ -n "$listed_id" ]] || continue
+        normalized_id="$(container_normalize_container_id "$listed_id")" \
+            || return $?
+        if [[ "$normalized_id" == "$expected_id" ]]; then
+            count=$((count + 1))
+        fi
+    done <<<"$listed_ids"
+    if ((count > 1)); then
+        container_fail "完整 container ID 出现多次：$expected_id"
+        return 1
+    fi
+    CONTAINER_CONTAINER_ID_PRESENT="$count"
+}
+
+container_inspect_owned_container_id() {
+    local expected_name="$1"
+    local expected_id="$2"
+    local actual_id
     local actual_name
     local actual_label
     local actual_task_label
     local actual_intent_label
     local actual_image_id
     local actual_running
+    local actual_auto_remove
+
+    actual_id="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format '{{.Id}}' "$expected_id")" || return $?
+    actual_id="$(container_normalize_container_id "$actual_id")" || return $?
+    if [[ "$actual_id" != "$expected_id" ]]; then
+        container_fail "container inspect 返回的 ID 不一致：actual=$actual_id expected=$expected_id"
+        return 1
+    fi
+    actual_name="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format '{{.Name}}' "$expected_id")" || return $?
+    actual_name="${actual_name#/}"
+    if [[ "$actual_name" != "$expected_name" \
+        || ! "$actual_name" =~ ^miniorangeos-dev-run-[1-9][0-9]*$ ]]; then
+        container_fail "项目容器名称不符合精确规则：actual=${actual_name:-missing} expected=$expected_name"
+        return 1
+    fi
+    actual_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_LABEL_KEY\" }}" \
+        "$expected_id")" || return $?
+    actual_task_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_TASK_LABEL_KEY\" }}" \
+        "$expected_id")" || return $?
+    actual_intent_label="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_INTENT_LABEL_KEY\" }}" \
+        "$expected_id")" || return $?
+    actual_image_id="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format '{{.Image}}' "$expected_id")" || return $?
+    actual_image_id="$(container_normalize_image_id "$actual_image_id")" \
+        || return $?
+    actual_running="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format '{{.State.Running}}' "$expected_id")" || return $?
+    actual_auto_remove="$("${CONTAINER_COMMAND[@]}" container inspect \
+        --format '{{.HostConfig.AutoRemove}}' "$expected_id")" || return $?
+    if [[ "$actual_label" != "$MINIOS_CONTAINER_LABEL_VALUE" \
+        || "$actual_task_label" != "$MINIOS_CONTAINER_TASK_LABEL_VALUE" \
+        || "$actual_intent_label" != "$STATE_CONTAINER_INTENT" \
+        || "$actual_image_id" != "$STATE_CONTAINER_IMAGE_ID" ]]; then
+        container_fail "项目容器 ownership 不匹配：name=$expected_name id=$expected_id"
+        return 1
+    fi
+    if [[ "$actual_auto_remove" != 'true' ]]; then
+        container_fail "项目容器未绑定 --rm auto-remove 语义：name=$expected_name id=$expected_id"
+        return 1
+    fi
+    case "$actual_running" in
+        true|false) CONTAINER_INSPECTED_RUNNING="$actual_running" ;;
+        *)
+            container_fail "项目容器 running 状态非法：id=$expected_id value=${actual_running:-missing}"
+            return 1
+            ;;
+    esac
+}
+
+container_revalidate_owned_container_id() {
+    local expected_name="$1"
+    local expected_id="$2"
+
+    container_container_id_present "$expected_id" || return $?
+    if ((CONTAINER_CONTAINER_ID_PRESENT == 0)); then
+        CONTAINER_INSPECTED_PRESENT=0
+        CONTAINER_INSPECTED_RUNNING=''
+        return 0
+    fi
+    container_inspect_owned_container_id "$expected_name" "$expected_id" \
+        || return $?
+    CONTAINER_INSPECTED_PRESENT=1
+}
+
+container_discover_owned_containers() {
+    local candidates
+    local candidate
+    local actual_id
+    local existing_id
+    local duplicate
     local status
 
     CONTAINER_OWNED_CONTAINERS=()
-    CONTAINER_RUNNING_CONTAINERS=()
+    CONTAINER_OWNED_CONTAINER_IDS=()
+    CONTAINER_RUNNING_CONTAINER_IDS=()
     if candidates="$("${CONTAINER_COMMAND[@]}" container ls --all \
         --filter "name=^${MINIOS_CONTAINER_NAME}-run-" \
         --format '{{.Names}}')"; then
@@ -677,44 +796,25 @@ container_discover_owned_containers() {
     done <<<"$candidates"
 
     for candidate in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
-        actual_name="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format '{{.Name}}' "$candidate")" || return $?
-        actual_name="${actual_name#/}"
-        if [[ "$actual_name" != "$candidate" \
-            || ! "$actual_name" =~ ^miniorangeos-dev-run-[1-9][0-9]*$ ]]; then
-            container_fail "项目容器名称不符合精确规则：actual=${actual_name:-missing} candidate=$candidate"
+        actual_id="$("${CONTAINER_COMMAND[@]}" container inspect \
+            --format '{{.Id}}' "$candidate")" || return $?
+        actual_id="$(container_normalize_container_id "$actual_id")" || return $?
+        duplicate=0
+        for existing_id in "${CONTAINER_OWNED_CONTAINER_IDS[@]}"; do
+            if [[ "$existing_id" == "$actual_id" ]]; then
+                duplicate=1
+                break
+            fi
+        done
+        if ((duplicate == 1)); then
+            container_fail "多个候选名称解析到同一 container ID：$actual_id"
             return 1
         fi
-        actual_label="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_LABEL_KEY\" }}" \
-            "$candidate")" || return $?
-        actual_task_label="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_TASK_LABEL_KEY\" }}" \
-            "$candidate")" || return $?
-        actual_intent_label="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format "{{ index .Config.Labels \"$MINIOS_CONTAINER_INTENT_LABEL_KEY\" }}" \
-            "$candidate")" || return $?
-        actual_image_id="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format '{{.Image}}' "$candidate")" || return $?
-        actual_image_id="$(container_normalize_image_id "$actual_image_id")" \
-            || return $?
-        actual_running="$("${CONTAINER_COMMAND[@]}" container inspect \
-            --format '{{.State.Running}}' "$candidate")" || return $?
-        if [[ "$actual_label" != "$MINIOS_CONTAINER_LABEL_VALUE" \
-            || "$actual_task_label" != "$MINIOS_CONTAINER_TASK_LABEL_VALUE" \
-            || "$actual_intent_label" != "$STATE_CONTAINER_INTENT" \
-            || "$actual_image_id" != "$STATE_CONTAINER_IMAGE_ID" ]]; then
-            container_fail "项目容器 ownership 不匹配：$candidate"
-            return 1
+        container_inspect_owned_container_id "$candidate" "$actual_id" || return $?
+        CONTAINER_OWNED_CONTAINER_IDS+=("$actual_id")
+        if [[ "$CONTAINER_INSPECTED_RUNNING" == 'true' ]]; then
+            CONTAINER_RUNNING_CONTAINER_IDS+=("$actual_id")
         fi
-        case "$actual_running" in
-            true) CONTAINER_RUNNING_CONTAINERS+=("$candidate") ;;
-            false) ;;
-            *)
-                container_fail "项目容器 running 状态非法：container=$candidate value=${actual_running:-missing}"
-                return 1
-                ;;
-        esac
     done
 }
 
@@ -740,23 +840,77 @@ container_probe_loaded_resources() {
 }
 
 container_remove_owned_containers() {
+    local index
     local candidate
+    local container_id
+    local status
 
-    # 初始候选已在任何 mutation 前完成全量 ownership 验证。running 容器
-    # 带 --rm，stop 后可能自动消失，因此不能继续使用旧候选列表无条件 rm。
-    for candidate in "${CONTAINER_RUNNING_CONTAINERS[@]}"; do
-        "${CONTAINER_COMMAND[@]}" container stop "$candidate" || return $?
+    # 名称仅用于 discovery；所有 mutation 都绑定首次 ownership 验证得到的
+    # 完整不可变 ID。已验证 --rm 的旧 ID 消失可以接受，但不会退回同名操作。
+    for container_id in "${CONTAINER_RUNNING_CONTAINER_IDS[@]}"; do
+        candidate=''
+        for index in "${!CONTAINER_OWNED_CONTAINER_IDS[@]}"; do
+            if [[ "${CONTAINER_OWNED_CONTAINER_IDS[$index]}" == "$container_id" ]]; then
+                candidate="${CONTAINER_OWNED_CONTAINERS[$index]}"
+                break
+            fi
+        done
+        [[ -n "$candidate" ]] || {
+            container_fail "running container ID 缺少已验证名称：$container_id"
+            return 1
+        }
+        container_revalidate_owned_container_id "$candidate" "$container_id" \
+            || return $?
+        ((CONTAINER_INSPECTED_PRESENT == 1)) || continue
+        [[ "$CONTAINER_INSPECTED_RUNNING" == 'true' ]] || continue
+        if "${CONTAINER_COMMAND[@]}" container stop "$container_id"; then
+            :
+        else
+            status=$?
+            container_revalidate_owned_container_id "$candidate" "$container_id" \
+                || return $?
+            ((CONTAINER_INSPECTED_PRESENT == 0)) && continue
+            container_fail "按 ID 停止项目容器失败：id=$container_id status=$status"
+            return "$status"
+        fi
+        container_revalidate_owned_container_id "$candidate" "$container_id" \
+            || return $?
+        if ((CONTAINER_INSPECTED_PRESENT == 1)) \
+            && [[ "$CONTAINER_INSPECTED_RUNNING" != 'false' ]]; then
+            container_fail "项目容器 stop 后仍处于 running：id=$container_id"
+            return 1
+        fi
     done
 
-    # stop 是第一个安全竞态边界：重新按 name/label 两路枚举，并在删除任何
-    # 幸存者前重新验证所有当前候选。自动消失视为成功，foreign replacement
-    # 或新出现的 ownership mismatch 会在这里 fail closed。
-    container_discover_owned_containers || return $?
-    for candidate in "${CONTAINER_OWNED_CONTAINERS[@]}"; do
-        "${CONTAINER_COMMAND[@]}" container rm "$candidate" || return $?
+    for index in "${!CONTAINER_OWNED_CONTAINER_IDS[@]}"; do
+        candidate="${CONTAINER_OWNED_CONTAINERS[$index]}"
+        container_id="${CONTAINER_OWNED_CONTAINER_IDS[$index]}"
+        container_revalidate_owned_container_id "$candidate" "$container_id" \
+            || return $?
+        ((CONTAINER_INSPECTED_PRESENT == 1)) || continue
+        if [[ "$CONTAINER_INSPECTED_RUNNING" != 'false' ]]; then
+            container_fail "拒绝删除仍在运行的项目容器：id=$container_id"
+            return 1
+        fi
+        if "${CONTAINER_COMMAND[@]}" container rm "$container_id"; then
+            :
+        else
+            status=$?
+            container_revalidate_owned_container_id "$candidate" "$container_id" \
+                || return $?
+            ((CONTAINER_INSPECTED_PRESENT == 0)) && continue
+            container_fail "按 ID 删除项目容器失败：id=$container_id status=$status"
+            return "$status"
+        fi
+        container_container_id_present "$container_id" || return $?
+        if ((CONTAINER_CONTAINER_ID_PRESENT != 0)); then
+            container_fail "项目容器 rm 后完整 ID 仍存在：$container_id"
+            return 1
+        fi
     done
-    # rm 后建立第二个安全竞态边界，禁止遗留或并发出现的项目候选进入后续
-    # image/builder/storage mutation；合法并发也必须由下一次 lifecycle 重试处理。
+
+    # 最终重新按 name/label 枚举；同名 foreign replacement 或新候选会在
+    # image/builder/storage/state 删除之前 fail closed。
     container_discover_owned_containers || return $?
     if ((${#CONTAINER_OWNED_CONTAINERS[@]} != 0)); then
         container_fail '项目容器清理后仍有新候选，拒绝继续删除镜像或存储'
