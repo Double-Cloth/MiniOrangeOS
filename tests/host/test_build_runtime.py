@@ -165,9 +165,16 @@ class BuildRuntimeTests(unittest.TestCase):
         workspace: Path,
         *arguments: str,
         timeout: int = 120,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self._assert_makefile(workspace)
-        return self._run(workspace, "make", *arguments, timeout=timeout)
+        return self._run(
+            workspace,
+            "make",
+            *arguments,
+            timeout=timeout,
+            env=env,
+        )
 
     def _assert_success(self, result: subprocess.CompletedProcess[str]) -> None:
         self.assertEqual(
@@ -332,10 +339,20 @@ class BuildRuntimeTests(unittest.TestCase):
         variable: str,
         value: str,
         marker: Path,
+        make_prefix: tuple[str, ...] = (),
+        gate_overrides: tuple[str, ...] = (),
+        env: dict[str, str] | None = None,
     ) -> None:
         snapshot_root = workspace.parent
         before = self._lstat_snapshot(snapshot_root)
-        result = self._make(workspace, target, f"{variable}={value}")
+        result = self._make(
+            workspace,
+            *make_prefix,
+            target,
+            f"{variable}={value}",
+            *gate_overrides,
+            env=env,
+        )
         self.assertNotEqual(0, result.returncode)
         output = result.stdout + result.stderr
         self.assertRegex(
@@ -956,41 +973,64 @@ class BuildRuntimeTests(unittest.TestCase):
             ("PYTHON", "python3"),
         )
         targets = ("all", "image", "clean", "distclean")
+        gate_variables = (
+            "unsafe_make_value",
+            "make_dollar",
+            "left_parenthesis",
+            "right_parenthesis",
+        )
         for variable_index, (variable, base) in enumerate(variables):
             for payload_index, payload_name in enumerate(
                 ("backtick", "make-shell", "shell-dollar", "semicolon")
             ):
                 target = targets[(variable_index + payload_index) % len(targets)]
-                with self.subTest(
-                    variable=variable,
-                    payload=payload_name,
-                    target=target,
-                ):
-                    with self._workspace() as workspace:
-                        marker = workspace / "make-variable-injection-ran"
-                        helper = workspace / "make-variable-injection-helper"
-                        helper.write_text(
-                            "#!/usr/bin/env bash\n"
-                            "set -eu\n"
-                            f": > {shlex.quote(str(marker))}\n",
-                            encoding="utf-8",
-                        )
-                        helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
-                        if payload_name == "backtick":
-                            value = f"{base}`{helper}`"
-                        elif payload_name == "make-shell":
-                            value = f"{base}$(shell {helper})"
-                        elif payload_name == "shell-dollar":
-                            value = f"{base}$$({helper})"
-                        else:
-                            value = f"{base};{helper}"
-                        self._assert_unsafe_make_value_rejection(
-                            workspace,
-                            target,
-                            variable,
-                            value,
-                            marker,
-                        )
+                for bypass_mode in ("command-line", "environment-e"):
+                    with self.subTest(
+                        variable=variable,
+                        payload=payload_name,
+                        target=target,
+                        bypass=bypass_mode,
+                    ):
+                        with self._workspace() as workspace:
+                            marker = workspace / "make-variable-injection-ran"
+                            helper = workspace / "make-variable-injection-helper"
+                            helper.write_text(
+                                "#!/usr/bin/env bash\n"
+                                "set -eu\n"
+                                f": > {shlex.quote(str(marker))}\n",
+                                encoding="utf-8",
+                            )
+                            helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+                            if payload_name == "backtick":
+                                value = f"{base}`{helper}`"
+                            elif payload_name == "make-shell":
+                                value = f"{base}$(shell {helper})"
+                            elif payload_name == "shell-dollar":
+                                value = f"{base}$$({helper})"
+                            else:
+                                value = f"{base};{helper}"
+
+                            make_prefix: tuple[str, ...] = ()
+                            gate_overrides: tuple[str, ...] = ()
+                            env: dict[str, str] | None = None
+                            if bypass_mode == "command-line":
+                                gate_overrides = tuple(
+                                    f"{name}=" for name in gate_variables
+                                )
+                            else:
+                                make_prefix = ("-e",)
+                                env = os.environ.copy()
+                                env.update({name: "" for name in gate_variables})
+                            self._assert_unsafe_make_value_rejection(
+                                workspace,
+                                target,
+                                variable,
+                                value,
+                                marker,
+                                make_prefix,
+                                gate_overrides,
+                                env,
+                            )
 
     def test_image_tool_rejects_invalid_inputs_without_clobbering_output(self) -> None:
         with self._workspace() as workspace:

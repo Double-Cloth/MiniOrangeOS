@@ -8,10 +8,10 @@ BUILD_DIR ?= build
 
 # GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
 # 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
-make_dollar := $$
-left_parenthesis := (
-right_parenthesis := )
-unsafe_make_value = $(findstring $(make_dollar),$(value $(1)))$(findstring `,$(value $(1)))$(findstring ;,$(value $(1)))$(findstring ",$(value $(1)))$(findstring ',$(value $(1)))$(findstring &,$(value $(1)))$(findstring |,$(value $(1)))$(findstring <,$(value $(1)))$(findstring >,$(value $(1)))$(findstring $(left_parenthesis),$(value $(1)))$(findstring $(right_parenthesis),$(value $(1)))
+override make_dollar := $$
+override left_parenthesis := (
+override right_parenthesis := )
+override unsafe_make_value = $(findstring $(make_dollar),$(value $(1)))$(findstring `,$(value $(1)))$(findstring ;,$(value $(1)))$(findstring ",$(value $(1)))$(findstring ',$(value $(1)))$(findstring &,$(value $(1)))$(findstring |,$(value $(1)))$(findstring <,$(value $(1)))$(findstring >,$(value $(1)))$(findstring $(left_parenthesis),$(value $(1)))$(findstring $(right_parenthesis),$(value $(1)))
 
 ifneq ($(call unsafe_make_value,CURDIR),)
 $(error CURDIR 含危险字符，不支持作为 Make/Shell 变量)
