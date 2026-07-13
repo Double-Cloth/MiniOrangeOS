@@ -43,10 +43,15 @@ section .text16 progbits alloc exec nowrite align=1
 global bios_write_char
 global bios_disk_read_edd
 
-; 输入：AL=字符。使用 BIOS teletype 服务，不依赖调用者的 BX/段寄存器。
+; 输入：AL=字符。使用 BIOS teletype 服务并保留所有通用/段寄存器；flags 未定义。
 bios_write_char:
     push ax
     push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
     push ds
     push es
     mov ah, 0x0E
@@ -55,6 +60,11 @@ bios_write_char:
     int 0x10
     pop es
     pop ds
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
     pop bx
     pop ax
     ret
