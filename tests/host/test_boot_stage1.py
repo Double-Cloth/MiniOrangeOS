@@ -590,10 +590,25 @@ class BootStage1Tests(unittest.TestCase):
             '"image_size_bytes":NaN',
             1,
         )
+        def with_stage2_artifact(value: str) -> bytes:
+            changed = json.loads(valid)
+            stage2 = next(
+                component
+                for component in changed["components"]
+                if component["name"] == "stage2"
+            )
+            stage2["artifact"] = value
+            return json.dumps(changed, separators=(",", ":")).encode("utf-8")
+
         cases = {
             "duplicate-key": duplicate.encode("utf-8"),
             "nan": nan_value.encode("utf-8"),
             "oversized": valid.encode("utf-8") + b" " * (2 * 1024 * 1024),
+            "artifact-empty-segment": with_stage2_artifact("boot//stage2.bin"),
+            "artifact-current-segment": with_stage2_artifact("boot/./stage2.bin"),
+            "artifact-backslash": with_stage2_artifact(r"boot\stage2.bin"),
+            "artifact-windows-absolute": with_stage2_artifact(r"C:\x"),
+            "artifact-nul": with_stage2_artifact("boot/stage2\x00.bin"),
         }
         with tempfile.TemporaryDirectory(prefix="generator-invalid-") as directory:
             workspace = self._prepare_generator_workspace(Path(directory))
