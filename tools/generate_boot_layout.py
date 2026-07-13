@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import NoReturn
 
+# 构建工具不得在权威源码树或测试副本写入 __pycache__。
+sys.dont_write_bytecode = True
+
 import build_dir_guard as guard
 
 
