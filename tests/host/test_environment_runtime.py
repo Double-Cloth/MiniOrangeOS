@@ -275,7 +275,7 @@ esac
             newline="\n",
         )
 
-        environment_root = temporary_root / "environment"
+        environment_root = temporary_root / "environment root"
         command_directory = temporary_root / "commands"
         command_directory.mkdir()
         self._write_fake_make(command_directory)

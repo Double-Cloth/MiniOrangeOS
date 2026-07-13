@@ -454,7 +454,7 @@ read_tool_versions() {
     if [[ ! -f "$ld_path" || ! -x "$ld_path" || -L "$ld_path" ]]; then
         return 1
     fi
-    if gcc_dumpmachine="$($gcc_path -dumpmachine)"; then
+    if gcc_dumpmachine="$("$gcc_path" -dumpmachine)"; then
         :
     else
         status=$?
@@ -463,13 +463,13 @@ read_tool_versions() {
     if [[ "$gcc_dumpmachine" != "$MINIOS_TARGET" ]]; then
         return 1
     fi
-    if gcc_version_output="$($gcc_path --version)"; then
+    if gcc_version_output="$("$gcc_path" --version)"; then
         gcc_version_output="${gcc_version_output%%$'\n'*}"
     else
         status=$?
         return "$status"
     fi
-    if ld_version_output="$($ld_path --version)"; then
+    if ld_version_output="$("$ld_path" --version)"; then
         ld_version_output="${ld_version_output%%$'\n'*}"
     else
         status=$?
@@ -486,7 +486,7 @@ read_tool_versions() {
         minios_log "FAIL" "Binutils 版本与锁文件不匹配：$ld_version_output"
         return 1
     fi
-    if libgcc_path="$($gcc_path -print-libgcc-file-name)"; then
+    if libgcc_path="$("$gcc_path" -print-libgcc-file-name)"; then
         libgcc_path="${libgcc_path%%$'\n'*}"
     else
         status=$?
