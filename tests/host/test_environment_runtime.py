@@ -298,6 +298,9 @@ case " $* " in
     rm -f "$builders_dir/$requested"
     ;;
   *" image rmi "*)
+    exit 64
+    ;;
+  *" image rm "*)
     [ "${FAKE_CONTAINER_REMOVE_EXIT:-0}" -eq 0 ] || exit "$FAKE_CONTAINER_REMOVE_EXIT"
     requested=''
     for requested in "$@"; do :; done
@@ -431,6 +434,9 @@ esac
             line.split("\t")[1:]
             for line in fake_log.read_text(encoding="utf-8").splitlines()
         ]
+
+    def _is_image_remove_call(self, call: list[str]) -> bool:
+        return "image" in call and "rm" in call
 
     def _terminate_owned_process_group(
         self,
@@ -2023,7 +2029,10 @@ exit 0
                             "recovery 只能清理 state nonce 派生 builder",
                         )
                     if stage in {"load-pending", "iid"}:
-                        rmi_calls = [call for call in calls if "rmi" in call]
+                        rmi_calls = [
+                            call for call in calls
+                            if self._is_image_remove_call(call)
+                        ]
                         self.assertTrue(rmi_calls)
                         expected_ref = (
                             "localhost/miniorangeos-dev:ubuntu-24.04"
@@ -2070,7 +2079,9 @@ exit 0
                         diagnostic, r"(?:image.id|label|task|归属|不一致)"
                     )
                     calls = self._container_calls(fake_log)
-                    self.assertFalse(any("rmi" in call for call in calls))
+                    self.assertFalse(
+                        any(self._is_image_remove_call(call) for call in calls)
+                    )
                     self.assertFalse(any("build" in call for call in calls))
                     self.assertTrue(
                         (environment_root / "container-storage").is_dir()
@@ -2125,7 +2136,9 @@ exit 0
                     any("inspect" in call for call in calls),
                     (calls, result.stdout, result.stderr),
                 )
-                self.assertFalse(any("rmi" in call for call in calls))
+                self.assertFalse(
+                    any(self._is_image_remove_call(call) for call in calls)
+                )
                 self.assertFalse(
                     any("buildx" in call and "rm" in call for call in calls)
                 )
@@ -2323,7 +2336,10 @@ exit 0
 
                     self.assertNotEqual(0, result.returncode)
                     calls = self._container_calls(fake_log)
-                    rmi_calls = [call for call in calls if "rmi" in call]
+                    rmi_calls = [
+                        call for call in calls
+                        if self._is_image_remove_call(call)
+                    ]
                     expected_live_ref = (
                         "localhost/miniorangeos-dev:ubuntu-24.04"
                         if backend == "podman"
@@ -2436,7 +2452,7 @@ exit 0
                     )
                     self.assertFalse(
                         any(
-                            "rmi" in call
+                            self._is_image_remove_call(call)
                             for call in self._container_calls(fake_log)
                         )
                     )
@@ -2559,7 +2575,11 @@ exit 0
                 self.assertTrue((environment_root / "state/container.env").is_file())
                 calls = self._container_calls(fake_log)
                 self.assertFalse(
-                    any("rmi" in call or ("buildx" in call and "rm" in call) for call in calls)
+                    any(
+                        self._is_image_remove_call(call)
+                        or ("buildx" in call and "rm" in call)
+                        for call in calls
+                    )
                 )
 
     def test_ubuntu_destroy_removes_only_recorded_project_resources(self) -> None:
@@ -2587,7 +2607,9 @@ exit 0
                 self.assertFalse((environment_root / "state/container.env").exists())
                 self.assertTrue(unrelated.is_file())
                 calls = self._container_calls(fake_log)
-                self.assertTrue(any("rmi" in call for call in calls))
+                self.assertTrue(
+                    any(self._is_image_remove_call(call) for call in calls)
+                )
                 if backend == "podman":
                     self.assertFalse((environment_root / "container-storage").exists())
                 else:
@@ -2633,7 +2655,9 @@ exit 0
                     (runtime / "image.id").read_text(encoding="utf-8"),
                 )
                 rmi_calls = [
-                    call for call in self._container_calls(fake_log) if "rmi" in call
+                    call
+                    for call in self._container_calls(fake_log)
+                    if self._is_image_remove_call(call)
                 ]
                 expected_ref = (
                     "localhost/miniorangeos-dev:ubuntu-24.04"
@@ -2675,7 +2699,9 @@ exit 0
                     (environment_root / "container-storage").exists()
                 )
                 calls = self._container_calls(fake_log)
-                self.assertFalse(any("rmi" in call for call in calls))
+                self.assertFalse(
+                    any(self._is_image_remove_call(call) for call in calls)
+                )
                 self.assertFalse(any("build" in call for call in calls))
 
     def test_ubuntu_destroy_retries_with_independently_missing_storage_parts(self) -> None:
@@ -2749,7 +2775,9 @@ exit 0
             )
             self.assertTrue((environment_root / "state/container.env").exists())
             calls = self._container_calls(fake_log)
-            self.assertFalse(any("rmi" in call for call in calls))
+            self.assertFalse(
+                any(self._is_image_remove_call(call) for call in calls)
+            )
             self.assertFalse(
                 any("buildx" in call and "rm" in call for call in calls)
             )
@@ -2792,7 +2820,9 @@ exit 0
             self.assertFalse(state_path.exists())
             self.assertFalse((runtime / "image.exists").exists())
             calls = self._container_calls(fake_log)
-            removed_targets = [call[-1] for call in calls if "rmi" in call]
+            removed_targets = [
+                call[-1] for call in calls if self._is_image_remove_call(call)
+            ]
             self.assertEqual(
                 ["miniorangeos-dev:ubuntu-24.04"] * 2,
                 removed_targets,
@@ -2846,7 +2876,11 @@ exit 0
             calls = self._container_calls(fake_log)
             self.assertEqual(
                 ["localhost/miniorangeos-dev:ubuntu-24.04"],
-                [call[-1] for call in calls if "rmi" in call],
+                [
+                    call[-1]
+                    for call in calls
+                    if self._is_image_remove_call(call)
+                ],
             )
 
     def test_docker_destroy_retries_after_resources_removed_and_state_failure(self) -> None:
@@ -2914,7 +2948,11 @@ exit 0
             calls = self._container_calls(fake_log)
             self.assertTrue(any("buildx" in call and "ls" in call for call in calls))
             self.assertFalse(
-                any("rmi" in call or ("buildx" in call and "rm" in call) for call in calls)
+                any(
+                    self._is_image_remove_call(call)
+                    or ("buildx" in call and "rm" in call)
+                    for call in calls
+                )
             )
 
     def test_ubuntu_destroy_rejects_state_and_storage_boundary_tampering(self) -> None:
@@ -2961,7 +2999,11 @@ exit 0
                     self.assertNotEqual(0, result.returncode)
                     calls = self._container_calls(fake_log)
                     self.assertFalse(
-                        any("rmi" in call or ("buildx" in call and "rm" in call) for call in calls)
+                        any(
+                            self._is_image_remove_call(call)
+                            or ("buildx" in call and "rm" in call)
+                            for call in calls
+                        )
                     )
 
     def test_ubuntu_destroy_rejects_missing_symlinked_or_writable_state(self) -> None:
@@ -2993,7 +3035,11 @@ exit 0
                 self.assertNotEqual(0, result.returncode)
                 calls = self._container_calls(fake_log)
                 self.assertFalse(
-                    any("rmi" in call or ("buildx" in call and "rm" in call) for call in calls)
+                    any(
+                        self._is_image_remove_call(call)
+                        or ("buildx" in call and "rm" in call)
+                        for call in calls
+                    )
                 )
 
     def test_ubuntu_destroy_rejects_unowned_image_without_removal(self) -> None:

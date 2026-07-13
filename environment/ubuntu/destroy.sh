@@ -89,7 +89,7 @@ if [[ "$STATE_CONTAINER_BACKEND" == 'docker' && $builder_present -eq 1 ]]; then
     docker buildx rm --force "$STATE_CONTAINER_BUILDER"
 fi
 if ((image_present == 1)); then
-    "${CONTAINER_COMMAND[@]}" image rmi "$STATE_CONTAINER_LIVE_REF"
+    "${CONTAINER_COMMAND[@]}" image rm "$STATE_CONTAINER_LIVE_REF"
 fi
 container_remove_storage_components
 rm -f -- "$MINIOS_CONTAINER_STATE_FILE"

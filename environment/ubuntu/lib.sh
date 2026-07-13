@@ -900,7 +900,7 @@ container_recover_creating_state() {
     # backend 探测可能触碰路径；任何删除前重新验证每个仍存在的固定目录。
     container_validate_partial_storage_boundaries || return $?
     if ((image_present == 1)); then
-        "${CONTAINER_COMMAND[@]}" image rmi "$STATE_CONTAINER_LIVE_REF" \
+        "${CONTAINER_COMMAND[@]}" image rm "$STATE_CONTAINER_LIVE_REF" \
             || return $?
     fi
     if ((builder_present == 1)); then
