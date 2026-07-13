@@ -233,6 +233,20 @@ container_validate_partial_storage_boundaries() {
 
 container_remove_storage_components() {
     local candidate
+    if [[ "${STATE_CONTAINER_BACKEND:-}" == 'podman' \
+        && ( -e "$MINIOS_CONTAINER_GRAPHROOT" \
+            || -e "$MINIOS_CONTAINER_RUNROOT" ) ]]; then
+        container_assert_owned_path "$MINIOS_CONTAINER_GRAPHROOT" \
+            "$MINIOS_ENV_ROOT/container-storage/graphroot" || return $?
+        container_assert_runtime_path "$MINIOS_CONTAINER_RUNROOT" \
+            "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
+        if ((${#CONTAINER_COMMAND[@]} == 0)); then
+            container_fail 'Podman storage reset 缺少已验证 backend 命令'
+            return 1
+        fi
+        # --root/--runroot 已固定到项目专用路径；不触碰默认 Podman storage。
+        "${CONTAINER_COMMAND[@]}" system reset --force || return $?
+    fi
     for candidate in \
         "$MINIOS_CONTAINER_GRAPHROOT" \
         "$MINIOS_CONTAINER_STORAGE_ROOT"; do

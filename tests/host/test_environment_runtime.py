@@ -2611,8 +2611,23 @@ exit 0
                     any(self._is_image_remove_call(call) for call in calls)
                 )
                 if backend == "podman":
+                    reset_calls = [
+                        call
+                        for call in calls
+                        if "system" in call and "reset" in call
+                    ]
+                    self.assertEqual(1, len(reset_calls))
+                    self.assertIn("--force", reset_calls[0])
+                    self.assertIn("--root", reset_calls[0])
+                    self.assertIn("--runroot", reset_calls[0])
                     self.assertFalse((environment_root / "container-storage").exists())
                 else:
+                    self.assertFalse(
+                        any(
+                            "system" in call and "reset" in call
+                            for call in calls
+                        )
+                    )
                     self.assertTrue(
                         any("buildx" in call and "rm" in call for call in calls)
                     )
