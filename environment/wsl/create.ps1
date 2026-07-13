@@ -17,6 +17,7 @@ $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $VersionsPath = Join-Path $RepoRoot 'environment\versions.env'
 $RepoWslPath = '/mnt/d/DC/program-projects/OTHER/MiniOrangeOS'
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
+$script:ValidatedRegistration = $null
 
 function Assert-RootOverrideAllowed {
     if ($AuthorizedRoot -cne $ProductionAuthorizedRoot) {
@@ -90,11 +91,14 @@ function Assert-WslDistributionOwnership {
     $LxssMatches = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName })
     if ($LxssMatches.Count -ne 1) { throw "Lxss 注册项必须唯一：$DistroName count=$($LxssMatches.Count)" }
     $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
-    $RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+    $Registration = Get-ItemProperty -LiteralPath $LxssKey
+    $RegisteredBasePath = $Registration.BasePath
+    $RegisteredVersion = $Registration.Version
     if ($LxssMatches[0].PSPath -cne $LxssKey) { throw "Lxss 注册项在 ownership 检查期间发生变化：$DistroName" }
     if (-not $LxssKey -or -not $RegisteredBasePath) {
         throw "发行版缺少可信 Lxss BasePath：$DistroName"
     }
+    if ($RegisteredVersion -ne 2) { throw "发行版必须是 WSL2：$DistroName Version=$RegisteredVersion" }
     $RegisteredFullPath = [IO.Path]::GetFullPath($RegisteredBasePath)
     $ExpectedFullPath = [IO.Path]::GetFullPath($ExpectedPath)
     if ($RegisteredFullPath -cne $ExpectedFullPath) {
@@ -109,6 +113,25 @@ function Assert-WslDistributionOwnership {
     if (-not $RegisteredItem.PSIsContainer -or
         ($RegisteredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "注册 BasePath 末端不是可信普通目录：$RegisteredFullPath"
+    }
+    $RegistrationId = Split-Path -Leaf $LxssKey
+    if ($RegistrationId -cnotmatch '^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$') {
+        throw "Lxss registration ID 格式不可信：$RegistrationId"
+    }
+    $Sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $BasePathBytes = [Text.Encoding]::UTF8.GetBytes($RegisteredFullPath.ToLowerInvariant())
+        $BasePathSha256 = ([BitConverter]::ToString($Sha256.ComputeHash($BasePathBytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $Sha256.Dispose()
+    }
+    $script:ValidatedRegistration = [pscustomobject]@{
+        DistroName = $DistroName
+        BasePath = $RegisteredFullPath
+        RegistrationId = $RegistrationId.ToLowerInvariant()
+        BasePathSha256 = $BasePathSha256
+        Version = 2
     }
 }
 
@@ -185,6 +208,20 @@ function Invoke-Bootstrap {
     if ($LASTEXITCODE -ne 0) { throw 'WSL toolchain bootstrap 失败' }
 }
 
+function Invoke-WslIdentityProvision {
+    if ($null -eq $script:ValidatedRegistration -or
+        $script:ValidatedRegistration.DistroName -cne $DistroName -or
+        $script:ValidatedRegistration.Version -ne 2) {
+        throw '缺少当前发行版的可信 Lxss ownership 结果'
+    }
+    & $WslExecutable -d $DistroName -u root -- bash "$RepoWslPath/environment/bootstrap-inside.sh" `
+        --provision-wsl-identity `
+        --expected-distro $DistroName `
+        --registration-id $script:ValidatedRegistration.RegistrationId `
+        --base-path-sha256 $script:ValidatedRegistration.BasePathSha256
+    if ($LASTEXITCODE -ne 0) { throw 'WSL identity provision 失败' }
+}
+
 Assert-RootOverrideAllowed
 Assert-AllowedDistroName $DistroName
 if ($Bootstrap -and $SkipBootstrap) { throw '-Bootstrap 与 -SkipBootstrap 不能同时使用' }
@@ -195,6 +232,7 @@ Assert-NoReparsePointComponents $ExpectedPath
 
 if (Test-WslDistributionExists $DistroName) {
     Assert-WslDistributionOwnership $DistroName $ExpectedPath
+    Invoke-WslIdentityProvision
     Write-Host "发行版已存在且 ownership 验证通过：$DistroName"
     if ($Bootstrap) { Invoke-Bootstrap }
     elseif ($SkipBootstrap) { Write-Host '已按 -SkipBootstrap 跳过 bootstrap' }
@@ -208,6 +246,7 @@ Assert-NoReparsePointComponents $ExpectedPath
 & $WslExecutable --import $DistroName $ExpectedPath $VerifiedRootfs --version 2
 if ($LASTEXITCODE -ne 0) { throw "WSL import 失败：$DistroName" }
 Assert-WslDistributionOwnership $DistroName $ExpectedPath
+Invoke-WslIdentityProvision
 Write-Host "发行版创建完成：$DistroName"
 if ($Bootstrap) { Invoke-Bootstrap }
 elseif ($SkipBootstrap) { Write-Host '已按 -SkipBootstrap 跳过 bootstrap' }

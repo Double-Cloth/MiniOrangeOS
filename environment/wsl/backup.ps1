@@ -60,9 +60,12 @@ function Assert-WslDistributionOwnership {
     $LxssMatches = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName })
     if ($LxssMatches.Count -ne 1) { throw "Lxss 注册项必须唯一：$DistroName count=$($LxssMatches.Count)" }
     $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
-    $RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+    $Registration = Get-ItemProperty -LiteralPath $LxssKey
+    $RegisteredBasePath = $Registration.BasePath
+    $RegisteredVersion = $Registration.Version
     if ($LxssMatches[0].PSPath -cne $LxssKey) { throw "Lxss 注册项在 ownership 检查期间发生变化：$DistroName" }
     if (-not $LxssKey -or -not $RegisteredBasePath) { throw "发行版缺少可信 Lxss BasePath：$DistroName" }
+    if ($RegisteredVersion -ne 2) { throw "发行版必须是 WSL2：$DistroName Version=$RegisteredVersion" }
     $RegisteredFullPath = [IO.Path]::GetFullPath($RegisteredBasePath)
     $ExpectedFullPath = [IO.Path]::GetFullPath($ExpectedPath)
     if ($RegisteredFullPath -cne $ExpectedFullPath) { throw "Lxss BasePath 不匹配：$RegisteredFullPath" }

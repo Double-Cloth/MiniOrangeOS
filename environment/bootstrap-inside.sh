@@ -11,6 +11,7 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly REPO_ROOT="$(realpath -m -- "$SCRIPT_DIR/..")"
 readonly PRODUCTION_OS_RELEASE_FILE='/etc/os-release'
 readonly PRODUCTION_WSL_CONF_FILE='/etc/wsl.conf'
+readonly PRODUCTION_WSL_IDENTITY_FILE='/etc/miniorangeos/instance.identity'
 readonly SAFE_WSL_NAME_PATTERN='^MiniOrangeOS-Dev(-Test-[A-Za-z0-9][A-Za-z0-9_-]*)?$'
 readonly -a APPROVED_PACKAGES=(
     build-essential bison flex libgmp-dev libmpfr-dev libmpc-dev texinfo
@@ -22,11 +23,15 @@ mode='all'
 target_user="${MINIOS_TARGET_USER:-minios}"
 environment_kind=''
 target_uid=''
+target_gid=''
 target_home=''
 environment_root=''
 wsl_conf_file=''
-package_lock_partial=''
 test_root=''
+runtime_probe_root=''
+expected_distro=''
+registration_id=''
+base_path_sha256=''
 
 usage() {
     printf '用法：%s [--system-only|--toolchain-only] [--target-user USER]\n' "${0##*/}" >&2
@@ -37,16 +42,9 @@ fail() {
     return 1
 }
 
-cleanup_package_lock_partial() {
-    if [[ -n "$package_lock_partial" ]]; then
-        rm -f -- "$package_lock_partial"
-    fi
-}
-trap cleanup_package_lock_partial EXIT
-
 while (($# > 0)); do
     case "$1" in
-        --system-only|--toolchain-only|--write-package-lock)
+        --system-only|--toolchain-only|--prepare-package-state|--write-package-lock|--provision-wsl-identity)
             if [[ "$mode" != 'all' ]]; then
                 fail "重复或冲突的阶段参数：$1"
                 exit 2
@@ -58,6 +56,21 @@ while (($# > 0)); do
             if (($# == 0)); then usage; exit 2; fi
             target_user="$1"
             ;;
+        --expected-distro)
+            shift
+            if (($# == 0)); then usage; exit 2; fi
+            expected_distro="$1"
+            ;;
+        --registration-id)
+            shift
+            if (($# == 0)); then usage; exit 2; fi
+            registration_id="$1"
+            ;;
+        --base-path-sha256)
+            shift
+            if (($# == 0)); then usage; exit 2; fi
+            base_path_sha256="$1"
+            ;;
         *)
             fail "未知参数：$1"
             usage
@@ -66,6 +79,18 @@ while (($# > 0)); do
     esac
     shift
 done
+
+if [[ "$mode" == 'provision-wsl-identity' ]]; then
+    if [[ ! "$expected_distro" =~ $SAFE_WSL_NAME_PATTERN \
+        || ! "$registration_id" =~ ^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$ \
+        || ! "$base_path_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+        fail 'identity provision 参数格式无效'
+        exit 2
+    fi
+elif [[ -n "$expected_distro$registration_id$base_path_sha256" ]]; then
+    fail 'identity provision 参数只能与 --provision-wsl-identity 一起使用'
+    exit 2
+fi
 
 is_test_path() {
     local path="$1"
@@ -76,7 +101,7 @@ is_test_path() {
 
 validate_test_configuration() {
     if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
-        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}" ]]; then
+        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}${MINIOS_RUNTIME_PROBE_ROOT:-}${MINIOS_WSL_IDENTITY_FILE:-}${MINIOS_PACKAGE_STATE_RACE_PHASE:-}${FAKE_RACE_STATE:-}${FAKE_RACE_ORIGINAL:-}${FAKE_RACE_OUTSIDE:-}" ]]; then
             fail '测试覆盖仅允许在 MINIOS_BOOTSTRAP_TEST_MODE=1 中使用'
             return 1
         fi
@@ -106,6 +131,21 @@ validate_test_configuration() {
         return 1
     fi
     test_root="$canonical_root"
+
+    local requested_runtime_root="${MINIOS_RUNTIME_PROBE_ROOT:-}"
+    local canonical_runtime_root
+    if [[ -z "$requested_runtime_root" || -L "$requested_runtime_root" ]]; then
+        fail '测试模式必须提供非 symlink 的 runtime probe root'
+        return 1
+    fi
+    canonical_runtime_root="$(realpath -e -- "$requested_runtime_root")" || return $?
+    if [[ "$requested_runtime_root" != "$canonical_runtime_root" ]] \
+        || ! is_test_path "$canonical_runtime_root"; then
+        fail "runtime probe root 必须是测试根内的规范路径：$requested_runtime_root"
+        return 1
+    fi
+    validate_root_owned_safe_chain "$test_root" "$canonical_runtime_root" || return $?
+    runtime_probe_root="$canonical_runtime_root"
 }
 
 select_test_or_production_file() {
@@ -335,8 +375,206 @@ validate_ubuntu_release() {
     fi
 }
 
+runtime_probe_path() {
+    local production_path="$1"
+    if [[ -n "$runtime_probe_root" ]]; then
+        printf '%s%s\n' "$runtime_probe_root" "$production_path"
+    else
+        printf '%s\n' "$production_path"
+    fi
+}
+
+validate_runtime_probe_file() {
+    local path="$1"
+    local expected_owner="${2:-0}"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "runtime fact 必须是非 symlink 普通文件：$path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path")
+    if [[ ( "$item_type" != 'regular file' && "$item_type" != 'regular empty file' ) \
+        || "$item_uid" != "$expected_owner" \
+        || ! "$item_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$item_mode & 8#022)) -ne 0 ]]; then
+        fail "runtime fact owner/type/mode 不可信：$path type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+validate_wsl2_runtime_identity() {
+    local osrelease_path
+    local version_path
+    local interop_path
+    local osrelease
+    local version
+    osrelease_path="$(runtime_probe_path /proc/sys/kernel/osrelease)" || return $?
+    version_path="$(runtime_probe_path /proc/version)" || return $?
+    interop_path="$(runtime_probe_path /proc/sys/fs/binfmt_misc/WSLInterop)" || return $?
+    validate_runtime_probe_file "$osrelease_path" || return $?
+    validate_runtime_probe_file "$version_path" || return $?
+    validate_runtime_probe_file "$interop_path" || return $?
+    osrelease="$(<"$osrelease_path")"
+    version="$(<"$version_path")"
+    if [[ "${osrelease,,}" != *microsoft* \
+        || "${osrelease,,}" != *wsl2* \
+        || "${version,,}" != *microsoft* \
+        || "${version,,}" != *wsl2* ]]; then
+        fail "WSL identity 缺少 Microsoft WSL2 kernel/runtime 事实：osrelease=$osrelease"
+        return 1
+    fi
+}
+
+validate_container_runtime_identity() {
+    local cgroup_path
+    local mountinfo_path
+    local docker_marker
+    local podman_marker
+    local marker=''
+    local cgroup
+    local mountinfo
+    cgroup_path="$(runtime_probe_path /proc/1/cgroup)" || return $?
+    mountinfo_path="$(runtime_probe_path /proc/1/mountinfo)" || return $?
+    docker_marker="$(runtime_probe_path /.dockerenv)" || return $?
+    podman_marker="$(runtime_probe_path /run/.containerenv)" || return $?
+    validate_runtime_probe_file "$cgroup_path" || return $?
+    validate_runtime_probe_file "$mountinfo_path" || return $?
+    if [[ -f "$docker_marker" && ! -L "$docker_marker" ]]; then
+        marker="$docker_marker"
+    elif [[ -f "$podman_marker" && ! -L "$podman_marker" ]]; then
+        marker="$podman_marker"
+    else
+        fail '容器 identity 缺少可信 /.dockerenv 或 /run/.containerenv marker'
+        return 1
+    fi
+    validate_runtime_probe_file "$marker" || return $?
+    cgroup="$(<"$cgroup_path")"
+    mountinfo="$(<"$mountinfo_path")"
+    if [[ ! "${cgroup,,}" =~ (docker|libpod|podman|containerd|kubepods) \
+        && ! "${mountinfo,,}" =~ (\ -\ overlay\ |\ -\ fuse\.fuse-overlayfs\ |containers/storage) ]]; then
+        fail '容器 identity 缺少 OCI cgroup 或容器 rootfs mount 事实'
+        return 1
+    fi
+}
+
+select_wsl_identity_file() {
+    select_test_or_production_file \
+        "${MINIOS_WSL_IDENTITY_FILE:-}" "$PRODUCTION_WSL_IDENTITY_FILE"
+}
+
+validate_wsl_identity_file_metadata() {
+    local identity_file="$1"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -f "$identity_file" || -L "$identity_file" ]]; then
+        fail "WSL identity record 必须是非 symlink 普通文件：$identity_file"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$identity_file")
+    if [[ ( "$item_type" != 'regular file' && "$item_type" != 'regular empty file' ) \
+        || "$item_uid" != '0' || "$item_mode" != '644' ]]; then
+        fail "WSL identity record 必须 root-owned mode 0644：type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+read_wsl_identity_record() {
+    local identity_file="$1"
+    local -a lines
+    validate_wsl_identity_file_metadata "$identity_file" || return $?
+    mapfile -t lines <"$identity_file"
+    if ((${#lines[@]} != 4)) \
+        || [[ "${lines[0]}" != 'schema=1' \
+            || "${lines[1]}" != distro=* \
+            || ! "${lines[1]#distro=}" =~ $SAFE_WSL_NAME_PATTERN \
+            || ! "${lines[2]}" =~ ^registration_id=\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$ \
+            || ! "${lines[3]}" =~ ^base_path_sha256=[0-9a-f]{64}$ ]]; then
+        fail 'WSL identity record schema/字段无效'
+        return 1
+    fi
+    printf '%s\n' "${lines[1]#distro=}"
+}
+
+validate_wsl_instance_identity() {
+    local identity_file
+    local recorded_distro
+    identity_file="$(select_wsl_identity_file)" || return $?
+    recorded_distro="$(read_wsl_identity_record "$identity_file")" || return $?
+    if [[ "$recorded_distro" != "${WSL_DISTRO_NAME:-}" ]]; then
+        fail "WSL identity record 与当前发行版名不一致：record=$recorded_distro env=${WSL_DISTRO_NAME:-missing}"
+        return 1
+    fi
+}
+
+provision_wsl_identity() {
+    validate_test_configuration || return $?
+    validate_ubuntu_release || return $?
+    validate_wsl2_runtime_identity || return $?
+    if ((EUID != 0)); then
+        fail 'identity provision 必须由 root 执行'
+        return 1
+    fi
+    if [[ "${WSL_DISTRO_NAME:-}" != "$expected_distro" ]]; then
+        fail "identity provision 的发行版环境不匹配：expected=$expected_distro actual=${WSL_DISTRO_NAME:-missing}"
+        return 1
+    fi
+    local identity_file
+    local identity_parent
+    local partial=''
+    local desired
+    identity_file="$(select_wsl_identity_file)" || return $?
+    identity_parent="${identity_file%/*}"
+    if [[ "$identity_file" == "$PRODUCTION_WSL_IDENTITY_FILE" ]]; then
+        validate_root_owned_safe_chain / /etc || return $?
+        if [[ ! -e "$identity_parent" && ! -L "$identity_parent" ]]; then
+            mkdir -m 0755 -- "$identity_parent" || return $?
+        fi
+        validate_root_owned_safe_chain / "$identity_parent" || return $?
+    else
+        validate_root_owned_safe_chain "$test_root" "$identity_parent" || return $?
+    fi
+    desired="$(printf '%s\n' \
+        'schema=1' \
+        "distro=$expected_distro" \
+        "registration_id=$registration_id" \
+        "base_path_sha256=$base_path_sha256")"
+    if [[ -e "$identity_file" || -L "$identity_file" ]]; then
+        validate_wsl_identity_file_metadata "$identity_file" || return $?
+        if [[ "$(<"$identity_file")" != "$desired" ]]; then
+            fail '已有 WSL identity record 与当前 Lxss ownership 不一致，拒绝覆盖'
+            return 1
+        fi
+        printf 'identity_status=up-to-date\n'
+        return 0
+    fi
+    partial="$(mktemp "$identity_parent/.instance.identity.partial.XXXXXX")" || return $?
+    if ! printf '%s\n' "$desired" >"$partial"; then
+        rm -f -- "$partial"
+        return 1
+    fi
+    chmod 0644 "$partial" || { rm -f -- "$partial"; return 1; }
+    sync -f "$partial" || { rm -f -- "$partial"; return 1; }
+    if [[ -e "$identity_file" || -L "$identity_file" ]]; then
+        rm -f -- "$partial"
+        fail 'WSL identity record 创建期间出现并发目标'
+        return 1
+    fi
+    mv -- "$partial" "$identity_file" || { rm -f -- "$partial"; return 1; }
+    sync -f "$identity_parent" || return $?
+    validate_wsl_identity_file_metadata "$identity_file" || return $?
+    [[ "$(<"$identity_file")" == "$desired" ]] || {
+        fail 'WSL identity record 原子写入后内容不一致'
+        return 1
+    }
+    printf 'identity_status=created\n'
+}
+
 validate_isolation_identity() {
     if [[ "${MINIOS_CONTAINER:-}" == '1' ]]; then
+        validate_container_runtime_identity || return $?
         environment_kind='container'
         return
     fi
@@ -349,6 +587,8 @@ validate_isolation_identity() {
         fail "只允许项目 WSL 发行版或 MINIOS_CONTAINER=1：${WSL_DISTRO_NAME:-missing}"
         return 1
     fi
+    validate_wsl2_runtime_identity || return $?
+    validate_wsl_instance_identity || return $?
     environment_kind='wsl'
 }
 
@@ -376,7 +616,8 @@ resolve_target_user() {
     fi
     IFS=':' read -r passwd_name _ passwd_uid passwd_gid passwd_gecos passwd_home passwd_shell <<<"$passwd_entry"
     if [[ "$passwd_name" != "$target_user" || ! "$passwd_uid" =~ ^[0-9]+$ \
-        || "$passwd_uid" == '0' ]]; then
+        || "$passwd_uid" == '0' || ! "$passwd_gid" =~ ^[0-9]+$ \
+        || "$passwd_gid" == '0' ]]; then
         fail "目标用户必须是非 UID0 普通用户：$target_user uid=${passwd_uid:-missing}"
         return 1
     fi
@@ -408,6 +649,7 @@ resolve_target_user() {
         return 1
     fi
     target_uid="$passwd_uid"
+    target_gid="$passwd_gid"
     target_home="$(realpath -e -- "$passwd_home")" || {
         fail "无法规范化目标用户 home：$passwd_home"
         return 1
@@ -661,36 +903,151 @@ validate_wsl_configuration_path() {
 }
 
 preflight() {
-    validate_test_configuration
-    validate_ubuntu_release
-    validate_isolation_identity
-    ensure_target_user
-    validate_environment_root
-    validate_wsl_configuration_path
+    validate_test_configuration || return $?
+    validate_ubuntu_release || return $?
+    validate_isolation_identity || return $?
+    ensure_target_user || return $?
+    validate_environment_root || return $?
+    validate_wsl_configuration_path || return $?
 }
 
-write_package_lock_as_target() {
-    if ((EUID == 0)); then
-        fail '--write-package-lock 禁止 root 执行'
-        return 1
-    fi
-    if [[ "$(id -u)" != "$target_uid" || "$(id -un)" != "$target_user" ]]; then
-        fail '包锁写入阶段必须是目标普通用户'
-        return 1
-    fi
-    validate_environment_root
-    mkdir -p -- "$environment_root/state"
-    validate_environment_root
+validate_package_state_directory() {
     local state_directory="$environment_root/state"
-    local lock_path="$state_directory/apt-packages.lock"
-    package_lock_partial="$(mktemp "$state_directory/apt-packages.lock.partial.XXXXXX")"
-    local package
-    for package in "${APPROVED_PACKAGES[@]}"; do
-        dpkg-query -W -f='${Package}=${Version}\n' "$package" >>"$package_lock_partial"
+    local resolved_state
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        fail "package state 目录不存在：$state_directory"
+        return 1
+    fi
+    if [[ ! -d "$state_directory" || -L "$state_directory" ]]; then
+        fail "package state 必须是非 symlink 普通目录：$state_directory"
+        return 1
+    fi
+    assert_no_symlink_components "$state_directory" || return $?
+    resolved_state="$(realpath -e -- "$state_directory")" || return $?
+    if [[ "$resolved_state" != "$state_directory" \
+        || "$state_directory" != "$environment_root/state" ]]; then
+        fail "package state canonical 边界不匹配：$state_directory"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$state_directory")
+    if [[ "$item_type" != 'directory' || "$item_uid" != "$target_uid" \
+        || ! "$item_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$item_mode & 8#022)) -ne 0 ]]; then
+        fail "package state 必须 target-owned 且组/其他用户不可写：type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+validate_package_lock_at() {
+    local state_anchor="$1"
+    local lock_path="$state_anchor/apt-packages.lock"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+        return 0
+    fi
+    if [[ ! -f "$lock_path" || -L "$lock_path" ]]; then
+        fail "package lock 必须是非 symlink 普通文件：$lock_path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$lock_path")
+    if [[ ( "$item_type" != 'regular file' && "$item_type" != 'regular empty file' ) \
+        || "$item_uid" != "$target_uid" || "$item_mode" != '644' ]]; then
+        fail "package lock owner/type/mode 不匹配：type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+reject_existing_package_lock_partials_at() {
+    local state_anchor="$1"
+    local partial
+    for partial in "$state_anchor"/apt-packages.lock.partial.*; do
+        if [[ -e "$partial" || -L "$partial" ]]; then
+            fail "拒绝预存 package lock partial（普通文件或 symlink）：$partial"
+            return 1
+        fi
     done
-    chmod 0644 "$package_lock_partial"
-    mv -- "$package_lock_partial" "$lock_path"
-    package_lock_partial=''
+}
+
+prepare_package_state_as_target() {
+    if ((EUID == 0)) || [[ "$(id -u)" != "$target_uid" || "$(id -un)" != "$target_user" ]]; then
+        fail 'package state 准备阶段必须由目标普通用户执行'
+        return 1
+    fi
+    validate_environment_root || return $?
+    local state_directory="$environment_root/state"
+    if [[ ! -e "$environment_root" && ! -L "$environment_root" ]]; then
+        (umask 022; mkdir -m 0755 -- "$environment_root") || return $?
+        validate_environment_root || return $?
+    fi
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        (umask 022; mkdir -m 0755 -- "$state_directory") || return $?
+    fi
+    validate_environment_root || return $?
+    validate_package_state_directory || return $?
+    validate_package_lock_at "$state_directory" || return $?
+    reject_existing_package_lock_partials_at "$state_directory"
+}
+
+recover_package_state_after_crash() {
+    local state_directory="$environment_root/state"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        return 0
+    fi
+    IFS='|' read -r item_type item_uid item_mode \
+        < <(stat -c '%F|%u|%a' -- "$state_directory") || return $?
+    if [[ "$item_type" == 'directory' && "$item_uid" == '0' \
+        && "$item_mode" == '700' ]]; then
+        /usr/bin/python3 -I -B "$SCRIPT_DIR/lib/package_state_writer.py" \
+            --recover-only \
+            --environment-root "$environment_root" \
+            --target-uid "$target_uid" \
+            --target-gid "$target_gid"
+    fi
+}
+
+write_package_lock_with_helper() {
+    if ((EUID != 0)); then
+        fail 'package lock helper 必须由 root phase 执行'
+        return 1
+    fi
+    local package
+    local package_lock_content
+    local -a helper_arguments=(
+        --environment-root "$environment_root"
+        --target-uid "$target_uid"
+        --target-gid "$target_gid"
+    )
+    if ! package_lock_content="$({
+        for package in "${APPROVED_PACKAGES[@]}"; do
+            dpkg-query -W -f='${Package}=${Version}\n' "$package"
+        done
+    })"; then
+        fail '无法收集 approved package 版本'
+        return 1
+    fi
+    if [[ -n "${MINIOS_PACKAGE_STATE_RACE_PHASE:-}" ]]; then
+        if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
+            fail 'package state race 仅允许显式测试模式'
+            return 1
+        fi
+        helper_arguments+=(
+            --test-root "$test_root"
+            --race-phase "$MINIOS_PACKAGE_STATE_RACE_PHASE"
+            --race-state "${FAKE_RACE_STATE:-}"
+            --race-original "${FAKE_RACE_ORIGINAL:-}"
+            --race-outside "${FAKE_RACE_OUTSIDE:-}"
+        )
+    fi
+    printf '%s\n' "$package_lock_content" \
+        | /usr/bin/python3 -I -B "$SCRIPT_DIR/lib/package_state_writer.py" "${helper_arguments[@]}"
 }
 
 identity_environment_arguments() {
@@ -704,6 +1061,8 @@ identity_environment_arguments() {
         "MINIOS_EXPECTED_MINIOS_HOME=${MINIOS_EXPECTED_MINIOS_HOME:-}" \
         "MINIOS_OS_RELEASE_FILE=${MINIOS_OS_RELEASE_FILE:-}" \
         "MINIOS_WSL_CONF_PATH=${MINIOS_WSL_CONF_PATH:-}" \
+        "MINIOS_RUNTIME_PROBE_ROOT=${MINIOS_RUNTIME_PROBE_ROOT:-}" \
+        "MINIOS_WSL_IDENTITY_FILE=${MINIOS_WSL_IDENTITY_FILE:-}" \
         "PATH=$PATH"
 }
 
@@ -735,14 +1094,19 @@ write_wsl_configuration() {
 }
 
 run_system_phase() {
-    preflight
+    preflight || return $?
     if ((EUID != 0)); then
         fail '--system-only 必须由 root 执行'
         return 1
     fi
+    recover_package_state_after_crash || return $?
+    run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --prepare-package-state --target-user "$target_user" || return $?
+    validate_package_state_directory || return $?
+    validate_package_lock_at "$environment_root/state" || return $?
+    reject_existing_package_lock_partials_at "$environment_root/state" || return $?
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${APPROVED_PACKAGES[@]}"
-    run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --write-package-lock --target-user "$target_user"
+    write_package_lock_with_helper || return $?
     write_wsl_configuration
     printf 'system_status=complete\n'
 }
@@ -761,6 +1125,9 @@ run_toolchain_phase() {
 }
 
 case "$mode" in
+    provision-wsl-identity)
+        provision_wsl_identity
+        ;;
     system-only)
         run_system_phase
         ;;
@@ -768,8 +1135,12 @@ case "$mode" in
         run_toolchain_phase
         ;;
     write-package-lock)
+        fail '--write-package-lock 已由单进程 openat helper 取代'
+        exit 2
+        ;;
+    prepare-package-state)
         preflight
-        write_package_lock_as_target
+        prepare_package_state_as_target
         ;;
     all)
         preflight

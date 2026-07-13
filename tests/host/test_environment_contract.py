@@ -120,8 +120,10 @@ WSL_OWNERSHIP_SOURCE_CHAIN = re.compile(
     r"[^\r\n]*\bDistributionName\b[^\r\n]*-ceq\s+\$DistroName\b"
     r"[^\r\n]*Select-Object\s+-ExpandProperty\s+PSPath(?:\s+-First\s+1)?"
     r"\s*$\s*"
-    r"^\s*\$RegisteredBasePath\s*=\s*\(\s*Get-ItemProperty\s+"
-    r"-LiteralPath\s+\$LxssKey\s*\)\.BasePath\s*$"
+    r"^\s*\$Registration\s*=\s*Get-ItemProperty\s+"
+    r"-LiteralPath\s+\$LxssKey\s*$\s*"
+    r"^\s*\$RegisteredBasePath\s*=\s*\$Registration\.BasePath\s*$\s*"
+    r"^\s*\$RegisteredVersion\s*=\s*\$Registration\.Version\s*$"
 )
 
 
@@ -453,7 +455,9 @@ class EnvironmentContractTests(unittest.TestCase):
         valid_chain = r"""
 $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
 $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
-$RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+$Registration = Get-ItemProperty -LiteralPath $LxssKey
+$RegisteredBasePath = $Registration.BasePath
+$RegisteredVersion = $Registration.Version
 """
         unrelated_bypass = r"""
 $Unused = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss').BasePath
@@ -644,6 +648,9 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         content = self._without_comments(
             self._read_required("environment/bootstrap-inside.sh")
         )
+        writer = self._without_comments(
+            self._read_required("environment/lib/package_state_writer.py")
+        )
         for token in (
             "--system-only",
             "--toolchain-only",
@@ -656,11 +663,174 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             with self.subTest(token=token):
                 self.assertIn(token, content)
         self.assertRegex(content, r"(?m)^\s*if\s+\(\(\s*EUID\s*!=\s*0\s*\)\)")
-        self.assertRegex(
-            content,
-            r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path|package_lock_partial)",
-        )
+        self.assertIn("os.replace", writer)
         self.assertNotIn("NOPASSWD", content)
+
+    def test_wsl_ownership_gates_require_lxss_version_two(self) -> None:
+        for relative_path in (
+            "environment/wsl/create.ps1",
+            "environment/wsl/enter.ps1",
+            "environment/wsl/backup.ps1",
+            "environment/wsl/destroy.ps1",
+        ):
+            with self.subTest(path=relative_path):
+                content = self._without_comments(
+                    self._read_required(relative_path), powershell=True
+                )
+                ownership = self._function_body(
+                    content, "Assert-WslDistributionOwnership", powershell=True
+                )
+                self.assertRegex(ownership, r"(?i)\.Version\b")
+                self.assertRegex(ownership, r"(?i)(?:-ne|-cne)\s*2\b")
+
+    def test_bootstrap_and_verify_require_runtime_isolation_facts(self) -> None:
+        for relative_path in (
+            "environment/bootstrap-inside.sh",
+            "environment/verify.sh",
+        ):
+            with self.subTest(path=relative_path):
+                content = self._without_comments(self._read_required(relative_path))
+                for token in (
+                    "/proc/sys/kernel/osrelease",
+                    "/proc/version",
+                    "WSL2",
+                    "/proc/1/cgroup",
+                    "/proc/1/mountinfo",
+                    "/.dockerenv",
+                    "/run/.containerenv",
+                ):
+                    self.assertIn(token, content)
+
+    def test_verify_invokes_runtime_and_instance_identity_checks(self) -> None:
+        content = self._without_comments(self._read_required("environment/verify.sh"))
+        isolation_gate = content[
+            content.index('if [[ "${MINIOS_CONTAINER:-}"') : content.index(
+                "printf 'environment_kind=", content.index('if [[ "${MINIOS_CONTAINER:-}"')
+            )
+        ].replace("\\\n", " ")
+        self.assertRegex(
+            isolation_gate,
+            r"elif\s+\[\[[\s\S]*?\]\]\s*"
+            r"&&\s*verify_wsl2_runtime_identity\s*"
+            r"&&\s*verify_wsl_instance_identity\s*;\s*then",
+        )
+
+    def test_package_state_is_prepared_and_validated_before_apt(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        system_phase = self._function_body(
+            content, "run_system_phase", powershell=False
+        )
+        prepare_position = system_phase.find("--prepare-package-state")
+        apt_position = system_phase.find("apt-get update")
+        self.assertGreaterEqual(prepare_position, 0)
+        self.assertGreater(apt_position, prepare_position)
+        state_gate = self._function_body(
+            content, "validate_package_state_directory", powershell=False
+        )
+        for token in ("realpath", "stat", "target_uid", "022", "symlink"):
+            self.assertIn(token, state_gate)
+
+    def test_wsl_identity_record_is_provisioned_from_lxss_gate(self) -> None:
+        create = self._without_comments(
+            self._read_required("environment/wsl/create.ps1"), powershell=True
+        )
+        bootstrap = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        verify = self._without_comments(self._read_required("environment/verify.sh"))
+        provision_call = create.find("Invoke-WslIdentityProvision")
+        ownership_call = create.find("Assert-WslDistributionOwnership")
+        self.assertGreater(provision_call, ownership_call)
+        for token in (
+            "--provision-wsl-identity",
+            "--expected-distro",
+            "--registration-id",
+            "--base-path-sha256",
+        ):
+            self.assertIn(token, create)
+        for content in (bootstrap, verify):
+            self.assertIn("/etc/miniorangeos/instance.identity", content)
+            self.assertIn("registration_id", content)
+            self.assertIn("base_path_sha256", content)
+        self.assertIn("MINIOS_WSL_IDENTITY_FILE", bootstrap)
+        self.assertIn("测试覆盖仅允许", bootstrap)
+
+    def test_package_lock_helper_uses_cloexec_openat_and_process_local_lock(self) -> None:
+        bootstrap = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        writer = self._without_comments(
+            self._read_required("environment/lib/package_state_writer.py")
+        )
+        system_phase = self._function_body(
+            bootstrap, "run_system_phase", powershell=False
+        )
+        for token in (
+            "os.open",
+            "dir_fd=",
+            "os.O_DIRECTORY",
+            "os.O_NOFOLLOW",
+            "os.O_CLOEXEC",
+            "os.O_CREAT",
+            "os.O_EXCL",
+            "fcntl.flock",
+            "os.fstat",
+            "os.fsync",
+            "os.fchmod",
+            "os.fchown",
+            "os.replace",
+            "src_dir_fd=",
+            "dst_dir_fd=",
+            "os.unlink",
+            "signal.signal",
+            "signal.pthread_sigmask",
+            "expected_partial_identity",
+            "state_restricted",
+        ):
+            self.assertIn(token, writer)
+        apt_position = system_phase.find("apt-get update")
+        write_position = system_phase.find("write_package_lock_with_helper")
+        self.assertGreaterEqual(apt_position, 0)
+        self.assertGreater(write_position, apt_position)
+        self.assertNotIn("open_and_lock_package_state", system_phase)
+        self.assertNotIn("flock", system_phase)
+        self.assertNotIn("exec {package_state_fd}", bootstrap)
+        for forbidden in ("subprocess", "os.system", "os.fork", "os.exec"):
+            self.assertNotIn(forbidden, writer)
+        write_body = writer[
+            writer.index("def write_package_lock(") : writer.index("def main()")
+        ]
+        self.assertGreaterEqual(write_body.count("assert_chain_unchanged"), 3)
+        self.assertLess(
+            write_body.index("assert_chain_unchanged"),
+            write_body.index("create_partial"),
+        )
+        self.assertLess(
+            write_body.rindex("assert_chain_unchanged", 0, write_body.index("os.replace")),
+            write_body.index("os.replace"),
+        )
+        block_position = write_body.index("signal.pthread_sigmask")
+        restrict_position = write_body.index("os.fchown(state_fd, 0, 0)")
+        restore_position = write_body.rindex("os.fchown(")
+        unblock_position = write_body.rindex("signal.pthread_sigmask")
+        self.assertLess(block_position, restrict_position)
+        self.assertLess(restore_position, unblock_position)
+        for token in (
+            "--recover-only",
+            "recover_package_state",
+            "PARTIAL_NAME_PATTERN",
+            "follow_symlinks=False",
+        ):
+            self.assertIn(token, writer)
+        system_phase = self._function_body(
+            bootstrap, "run_system_phase", powershell=False
+        )
+        self.assertLess(
+            system_phase.index("recover_package_state_after_crash"),
+            system_phase.index("--prepare-package-state"),
+        )
 
     def test_bootstrap_gates_identity_user_and_environment_before_mutation(
         self,
