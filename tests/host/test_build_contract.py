@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,7 @@ REQUIRED_BUILD_FILES = (
     "Makefile",
     "config/image-layout.json",
     "tools/make_image.py",
+    "tools/build_dir_guard.py",
     "boot/stage1/boot.asm",
     "boot/stage2/entry.asm",
     "boot/stage2/linker.ld",
@@ -52,6 +54,18 @@ class BuildContractTests(unittest.TestCase):
     def test_required_build_inputs_exist(self) -> None:
         missing = [path for path in REQUIRED_BUILD_FILES if not (ROOT / path).is_file()]
         self.assertEqual([], missing, f"缺少 T02 构建输入：{missing}")
+
+    def test_makefile_declares_both_cleanup_targets(self) -> None:
+        path = ROOT / "Makefile"
+        self.assertTrue(path.is_file(), "缺少顶层 Makefile")
+        targets = {
+            match.group(1)
+            for match in re.finditer(
+                r"(?m)^([A-Za-z][A-Za-z0-9_-]*):(?:\s|$)",
+                path.read_text(encoding="utf-8"),
+            )
+        }
+        self.assertEqual(set(), {"clean", "distclean"} - targets)
 
     def test_source_tree_contains_no_generated_artifacts(self) -> None:
         generated: list[str] = []

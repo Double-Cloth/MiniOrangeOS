@@ -16,6 +16,7 @@ import stat
 import struct
 import subprocess
 import tempfile
+import time
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - Windows 只收集并跳过真实 WSL �
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE_NAME = "miniorangeos.img"
+BUILD_MARKER = ".miniorangeos-build-root"
 EXPECTED_FINAL_ARTIFACTS = (
     "boot/stage1.bin",
     "boot/stage2.elf",
@@ -79,14 +81,14 @@ def _is_wsl_linux() -> bool:
 @unittest.skipUnless(_is_wsl_linux(), "真实构建契约只在专用 WSL Linux 中执行")
 class BuildRuntimeTests(unittest.TestCase):
     @contextlib.contextmanager
-    def _workspace(self) -> Iterator[Path]:
+    def _workspace(self, *, name: str = "workspace") -> Iterator[Path]:
         test_root = ROOT / "build/test-workspaces"
         test_root.mkdir(parents=True, exist_ok=True)
         try:
             with tempfile.TemporaryDirectory(
                 prefix="minios-t02-", dir=test_root
             ) as temporary_directory:
-                workspace = Path(temporary_directory) / "workspace"
+                workspace = Path(temporary_directory) / name
                 shutil.copytree(
                     ROOT,
                     workspace,
@@ -125,16 +127,21 @@ class BuildRuntimeTests(unittest.TestCase):
         timeout: int = 120,
         env: dict[str, str] | None = None,
         file_size_limit: int | None = None,
+        address_space_limit: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = ["bash", "environment/with-env.sh", *arguments]
 
-        def limit_output_file_size() -> None:
-            assert file_size_limit is not None
+        def apply_resource_limits() -> None:
             assert resource is not None
-            resource.setrlimit(
-                resource.RLIMIT_FSIZE, (file_size_limit, file_size_limit)
-            )
-            signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+            if file_size_limit is not None:
+                resource.setrlimit(
+                    resource.RLIMIT_FSIZE, (file_size_limit, file_size_limit)
+                )
+                signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+            if address_space_limit is not None:
+                resource.setrlimit(
+                    resource.RLIMIT_AS, (address_space_limit, address_space_limit)
+                )
 
         return subprocess.run(
             command,
@@ -146,7 +153,11 @@ class BuildRuntimeTests(unittest.TestCase):
             errors="replace",
             timeout=timeout,
             check=False,
-            preexec_fn=limit_output_file_size if file_size_limit is not None else None,
+            preexec_fn=(
+                apply_resource_limits
+                if file_size_limit is not None or address_space_limit is not None
+                else None
+            ),
         )
 
     def _make(
@@ -223,6 +234,126 @@ class BuildRuntimeTests(unittest.TestCase):
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def _source_snapshot(self, workspace: Path) -> dict[str, str]:
+        snapshot: dict[str, str] = {}
+        for relative_root in ("boot", "kernel", "config", "tools"):
+            root = workspace / relative_root
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    snapshot[path.relative_to(workspace).as_posix()] = hashlib.sha256(
+                        path.read_bytes()
+                    ).hexdigest()
+        return snapshot
+
+    def _assert_clear_space_rejection(
+        self,
+        result: subprocess.CompletedProcess[str],
+        forbidden_paths: tuple[Path, ...],
+        log_paths: tuple[Path, ...] = (),
+    ) -> None:
+        self.assertNotEqual(0, result.returncode)
+        self.assertRegex(
+            result.stdout + result.stderr,
+            r"(?is)(?:空格.*不支持|不支持.*空格|path.*space.*not supported|space.*path.*not supported)",
+            "含空格路径失败时没有给出明确的 parse-time 拒绝信息",
+        )
+        for path in (*forbidden_paths, *log_paths):
+            self.assertFalse(os.path.lexists(path), f"拒绝后产生了副作用：{path}")
+
+    def _image_command(
+        self, workspace: Path, build_dir: Path, output: Path, layout: Path | None = None
+    ) -> list[str]:
+        return [
+            "bash",
+            "environment/with-env.sh",
+            "python3",
+            "tools/make_image.py",
+            "--layout",
+            str(layout or workspace / "config/image-layout.json"),
+            "--build-dir",
+            str(build_dir),
+            "--output",
+            str(output),
+        ]
+
+    def _single_component_layout(
+        self,
+        workspace: Path,
+        name: str,
+        artifact: str,
+        image_size: int = 2 * 1024 * 1024,
+    ) -> Path:
+        layout = {
+            "format_version": 1,
+            "sector_size": 512,
+            "image_size_bytes": image_size,
+            "components": [
+                {
+                    "name": name,
+                    "artifact": artifact,
+                    "lba": 0,
+                    "max_sectors": image_size // 512,
+                }
+            ],
+        }
+        path = workspace / f"{name}-layout.json"
+        path.write_text(json.dumps(layout), encoding="utf-8")
+        return path
+
+    def _run_hooked_process(
+        self,
+        workspace: Path,
+        command: list[str],
+        hook_variable: str,
+        hook_name: str,
+        mutate: object,
+    ) -> subprocess.CompletedProcess[str]:
+        control = workspace / f"hook-{hook_variable.lower()}-{hook_name.replace(':', '-')}"
+        control.mkdir()
+        ready = control / "ready"
+        proceed = control / "continue"
+        env = os.environ.copy()
+        env.update(
+            {
+                "MINIOS_TEST_MODE": "1",
+                hook_variable: hook_name,
+                "MINIOS_TEST_HOOK_READY": str(ready),
+                "MINIOS_TEST_HOOK_CONTINUE": str(proceed),
+            }
+        )
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        deadline = time.monotonic() + 10
+        while not ready.is_file() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not ready.is_file():
+            process.kill()
+            stdout, stderr = process.communicate()
+            self.fail(
+                f"测试 hook 未到达：{hook_name}; rc={process.returncode}; "
+                f"stdout={stdout!r}; stderr={stderr!r}"
+            )
+        try:
+            assert callable(mutate)
+            mutate()
+            proceed.write_text("continue\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=30)
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     def test_public_targets_build_expected_artifacts(self) -> None:
         with self._workspace() as workspace:
@@ -439,6 +570,244 @@ class BuildRuntimeTests(unittest.TestCase):
             self.assertEqual("keep\n", marker.read_text(encoding="utf-8"))
             self.assertTrue((workspace / "config/image-layout.json").is_file())
 
+    def test_clean_and_distclean_are_owned_idempotent_and_scoped(self) -> None:
+        for target in ("clean", "distclean"):
+            for relative_build_dir in ("build", "alternate-build"):
+                with self.subTest(target=target, build_dir=relative_build_dir):
+                    with self._workspace() as workspace:
+                        source_before = self._source_snapshot(workspace)
+                        build_dir = workspace / relative_build_dir
+                        variables = (
+                            ()
+                            if relative_build_dir == "build"
+                            else (f"BUILD_DIR={build_dir}",)
+                        )
+                        result = self._make(workspace, "-j4", "all", *variables)
+                        self._assert_success(result)
+                        marker = build_dir / BUILD_MARKER
+                        self.assertTrue(
+                            marker.is_file() and not marker.is_symlink(),
+                            f"构建未创建可信归属标记：{marker}",
+                        )
+                        result = self._make(workspace, target, *variables)
+                        self._assert_success(result)
+                        self.assertFalse(build_dir.exists())
+                        result = self._make(workspace, target, *variables)
+                        self._assert_success(result)
+                        self.assertFalse(build_dir.exists())
+                        self.assertEqual(source_before, self._source_snapshot(workspace))
+
+    def test_clean_and_distclean_reject_unowned_or_dangerous_paths(self) -> None:
+        dangerous_names = (
+            "boot",
+            "kernel",
+            "config",
+            "tools",
+            "unknown-existing",
+            "symlink-to-source",
+            "symlink-outside",
+        )
+        for target in ("clean", "distclean"):
+            for name in dangerous_names:
+                with self.subTest(target=target, name=name):
+                    with self._workspace() as workspace:
+                        source_before = self._source_snapshot(workspace)
+                        external = workspace.parent / "foreign-clean-target"
+                        external.mkdir()
+                        external_sentinel = external / "sentinel.txt"
+                        external_sentinel.write_text("foreign\n", encoding="utf-8")
+                        build_dir = workspace / name
+                        if name == "unknown-existing":
+                            build_dir.mkdir()
+                            (build_dir / "sentinel.txt").write_text(
+                                "unknown\n", encoding="utf-8"
+                            )
+                        elif name == "symlink-to-source":
+                            build_dir.symlink_to(workspace / "boot", target_is_directory=True)
+                        elif name == "symlink-outside":
+                            build_dir.symlink_to(external, target_is_directory=True)
+
+                        result = self._make(
+                            workspace, target, f"BUILD_DIR={build_dir}"
+                        )
+
+                        self.assertNotEqual(
+                            0, result.returncode, f"{target} 接受危险路径：{name}"
+                        )
+                        self.assertEqual(source_before, self._source_snapshot(workspace))
+                        self.assertEqual(
+                            "foreign\n",
+                            external_sentinel.read_text(encoding="utf-8"),
+                        )
+                        self.assertTrue(os.path.lexists(build_dir))
+
+    def test_cleanup_marker_cannot_be_copied_to_claim_foreign_directory(self) -> None:
+        with self._workspace() as workspace:
+            owned = workspace / "owned-build"
+            result = self._make(workspace, "all", f"BUILD_DIR={owned}")
+            self._assert_success(result)
+            marker = owned / BUILD_MARKER
+            self.assertTrue(marker.is_file(), "构建根缺少归属标记")
+            for target in ("clean", "distclean"):
+                with self.subTest(target=target):
+                    foreign = workspace / f"foreign-{target}"
+                    foreign.mkdir()
+                    shutil.copy2(marker, foreign / BUILD_MARKER)
+                    sentinel = foreign / "sentinel.txt"
+                    sentinel.write_text("foreign\n", encoding="utf-8")
+                    result = self._make(
+                        workspace, target, f"BUILD_DIR={foreign}"
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual("foreign\n", sentinel.read_text(encoding="utf-8"))
+
+    def test_build_guard_rejects_validation_to_removal_replacement(self) -> None:
+        with self._workspace() as workspace:
+            guard = workspace / "tools/build_dir_guard.py"
+            self.assertTrue(guard.is_file(), "缺少构建根清理 guard")
+            build_dir = workspace / "race-build"
+            result = self._make(workspace, "all", f"BUILD_DIR={build_dir}")
+            self._assert_success(result)
+            self.assertTrue((build_dir / BUILD_MARKER).is_file())
+            default_ready = workspace / "guard-hook-must-stay-disabled"
+            default_env = os.environ.copy()
+            default_env.update(
+                {
+                    "MINIOS_BUILD_GUARD_TEST_HOOK": "before-remove",
+                    "MINIOS_TEST_HOOK_READY": str(default_ready),
+                    "MINIOS_TEST_HOOK_CONTINUE": str(workspace / "never-created"),
+                }
+            )
+            result = self._run(
+                workspace,
+                "python3",
+                "tools/build_dir_guard.py",
+                "clean",
+                "--root",
+                str(workspace),
+                "--build-dir",
+                str(build_dir),
+                env=default_env,
+            )
+            self._assert_success(result)
+            self.assertFalse(default_ready.exists(), "未启用测试模式时 guard 仍执行 hook")
+            result = self._make(workspace, "all", f"BUILD_DIR={build_dir}")
+            self._assert_success(result)
+            self.assertTrue((build_dir / BUILD_MARKER).is_file())
+            original = workspace / "race-build-owned"
+            foreign = workspace.parent / "foreign-race-clean"
+            foreign.mkdir()
+            foreign_sentinel = foreign / "sentinel.txt"
+            foreign_sentinel.write_text("foreign\n", encoding="utf-8")
+
+            command = [
+                "bash",
+                "environment/with-env.sh",
+                "python3",
+                "tools/build_dir_guard.py",
+                "clean",
+                "--root",
+                str(workspace),
+                "--build-dir",
+                str(build_dir),
+            ]
+
+            def replace_build_root() -> None:
+                build_dir.rename(original)
+                build_dir.symlink_to(foreign, target_is_directory=True)
+
+            result = self._run_hooked_process(
+                workspace,
+                command,
+                "MINIOS_BUILD_GUARD_TEST_HOOK",
+                "before-remove",
+                replace_build_root,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("foreign\n", foreign_sentinel.read_text(encoding="utf-8"))
+            self.assertTrue((original / BUILD_MARKER).is_file())
+            self.assertTrue(build_dir.is_symlink())
+
+    def test_repository_space_path_is_supported_or_cleanly_rejected(self) -> None:
+        with self._workspace(name="workspace with space") as workspace:
+            result = self._make(workspace, "-j4", "image")
+            if result.returncode == 0:
+                self.assertTrue((workspace / "build" / IMAGE_NAME).is_file())
+            else:
+                self._assert_clear_space_rejection(
+                    result,
+                    (
+                        workspace / "build",
+                        workspace.parent / "workspace",
+                        workspace.parent / "with",
+                        workspace.parent / "space",
+                    ),
+                )
+
+    def test_build_dir_space_path_is_supported_or_cleanly_rejected(self) -> None:
+        with self._workspace() as workspace:
+            build_dir = workspace / "out tree"
+            result = self._make(
+                workspace, "-j4", "image", f"BUILD_DIR={build_dir}"
+            )
+            if result.returncode == 0:
+                self.assertTrue((build_dir / IMAGE_NAME).is_file())
+            else:
+                self._assert_clear_space_rejection(
+                    result,
+                    (
+                        workspace / "build",
+                        workspace / "out",
+                        workspace / "tree",
+                        build_dir,
+                    ),
+                )
+
+    def test_tool_space_paths_are_supported_or_cleanly_rejected(self) -> None:
+        with self._workspace() as workspace:
+            wrappers = workspace / "tool wrappers"
+            logs = workspace / "tool wrapper logs"
+            wrappers.mkdir()
+            logs.mkdir()
+            log_paths: list[Path] = []
+            for name in ("gcc", "ld", "objcopy", "nm"):
+                log = logs / f"{name}.log"
+                log_paths.append(log)
+                self._write_wrapper(
+                    wrappers / f"i686-elf-{name}",
+                    self._resolve_tool(workspace, f"i686-elf-{name}"),
+                    log,
+                )
+            for executable, real_name in (
+                ("nasm override", "nasm"),
+                ("python override", "python3"),
+            ):
+                log = logs / f"{real_name}.log"
+                log_paths.append(log)
+                self._write_wrapper(
+                    wrappers / executable,
+                    self._resolve_tool(workspace, real_name),
+                    log,
+                )
+            result = self._make(
+                workspace,
+                "-j4",
+                "image",
+                f"CROSS_COMPILE={wrappers / 'i686-elf-'}",
+                f"NASM={wrappers / 'nasm override'}",
+                f"PYTHON={wrappers / 'python override'}",
+            )
+            if result.returncode == 0:
+                self.assertTrue((workspace / "build" / IMAGE_NAME).is_file())
+                for log in log_paths:
+                    self.assertGreater(log.stat().st_size, 0)
+            else:
+                self._assert_clear_space_rejection(
+                    result,
+                    (workspace / "build", workspace / "tool", workspace / "wrapper"),
+                    tuple(log_paths),
+                )
+
     def test_image_tool_rejects_invalid_inputs_without_clobbering_output(self) -> None:
         with self._workspace() as workspace:
             result = self._make(workspace, "-j4", "all")
@@ -581,6 +950,331 @@ class BuildRuntimeTests(unittest.TestCase):
                 "写入中途失败改变了既有镜像 metadata",
             )
             self.assertEqual([output], list(output_dir.iterdir()), "写入失败残留临时文件")
+
+    def test_image_tool_rejects_unsafe_artifact_and_directory_types(self) -> None:
+        kinds = (
+            "final-symlink",
+            "hardlink",
+            "fifo",
+            "directory",
+            "intermediate-symlink-inside",
+            "intermediate-symlink-outside",
+            "build-dir-intermediate-symlink",
+            "output-parent-symlink",
+        )
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                with self._workspace() as workspace:
+                    result = self._make(workspace, "-j4", "all")
+                    self._assert_success(result)
+                    source_build = self._build_dir(workspace)
+                    case_root = workspace / f"type-{kind}"
+                    case_root.mkdir()
+                    build_dir = case_root / "build"
+                    shutil.copytree(source_build, build_dir)
+                    external = workspace.parent / f"external-{kind}"
+                    external.mkdir()
+                    external_sentinel = external / "sentinel.txt"
+                    external_sentinel.write_text("foreign\n", encoding="utf-8")
+                    output_parent = case_root / "output"
+                    output_parent.mkdir()
+                    output = output_parent / IMAGE_NAME
+                    marker = f"preserve-{kind}".encode()
+                    output.write_bytes(marker)
+                    fifo_descriptor: int | None = None
+
+                    artifact = build_dir / "kernel/kernel.elf"
+                    external_artifact = external / "kernel.elf"
+                    shutil.copy2(artifact, external_artifact)
+                    layout_artifact = "kernel/kernel.elf"
+                    if kind == "final-symlink":
+                        artifact.unlink()
+                        artifact.symlink_to(external_artifact)
+                    elif kind == "hardlink":
+                        artifact.unlink()
+                        os.link(external_artifact, artifact)
+                    elif kind == "fifo":
+                        artifact.unlink()
+                        os.mkfifo(artifact)
+                        fifo_descriptor = os.open(
+                            artifact, os.O_RDWR | getattr(os, "O_NONBLOCK", 0)
+                        )
+                    elif kind == "directory":
+                        artifact.unlink()
+                        artifact.mkdir()
+                    elif kind == "intermediate-symlink-inside":
+                        layout_artifact = "boot/stage2.bin"
+                        boot = build_dir / "boot"
+                        boot.rename(build_dir / "boot-real")
+                        boot.symlink_to("boot-real", target_is_directory=True)
+                    elif kind == "intermediate-symlink-outside":
+                        layout_artifact = "boot/stage2.bin"
+                        external_boot = external / "boot"
+                        shutil.copytree(build_dir / "boot", external_boot)
+                        shutil.rmtree(build_dir / "boot")
+                        (build_dir / "boot").symlink_to(
+                            external_boot, target_is_directory=True
+                        )
+                    elif kind == "build-dir-intermediate-symlink":
+                        actual_parent = case_root / "actual-parent"
+                        actual_parent.mkdir()
+                        build_dir.rename(actual_parent / "build")
+                        alias = case_root / "build-parent-alias"
+                        alias.symlink_to(actual_parent, target_is_directory=True)
+                        build_dir = alias / "build"
+                    elif kind == "output-parent-symlink":
+                        real_output = case_root / "real-output"
+                        output.unlink()
+                        output_parent.rmdir()
+                        real_output.mkdir()
+                        output_parent.symlink_to(real_output, target_is_directory=True)
+                        output = output_parent / IMAGE_NAME
+                        output.write_bytes(marker)
+
+                    external_before = {
+                        path.relative_to(external).as_posix(): hashlib.sha256(
+                            path.read_bytes()
+                        ).hexdigest()
+                        for path in external.rglob("*")
+                        if path.is_file() and not path.is_symlink()
+                    }
+                    layout_path = self._single_component_layout(
+                        workspace,
+                        f"type-{kind}",
+                        layout_artifact,
+                    )
+
+                    try:
+                        result = self._run(
+                            workspace,
+                            "python3",
+                            "tools/make_image.py",
+                            "--layout",
+                            str(layout_path),
+                            "--build-dir",
+                            str(build_dir),
+                            "--output",
+                            str(output),
+                        )
+                    finally:
+                        if fifo_descriptor is not None:
+                            os.close(fifo_descriptor)
+
+                    self.assertNotEqual(0, result.returncode, f"不安全路径被接受：{kind}")
+                    self.assertEqual(marker, output.read_bytes())
+                    self.assertEqual(
+                        "foreign\n", external_sentinel.read_text(encoding="utf-8")
+                    )
+                    external_after = {
+                        path.relative_to(external).as_posix(): hashlib.sha256(
+                            path.read_bytes()
+                        ).hexdigest()
+                        for path in external.rglob("*")
+                        if path.is_file() and not path.is_symlink()
+                    }
+                    self.assertEqual(external_before, external_after)
+                    self.assertEqual(
+                        [],
+                        [path for path in output.parent.iterdir() if ".tmp-" in path.name],
+                    )
+
+    def test_image_test_hooks_are_disabled_without_explicit_test_mode(self) -> None:
+        with self._workspace() as workspace:
+            result = self._make(workspace, "-j4", "all")
+            self._assert_success(result)
+            output = workspace / "default-hook-disabled.img"
+            layout_path = self._single_component_layout(
+                workspace, "hook-disabled", "boot/stage1.bin"
+            )
+            ready = workspace / "unexpected-hook-ready"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "MINIOS_IMAGE_TEST_HOOK": "artifact-before-open:stage1",
+                    "MINIOS_TEST_HOOK_READY": str(ready),
+                    "MINIOS_TEST_HOOK_CONTINUE": str(workspace / "never-created"),
+                }
+            )
+            result = self._run(
+                workspace,
+                "python3",
+                "tools/make_image.py",
+                "--layout",
+                str(layout_path),
+                "--build-dir",
+                str(self._build_dir(workspace)),
+                "--output",
+                str(output),
+                env=env,
+            )
+            self._assert_success(result)
+            self.assertFalse(ready.exists(), "未启用测试模式时仍执行了 hook")
+
+    def test_image_artifact_replacement_race_is_rejected(self) -> None:
+        with self._workspace() as workspace:
+            result = self._make(workspace, "-j4", "all")
+            self._assert_success(result)
+            source_build = self._build_dir(workspace)
+            build_dir = workspace / "artifact-race-build"
+            shutil.copytree(source_build, build_dir)
+            layout = json.loads(
+                (workspace / "config/image-layout.json").read_text(encoding="utf-8")
+            )
+            layout["image_size_bytes"] = 1024 * 1024
+            layout["components"] = [layout["components"][0]]
+            layout_path = workspace / "artifact-race-layout.json"
+            layout_path.write_text(json.dumps(layout), encoding="utf-8")
+            output = workspace / "artifact-race.img"
+            marker = b"preserve-artifact-race"
+            output.write_bytes(marker)
+            external = workspace.parent / "external-race-boot"
+            shutil.copytree(build_dir / "boot", external)
+            external_stage1 = external / "stage1.bin"
+            external_stage1.write_bytes(b"E" * 512)
+            external_hash = hashlib.sha256(external_stage1.read_bytes()).hexdigest()
+            original_boot = build_dir / "boot-owned"
+
+            def replace_boot_directory() -> None:
+                (build_dir / "boot").rename(original_boot)
+                (build_dir / "boot").symlink_to(external, target_is_directory=True)
+
+            result = self._run_hooked_process(
+                workspace,
+                self._image_command(workspace, build_dir, output, layout_path),
+                "MINIOS_IMAGE_TEST_HOOK",
+                "artifact-before-open:stage1",
+                replace_boot_directory,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(marker, output.read_bytes())
+            self.assertEqual(
+                external_hash, hashlib.sha256(external_stage1.read_bytes()).hexdigest()
+            )
+            self.assertEqual([], [p for p in output.parent.iterdir() if ".tmp-" in p.name])
+
+    def test_image_output_parent_replacement_races_are_rejected(self) -> None:
+        for hook_name in ("output-parent-before-open", "output-before-commit"):
+            with self.subTest(hook=hook_name):
+                with self._workspace() as workspace:
+                    result = self._make(workspace, "-j4", "all")
+                    self._assert_success(result)
+                    output_parent = workspace / "race-output"
+                    output_parent.mkdir()
+                    output = output_parent / IMAGE_NAME
+                    marker = f"preserve-{hook_name}".encode()
+                    output.write_bytes(marker)
+                    original_parent = workspace / "race-output-owned"
+                    foreign_parent = workspace.parent / f"foreign-{hook_name}"
+                    foreign_parent.mkdir()
+                    foreign_output = foreign_parent / IMAGE_NAME
+                    foreign_marker = f"foreign-{hook_name}".encode()
+                    foreign_output.write_bytes(foreign_marker)
+                    layout_path = self._single_component_layout(
+                        workspace,
+                        f"race-{hook_name}",
+                        "boot/stage1.bin",
+                    )
+
+                    def replace_output_parent() -> None:
+                        output_parent.rename(original_parent)
+                        output_parent.symlink_to(
+                            foreign_parent, target_is_directory=True
+                        )
+
+                    result = self._run_hooked_process(
+                        workspace,
+                        self._image_command(
+                            workspace,
+                            self._build_dir(workspace),
+                            output,
+                            layout_path,
+                        ),
+                        "MINIOS_IMAGE_TEST_HOOK",
+                        hook_name,
+                        replace_output_parent,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(
+                        marker, (original_parent / IMAGE_NAME).read_bytes()
+                    )
+                    self.assertEqual(foreign_marker, foreign_output.read_bytes())
+                    self.assertEqual(
+                        [],
+                        [
+                            path
+                            for parent in (original_parent, foreign_parent)
+                            for path in parent.iterdir()
+                            if ".tmp-" in path.name
+                        ],
+                    )
+
+    def test_image_generation_streams_large_sparse_artifact_under_memory_limit(self) -> None:
+        with self._workspace() as workspace:
+            build_dir = workspace / "stream-build"
+            build_dir.mkdir()
+            artifact = build_dir / "large.bin"
+            artifact_size = 80 * 1024 * 1024
+            image_size = 96 * 1024 * 1024
+            with artifact.open("wb") as stream:
+                stream.truncate(artifact_size)
+                stream.seek(0)
+                stream.write(b"STREAM-BEGIN")
+                stream.seek(artifact_size - len(b"STREAM-END"))
+                stream.write(b"STREAM-END")
+            layout = {
+                "format_version": 1,
+                "sector_size": 512,
+                "image_size_bytes": image_size,
+                "components": [
+                    {
+                        "name": "large",
+                        "artifact": "large.bin",
+                        "lba": 1,
+                        "max_sectors": artifact_size // 512,
+                    }
+                ],
+            }
+            layout_path = workspace / "stream-layout.json"
+            layout_path.write_text(json.dumps(layout), encoding="utf-8")
+            output = workspace / "stream.img"
+            result = self._run(
+                workspace,
+                "python3",
+                "tools/make_image.py",
+                "--layout",
+                str(layout_path),
+                "--build-dir",
+                str(build_dir),
+                "--output",
+                str(output),
+                address_space_limit=48 * 1024 * 1024,
+                timeout=120,
+            )
+            self._assert_success(result)
+            self.assertEqual(image_size, output.stat().st_size)
+            with output.open("rb") as stream:
+                self.assertEqual(b"\0" * 512, stream.read(512))
+                self.assertEqual(b"STREAM-BEGIN", stream.read(len(b"STREAM-BEGIN")))
+                stream.seek(512 + artifact_size - len(b"STREAM-END"))
+                self.assertEqual(b"STREAM-END", stream.read(len(b"STREAM-END")))
+                self.assertEqual(b"\0" * 512, stream.read(512))
+
+            expected = hashlib.sha256()
+            expected.update(b"\0" * 512)
+            with artifact.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    expected.update(chunk)
+            remaining = image_size - 512 - artifact_size
+            zero_chunk = b"\0" * (1024 * 1024)
+            while remaining:
+                count = min(remaining, len(zero_chunk))
+                expected.update(zero_chunk[:count])
+                remaining -= count
+            actual = hashlib.sha256()
+            with output.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    actual.update(chunk)
+            self.assertEqual(expected.hexdigest(), actual.hexdigest())
 
 
 if __name__ == "__main__":
