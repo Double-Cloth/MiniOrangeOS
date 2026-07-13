@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
+BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 
 
 def _is_supported_linux() -> bool:
@@ -144,6 +146,87 @@ class BootStage2Tests(unittest.TestCase):
             for address, instruction in cls.disassembly
             if start <= address < end
         ]
+
+    @classmethod
+    def _build_bios_fixture_image(cls) -> Path:
+        fixture_directory = cls.build_directory / "test-fixtures/t11-bios"
+        fixture_directory.mkdir(parents=True, exist_ok=True)
+        fixture_object = fixture_directory / "fixture.o"
+        stage2_object = fixture_directory / "stage2-entry.o"
+        fixture_elf = fixture_directory / "fixture.elf"
+        fixture_binary = fixture_directory / "fixture.bin"
+        fixture_image = fixture_directory / "fixture.img"
+        linker_script = fixture_directory / "fixture.ld"
+        linker_script.write_text(
+            """OUTPUT_FORMAT(elf32-i386)
+OUTPUT_ARCH(i386)
+ENTRY(fixture_entry)
+SECTIONS
+{
+    . = 0x8000;
+    .fixture_entry : { KEEP(*(.fixture.entry)) }
+    .stage2_entry : { KEEP(*(.text16.entry)) }
+    .text16 : { *(.text16*) }
+    .rodata16 : { *(.rodata16*) }
+    .data16 : { *(.data16*) }
+    .fixture_data : { *(.fixture.data*) }
+    .bss : { *(.bss*) *(COMMON) }
+    /DISCARD/ : { *(.comment*) *(.note*) *(.eh_frame*) }
+}
+ASSERT(fixture_entry == 0x8000, "fixture entry moved")
+ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
+""",
+            encoding="ascii",
+        )
+
+        commands = (
+            ("nasm", "-f", "elf32", "-o", str(stage2_object), str(STAGE2_SOURCE)),
+            (
+                "nasm",
+                "-f",
+                "elf32",
+                "-o",
+                str(fixture_object),
+                str(BIOS_FIXTURE_SOURCE),
+            ),
+            (
+                "i686-elf-ld",
+                "-m",
+                "elf_i386",
+                "-nostdlib",
+                "-T",
+                str(linker_script),
+                "-o",
+                str(fixture_elf),
+                str(fixture_object),
+                str(stage2_object),
+            ),
+            (
+                "i686-elf-objcopy",
+                "-O",
+                "binary",
+                str(fixture_elf),
+                str(fixture_binary),
+            ),
+        )
+        for command in commands:
+            result = cls._run_tool(command[0], *command[1:], timeout=20)
+            if result.returncode != 0:
+                raise AssertionError(
+                    f"T11 BIOS fixture 构建失败：{' '.join(command)}\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
+
+        payload = fixture_binary.read_bytes()
+        if not payload or len(payload) > 127 * 512:
+            raise AssertionError(f"T11 BIOS fixture 大小非法：{len(payload)}")
+        shutil.copyfile(cls.image, fixture_image)
+        with fixture_image.open("r+b") as image_file:
+            image_file.seek(512)
+            image_file.write(bytes(127 * 512))
+            image_file.seek(512)
+            image_file.write(payload)
+        return fixture_image
 
     def test_source_declares_real_mode_and_public_interfaces(self) -> None:
         source = STAGE2_SOURCE.read_text(encoding="utf-8")
@@ -329,6 +412,44 @@ class BootStage2Tests(unittest.TestCase):
             ),
             "INT 13h 后只能恢复不影响 flags/AH 的寄存器再返回",
         )
+
+    def test_public_bios_interfaces_execute_in_qemu(self) -> None:
+        fixture_image = self._build_bios_fixture_image()
+        log = self.build_directory / "test-logs/stage2-bios-interfaces.log"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/qemu_test.py",
+                "--image",
+                str(fixture_image),
+                "--log",
+                str(log),
+                "--timeout",
+                "5",
+                "--max-log-bytes",
+                "262144",
+                "--repo",
+                str(ROOT),
+                "--build-dir",
+                self.build_relative.as_posix(),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        self.assertEqual(
+            result.returncode,
+            0,
+            "T11 正式 BIOS 接口动态夹具失败：\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\nserial:\n{output}",
+        )
+        self.assertIn("[TEST] case=bios_write_char PASS", output)
+        self.assertIn("[TEST] case=bios_disk_read_edd PASS", output)
 
     def test_real_product_image_logs_s1_then_s2_and_times_out_safely(self) -> None:
         log = self.build_directory / "test-logs/stage2-product.log"
