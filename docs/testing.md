@@ -74,6 +74,17 @@ python3 -m unittest discover -s tests/host -v
 - `environment/verify.sh`、`make clean`、`make -j4 all`、第二次增量 `make -j4 all` 和 `make image`：PASS；
 - 镜像为 67,108,864 bytes、mode `0644`，SHA-256 为 `6cf4f04e738ca014720b04b3ed192e0f526cc8162c9f19785cbdac9475923da2`；Kernel 为 ELF32 i386 EXEC。
 
+## T03 最终回归证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中执行：
+
+- QEMU 合同与运行时测试：35/35 PASS；全量宿主测试：185/185 PASS；PowerShell 生命周期：29/29 PASS；
+- `environment/verify.sh`、`make clean`、`make -j4 image`、公开 `make test-qemu QEMU_TIMEOUT=5`：PASS；
+- 真实 QEMU debug-exit 返回 33，串口完整输出 suite/case/all PASS；真实 batch GDB 只连接 `127.0.0.1`；
+- PASS、FAIL、协议乱序、超时、SIGINT/SIGTERM/SIGHUP、孤儿后代回收、日志/镜像替换竞态和 DrvFS 日志提交均有回归覆盖。
+
+T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 T10 正式 Boot Sector 已完成。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

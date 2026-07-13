@@ -781,6 +781,38 @@ class BuildRuntimeTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertEqual("foreign\n", sentinel.read_text(encoding="utf-8"))
 
+    def test_cleanup_marker_accepts_only_synchronized_drvfs_device_rebase(self) -> None:
+        with self._workspace() as workspace:
+            build_dir = self._build_dir(workspace)
+            marker = build_dir / BUILD_MARKER
+
+            result = self._make(workspace, "-j4", "all")
+            self._assert_success(result)
+            value = json.loads(marker.read_text(encoding="utf-8"))
+            value["repo_dev"] += 1000
+            value["build_dev"] += 1000
+            marker.write_text(
+                json.dumps(value, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            result = self._make(workspace, "clean")
+            self._assert_success(result)
+            self.assertFalse(build_dir.exists())
+
+            result = self._make(workspace, "-j4", "all")
+            self._assert_success(result)
+            sentinel = build_dir / "preserve-on-asymmetric-device"
+            sentinel.write_text("preserve\n", encoding="utf-8")
+            value = json.loads(marker.read_text(encoding="utf-8"))
+            value["repo_dev"] += 1000
+            marker.write_text(
+                json.dumps(value, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            result = self._make(workspace, "clean")
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("preserve\n", sentinel.read_text(encoding="utf-8"))
+
     def test_public_cleanup_targets_bind_validated_directory_identity(self) -> None:
         for target in ("clean", "distclean"):
             with self.subTest(target=target):

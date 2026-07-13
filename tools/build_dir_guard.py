@@ -255,8 +255,23 @@ def _validate_marker(
 ) -> None:
     actual = _read_marker(build_descriptor)
     expected = _marker_value(location, repo_status, build_status)
-    if actual != expected:
-        _fail("BUILD_DIR 归属标记与仓库或目录身份不匹配")
+    if actual == expected:
+        return
+
+    # DrvFS 的 st_dev 会在 WSL 重新挂载后变化，但同一 Windows 文件的 st_ino
+    # 和规范路径保持稳定。只允许 repo/build 两个设备号同步重基；任何路径、
+    # inode、schema 或单边设备号变化仍视为外来替换。
+    stable_fields = MARKER_FIELDS - {"repo_dev", "build_dev"}
+    stable_identity = all(actual[field] == expected[field] for field in stable_fields)
+    previous_devices_match = (
+        type(actual["repo_dev"]) is int
+        and type(actual["build_dev"]) is int
+        and actual["repo_dev"] == actual["build_dev"]
+    )
+    current_devices_match = expected["repo_dev"] == expected["build_dev"]
+    if stable_identity and previous_devices_match and current_devices_match:
+        return
+    _fail("BUILD_DIR 归属标记与仓库或目录身份不匹配")
 
 
 def _open_named_directory(parent_descriptor: int, name: str) -> int:

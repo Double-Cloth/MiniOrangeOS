@@ -5,6 +5,11 @@ CROSS_COMPILE ?= i686-elf-
 NASM ?= nasm
 PYTHON ?= python3
 BUILD_DIR ?= build
+QEMU ?= qemu-system-i386
+GDB ?= gdb
+QEMU_TIMEOUT ?= 10
+QEMU_LOG_MAX_BYTES ?= 1048576
+GDB_ENDPOINT ?= tcp:127.0.0.1:1234
 
 # GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
 # 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
@@ -58,6 +63,33 @@ endif
 ifneq ($(strip $(value PYTHON)),$(value PYTHON))
 $(error PYTHON 含空格路径不支持)
 endif
+ifneq ($(call unsafe_make_value,QEMU),)
+$(error QEMU 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value QEMU)),1)
+$(error QEMU 含空格路径不支持)
+endif
+ifneq ($(strip $(value QEMU)),$(value QEMU))
+$(error QEMU 含空格路径不支持)
+endif
+ifneq ($(call unsafe_make_value,GDB),)
+$(error GDB 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(words $(value GDB)),1)
+$(error GDB 含空格路径不支持)
+endif
+ifneq ($(strip $(value GDB)),$(value GDB))
+$(error GDB 含空格路径不支持)
+endif
+ifneq ($(call unsafe_make_value,QEMU_TIMEOUT),)
+$(error QEMU_TIMEOUT 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(call unsafe_make_value,QEMU_LOG_MAX_BYTES),)
+$(error QEMU_LOG_MAX_BYTES 含危险字符，不支持作为 Make/Shell 变量)
+endif
+ifneq ($(call unsafe_make_value,GDB_ENDPOINT),)
+$(error GDB_ENDPOINT 含危险字符，不支持作为 Make/Shell 变量)
+endif
 
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
@@ -91,6 +123,8 @@ KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
 KERNEL_SYM := $(KERNEL_BUILD_DIR)/kernel.sym
 
 IMAGE := $(BUILD_ABS)/miniorangeos.img
+QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
+QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 
 KERNEL_CFLAGS := \
 	-std=c11 \
@@ -123,11 +157,26 @@ ALL_ARTIFACTS := \
 	$(KERNEL_MAP) \
 	$(KERNEL_SYM)
 
-.PHONY: all image clean distclean prepare-build-dir
+.PHONY: all image clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
+
+run-serial: $(IMAGE) | prepare-build-dir
+	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
+
+run-curses: $(IMAGE) | prepare-build-dir
+	@$(PYTHON) tools/qemu_run.py --mode curses --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
+
+debug: $(IMAGE) | prepare-build-dir
+	@$(PYTHON) tools/qemu_run.py --mode debug --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
+
+gdb: $(KERNEL_ELF) | prepare-build-dir
+	@$(PYTHON) tools/qemu_run.py --mode gdb --gdb "$(GDB)" --kernel "$(KERNEL_ELF)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
+
+test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
+	@$(PYTHON) tools/qemu_test.py --qemu "$(QEMU)" --image "$(QEMU_TEST_FIXTURE)" --log "$(QEMU_SERIAL_LOG)" --timeout "$(QEMU_TIMEOUT)" --max-log-bytes "$(QEMU_LOG_MAX_BYTES)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
@@ -164,6 +213,10 @@ $(KERNEL_SYM): $(KERNEL_ELF) | prepare-build-dir
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
+
+$(QEMU_TEST_FIXTURE): tests/fixtures/qemu/protocol_pass.asm | prepare-build-dir
+	@mkdir -p "$(dir $@)"
+	$(NASM) -f bin -o "$@" "$<"
 
 clean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target clean
