@@ -82,7 +82,11 @@ if ((gcc_owned == 1)); then
     trap 'rm -rf -- "$verify_directory"' EXIT
     printf '%s\n' 'void minios_verify(void) {}' >"$verify_directory/verify.c"
     if "$gcc_path" -ffreestanding -fno-pie -c "$verify_directory/verify.c" -o "$verify_directory/verify.o"; then
-        record_pass "freestanding-compile" "object-created"
+        if [[ -f "$verify_directory/verify.o" && ! -L "$verify_directory/verify.o" && -s "$verify_directory/verify.o" ]]; then
+            record_pass "freestanding-compile" "nonempty-object-created"
+        else
+            record_fail "freestanding-compile" "编译器未生成非空普通对象文件"
+        fi
     else
         record_fail "freestanding-compile" "交叉编译失败"
     fi
