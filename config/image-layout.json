@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "sector_size": 512,
+  "image_size_bytes": 67108864,
+  "components": [
+    {
+      "name": "stage1",
+      "artifact": "boot/stage1.bin",
+      "lba": 0,
+      "max_sectors": 1
+    },
+    {
+      "name": "stage2",
+      "artifact": "boot/stage2.bin",
+      "lba": 1,
+      "max_sectors": 127
+    },
+    {
+      "name": "kernel",
+      "artifact": "kernel/kernel.elf",
+      "lba": 128,
+      "max_sectors": 1920
+    }
+  ]
+}
