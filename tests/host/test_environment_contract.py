@@ -593,6 +593,63 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertRegex(content, r"(?i)(?:preview|预览)")
         self.assertNotRegex(content, r"(?i)wsl(?:\.exe)?\s+--shutdown")
 
+    def test_wsl_lifecycle_uses_literal_paths_and_injectable_backend(self) -> None:
+        for relative_path in WSL_SCRIPTS:
+            with self.subTest(path=relative_path):
+                content = self._without_comments(
+                    self._read_required(relative_path), powershell=True
+                )
+                self.assertIn("$WslExecutable", content)
+                self.assertRegex(content, r"(?i)-LiteralPath\b")
+                self.assertRegex(content, r"(?i)\[IO\.Path\]::GetFullPath\(")
+                self.assertRegex(content, r"(?i)-replace\s+[\"']`0[\"']")
+                self.assertRegex(content, r"(?i)-ceq\s+\$DistroName\b")
+
+    def test_wsl_create_pins_partial_download_and_atomic_move(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/wsl/create.ps1"), powershell=True
+        )
+        self.assertIn("MINIOS_WSL_IMAGE_SHA256", content)
+        self.assertIn(".partial", content)
+        self.assertRegex(content, r"(?i)Get-FileHash\b[^\r\n]*SHA256")
+        self.assertRegex(content, r"(?i)Move-Item\s+-LiteralPath\b")
+        self.assertRegex(content, r"(?i)--import\b")
+        self.assertRegex(content, r"(?i)--version\s+2\b")
+        self.assertRegex(content, r"(?i)Assert-WslDistributionOwnership")
+
+    def test_wsl_backup_refuses_overwrite_and_only_exports_exact_name(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/wsl/backup.ps1"), powershell=True
+        )
+        self.assertRegex(content, r"(?i)Test-Path\s+-LiteralPath\s+\$ExportPath")
+        self.assertRegex(content, r"(?i)--terminate\s+(?:--\s+)?\$DistroName\b")
+        self.assertRegex(content, r"(?i)--export\s+(?:--\s+)?\$DistroName\b")
+        self.assertNotRegex(content, r"(?i)--export\s+[^$\r\n]")
+
+    def test_bootstrap_has_separate_privilege_phases_and_atomic_package_lock(
+        self,
+    ) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        for token in (
+            "--system-only",
+            "--toolchain-only",
+            "apt-get",
+            "dpkg-query",
+            "apt-packages.lock.partial",
+            "build_toolchain.sh",
+            "sudo -n",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content)
+        self.assertRegex(content, r"(?m)^\s*if\s+\(\(\s*EUID\s*!=\s*0\s*\)\)")
+        self.assertRegex(
+            content,
+            r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path)",
+        )
+        self.assertNotIn("NOPASSWD", content)
+
     def test_containerfile_pins_ubuntu_digest_and_project_labels(self) -> None:
         content = self._read_required("environment/Containerfile")
         self.assertIn(
