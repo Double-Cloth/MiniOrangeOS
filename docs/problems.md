@@ -116,3 +116,11 @@
 最终实现以全量 ownership 复核和可重试 state machine 清理容器；以 manifest v2 绑定完整源码树；以 WSL2 Lxss 注册事实和 root-owned identity 绑定实例；以 `openat`、`O_NOFOLLOW`、`O_CLOEXEC`、进程内锁、原子替换和严格 residue schema 保护 package-state。各修复分支独立复审均为 Approved，未遗留 Critical 或 Important。
 
 正式发行版的 identity-only 迁移只调用 `create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap`。迁移前 `verify.sh` 按预期 FAIL；迁移后 PASS。`-SkipBootstrap` 仍 provision/validate identity，但未运行 apt 或工具链；destroy 默认 preview 与精确 apply/confirm 语义未改变。
+
+## 2026-07-14 / T03 QEMU 自动化真实入口
+
+任务：T03
+
+- 初版协议解析可能在看到局部 PASS 后提前成功，且信号、孤儿后代、PGID 复用和日志/镜像路径替换存在边界缺口；最终改为严格状态机、精确 debug-exit 退出码、subreaper 与已验证 FD 路径。
+- WSL 重挂载会同步改变 DrvFS `st_dev`；构建 marker 仅在路径、inode、schema 不变且 repo/build 设备号成对变化时接受重基，复制 marker 和单边变化仍拒绝。
+- 公开 `make test-qemu` 暴露 DrvFS 在 rename 后写 FD 未关闭时目标名暂不可见；提交逻辑关闭已 rename 的 FD 后，从重新验证的同一目录核对最终完整身份。真实 v9fs 用例已覆盖。
