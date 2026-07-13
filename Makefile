@@ -183,7 +183,7 @@ prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
 
 $(STAGE1_LAYOUT_INC): config/image-layout.json tools/generate_boot_layout.py | prepare-build-dir
-	$(PYTHON) tools/generate_boot_layout.py --layout "$<" --output "$@"
+	$(PYTHON) tools/generate_boot_layout.py --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)" --layout "$<" --output "$@"
 
 $(STAGE1_BIN): boot/stage1/boot.asm $(STAGE1_LAYOUT_INC) | prepare-build-dir
 	$(NASM) -I "$(BOOT_BUILD_DIR)/" -f bin -o "$@" "$<"

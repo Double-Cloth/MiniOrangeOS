@@ -20,10 +20,10 @@ ORG 0x7C00
 %endif
 
 stage1_entry:
+    cli
     jmp 0x0000:stage1_normalized
 
 stage1_normalized:
-    cli
     xor ax, ax
     mov ds, ax
     mov es, ax
