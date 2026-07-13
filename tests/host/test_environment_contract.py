@@ -648,6 +648,9 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         content = self._without_comments(
             self._read_required("environment/bootstrap-inside.sh")
         )
+        writer = self._without_comments(
+            self._read_required("environment/lib/package_state_writer.py")
+        )
         for token in (
             "--system-only",
             "--toolchain-only",
@@ -660,10 +663,7 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             with self.subTest(token=token):
                 self.assertIn(token, content)
         self.assertRegex(content, r"(?m)^\s*if\s+\(\(\s*EUID\s*!=\s*0\s*\)\)")
-        self.assertRegex(
-            content,
-            r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path|package_lock_partial)",
-        )
+        self.assertIn("os.replace", writer)
         self.assertNotIn("NOPASSWD", content)
 
     def test_wsl_ownership_gates_require_lxss_version_two(self) -> None:
@@ -757,36 +757,57 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("MINIOS_WSL_IDENTITY_FILE", bootstrap)
         self.assertIn("测试覆盖仅允许", bootstrap)
 
-    def test_package_lock_mutation_is_anchored_to_locked_dirfd(self) -> None:
-        content = self._without_comments(
+    def test_package_lock_helper_uses_cloexec_openat_and_process_local_lock(self) -> None:
+        bootstrap = self._without_comments(
             self._read_required("environment/bootstrap-inside.sh")
         )
-        opener = self._function_body(
-            content, "open_and_lock_package_state", powershell=False
-        )
-        writer = self._function_body(
-            content, "write_package_lock_through_dirfd", powershell=False
+        writer = self._without_comments(
+            self._read_required("environment/lib/package_state_writer.py")
         )
         system_phase = self._function_body(
-            content, "run_system_phase", powershell=False
+            bootstrap, "run_system_phase", powershell=False
         )
-        for token in ("/proc/self/fd/", "flock", "%d:%i", "package_state_identity"):
-            self.assertIn(token, opener)
         for token in (
-            "package_state_anchor",
-            "mktemp",
-            "chown",
-            "sync -f",
-            "mv --",
-            "assert_package_state_path_matches_fd",
+            "os.open",
+            "dir_fd=",
+            "os.O_DIRECTORY",
+            "os.O_NOFOLLOW",
+            "os.O_CLOEXEC",
+            "os.O_CREAT",
+            "os.O_EXCL",
+            "fcntl.flock",
+            "os.fstat",
+            "os.fsync",
+            "os.fchmod",
+            "os.fchown",
+            "os.replace",
+            "src_dir_fd=",
+            "dst_dir_fd=",
+            "os.unlink",
+            "signal.signal",
         ):
             self.assertIn(token, writer)
-        open_position = system_phase.find("open_and_lock_package_state")
         apt_position = system_phase.find("apt-get update")
-        write_position = system_phase.find("write_package_lock_through_dirfd")
-        self.assertGreaterEqual(open_position, 0)
-        self.assertGreater(apt_position, open_position)
+        write_position = system_phase.find("write_package_lock_with_helper")
+        self.assertGreaterEqual(apt_position, 0)
         self.assertGreater(write_position, apt_position)
+        self.assertNotIn("open_and_lock_package_state", system_phase)
+        self.assertNotIn("flock", system_phase)
+        self.assertNotIn("exec {package_state_fd}", bootstrap)
+        for forbidden in ("subprocess", "os.system", "os.fork", "os.exec"):
+            self.assertNotIn(forbidden, writer)
+        write_body = writer[
+            writer.index("def write_package_lock(") : writer.index("def main()")
+        ]
+        self.assertGreaterEqual(write_body.count("assert_chain_unchanged"), 3)
+        self.assertLess(
+            write_body.index("assert_chain_unchanged"),
+            write_body.index("create_partial"),
+        )
+        self.assertLess(
+            write_body.rindex("assert_chain_unchanged", 0, write_body.index("os.replace")),
+            write_body.index("os.replace"),
+        )
 
     def test_bootstrap_gates_identity_user_and_environment_before_mutation(
         self,

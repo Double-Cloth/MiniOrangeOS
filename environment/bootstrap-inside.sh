@@ -27,10 +27,6 @@ target_gid=''
 target_home=''
 environment_root=''
 wsl_conf_file=''
-package_lock_partial=''
-package_state_fd=''
-package_state_anchor=''
-package_state_identity=''
 test_root=''
 runtime_probe_root=''
 expected_distro=''
@@ -45,18 +41,6 @@ fail() {
     printf 'minios level=FAIL message=%s\n' "$*" >&2
     return 1
 }
-
-cleanup_package_lock_partial() {
-    if [[ -n "$package_lock_partial" ]]; then
-        rm -f -- "$package_lock_partial"
-    fi
-    if [[ -n "$package_state_fd" ]]; then
-        exec {package_state_fd}>&-
-        package_state_fd=''
-        package_state_anchor=''
-    fi
-}
-trap cleanup_package_lock_partial EXIT
 
 while (($# > 0)); do
     case "$1" in
@@ -117,7 +101,7 @@ is_test_path() {
 
 validate_test_configuration() {
     if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
-        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}${MINIOS_RUNTIME_PROBE_ROOT:-}${MINIOS_WSL_IDENTITY_FILE:-}${MINIOS_PACKAGE_STATE_RACE_HOOK:-}${MINIOS_PACKAGE_STATE_RACE_PHASE:-}" ]]; then
+        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}${MINIOS_RUNTIME_PROBE_ROOT:-}${MINIOS_WSL_IDENTITY_FILE:-}${MINIOS_PACKAGE_STATE_RACE_PHASE:-}${FAKE_RACE_STATE:-}${FAKE_RACE_ORIGINAL:-}${FAKE_RACE_OUTSIDE:-}" ]]; then
             fail '测试覆盖仅允许在 MINIOS_BOOTSTRAP_TEST_MODE=1 中使用'
             return 1
         fi
@@ -989,81 +973,6 @@ reject_existing_package_lock_partials_at() {
     done
 }
 
-assert_package_state_path_matches_fd() {
-    local state_directory="$environment_root/state"
-    local current_identity
-    if [[ -z "$package_state_fd" || ! -d "$package_state_anchor" ]]; then
-        fail 'package state dirfd 未打开'
-        return 1
-    fi
-    current_identity="$(stat -Lc '%d:%i' -- "$state_directory" 2>/dev/null)" || {
-        fail 'package state pathname 在持锁期间消失或变为不可解析对象'
-        return 1
-    }
-    if [[ "$current_identity" != "$package_state_identity" ]]; then
-        fail "package state pathname 与持锁 dirfd inode 不一致：path=$current_identity fd=$package_state_identity"
-        return 1
-    fi
-}
-
-run_package_state_race_hook() {
-    local phase="$1"
-    local hook="${MINIOS_PACKAGE_STATE_RACE_HOOK:-}"
-    [[ "${MINIOS_PACKAGE_STATE_RACE_PHASE:-}" == "$phase" ]] || return 0
-    if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' || -z "$hook" ]]; then
-        fail 'package state race hook 仅允许显式测试模式'
-        return 1
-    fi
-    local canonical_hook
-    canonical_hook="$(realpath -e -- "$hook")" || return $?
-    if [[ "$hook" != "$canonical_hook" \
-        || ! -f "$canonical_hook" || -L "$canonical_hook" || ! -x "$canonical_hook" ]] \
-        || ! is_test_path "$canonical_hook"; then
-        fail "package state race hook 不可信：$hook"
-        return 1
-    fi
-    validate_root_owned_safe_regular_file "$canonical_hook" || return $?
-    "$canonical_hook" "$phase"
-}
-
-open_and_lock_package_state() {
-    local state_directory="$environment_root/state"
-    local path_identity
-    local fd_type
-    local fd_uid
-    local fd_mode
-    validate_package_state_directory || return $?
-    exec {package_state_fd}<"$state_directory" || return $?
-    package_state_anchor="/proc/self/fd/$package_state_fd"
-    flock --exclusive "$package_state_fd" || return $?
-    IFS='|' read -r fd_type fd_uid fd_mode < <(stat -Lc '%F|%u|%a' -- "$package_state_anchor")
-    if [[ "$fd_type" != 'directory' || "$fd_uid" != "$target_uid" \
-        || ! "$fd_mode" =~ ^[0-7]{3,4}$ \
-        || $((8#$fd_mode & 8#022)) -ne 0 ]]; then
-        fail "package state dirfd owner/type/mode 不可信：type=$fd_type uid=$fd_uid mode=$fd_mode"
-        return 1
-    fi
-    package_state_identity="$(stat -Lc '%d:%i' -- "$package_state_anchor")" || return $?
-    path_identity="$(stat -Lc '%d:%i' -- "$state_directory")" || return $?
-    if [[ "$path_identity" != "$package_state_identity" ]]; then
-        fail 'package state open 前后 inode 发生变化'
-        return 1
-    fi
-    validate_package_lock_at "$package_state_anchor" || return $?
-    reject_existing_package_lock_partials_at "$package_state_anchor" || return $?
-    run_package_state_race_hook after-open || return $?
-    assert_package_state_path_matches_fd
-}
-
-close_package_state_fd() {
-    if [[ -n "$package_state_fd" ]]; then
-        exec {package_state_fd}>&-
-    fi
-    package_state_fd=''
-    package_state_anchor=''
-    package_state_identity=''
-}
-
 prepare_package_state_as_target() {
     if ((EUID == 0)) || [[ "$(id -u)" != "$target_uid" || "$(id -un)" != "$target_user" ]]; then
         fail 'package state 准备阶段必须由目标普通用户执行'
@@ -1084,48 +993,41 @@ prepare_package_state_as_target() {
     reject_existing_package_lock_partials_at "$state_directory"
 }
 
-write_package_lock_through_dirfd() {
+write_package_lock_with_helper() {
     if ((EUID != 0)); then
-        fail 'dirfd 包锁写入必须由持锁 root phase 执行'
-        return 1
-    fi
-    assert_package_state_path_matches_fd || return $?
-    validate_package_lock_at "$package_state_anchor" || return $?
-    reject_existing_package_lock_partials_at "$package_state_anchor" || return $?
-    local lock_path="$package_state_anchor/apt-packages.lock"
-    package_lock_partial="$(mktemp "$package_state_anchor/apt-packages.lock.partial.XXXXXX")" || return $?
-    local partial_type
-    local partial_uid
-    local partial_mode
-    IFS='|' read -r partial_type partial_uid partial_mode < <(stat -c '%F|%u|%a' -- "$package_lock_partial")
-    if [[ "$package_lock_partial" != "$package_state_anchor"/apt-packages.lock.partial.* \
-        || ( "$partial_type" != 'regular file' && "$partial_type" != 'regular empty file' ) \
-        || "$partial_uid" != '0' || "$partial_mode" != '600' ]]; then
-        fail "mktemp 未生成可信 package lock partial：$package_lock_partial"
+        fail 'package lock helper 必须由 root phase 执行'
         return 1
     fi
     local package
-    for package in "${APPROVED_PACKAGES[@]}"; do
-        dpkg-query -W -f='${Package}=${Version}\n' "$package" >>"$package_lock_partial"
-    done
-    chmod 0644 "$package_lock_partial" || return $?
-    chown "$target_uid:$target_gid" "$package_lock_partial" || return $?
-    sync -f "$package_lock_partial" || return $?
-    IFS='|' read -r partial_type partial_uid partial_mode < <(stat -c '%F|%u|%a' -- "$package_lock_partial")
-    if [[ ( "$partial_type" != 'regular file' && "$partial_type" != 'regular empty file' ) \
-        || "$partial_uid" != "$target_uid" || "$partial_mode" != '644' \
-        || -L "$package_lock_partial" ]]; then
-        fail "package lock partial 写入后边界不可信：$package_lock_partial"
+    local package_lock_content
+    local -a helper_arguments=(
+        --environment-root "$environment_root"
+        --target-uid "$target_uid"
+        --target-gid "$target_gid"
+    )
+    if ! package_lock_content="$({
+        for package in "${APPROVED_PACKAGES[@]}"; do
+            dpkg-query -W -f='${Package}=${Version}\n' "$package"
+        done
+    })"; then
+        fail '无法收集 approved package 版本'
         return 1
     fi
-    run_package_state_race_hook after-partial || return $?
-    assert_package_state_path_matches_fd || return $?
-    mv -- "$package_lock_partial" "$lock_path"
-    package_lock_partial=''
-    sync -f "$lock_path" || return $?
-    sync -f "$package_state_anchor" || return $?
-    validate_package_lock_at "$package_state_anchor" || return $?
-    assert_package_state_path_matches_fd
+    if [[ -n "${MINIOS_PACKAGE_STATE_RACE_PHASE:-}" ]]; then
+        if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
+            fail 'package state race 仅允许显式测试模式'
+            return 1
+        fi
+        helper_arguments+=(
+            --test-root "$test_root"
+            --race-phase "$MINIOS_PACKAGE_STATE_RACE_PHASE"
+            --race-state "${FAKE_RACE_STATE:-}"
+            --race-original "${FAKE_RACE_ORIGINAL:-}"
+            --race-outside "${FAKE_RACE_OUTSIDE:-}"
+        )
+    fi
+    printf '%s\n' "$package_lock_content" \
+        | /usr/bin/python3 -I -B "$SCRIPT_DIR/lib/package_state_writer.py" "${helper_arguments[@]}"
 }
 
 identity_environment_arguments() {
@@ -1141,11 +1043,6 @@ identity_environment_arguments() {
         "MINIOS_WSL_CONF_PATH=${MINIOS_WSL_CONF_PATH:-}" \
         "MINIOS_RUNTIME_PROBE_ROOT=${MINIOS_RUNTIME_PROBE_ROOT:-}" \
         "MINIOS_WSL_IDENTITY_FILE=${MINIOS_WSL_IDENTITY_FILE:-}" \
-        "MINIOS_PACKAGE_STATE_RACE_HOOK=${MINIOS_PACKAGE_STATE_RACE_HOOK:-}" \
-        "MINIOS_PACKAGE_STATE_RACE_PHASE=${MINIOS_PACKAGE_STATE_RACE_PHASE:-}" \
-        "FAKE_RACE_STATE=${FAKE_RACE_STATE:-}" \
-        "FAKE_RACE_ORIGINAL=${FAKE_RACE_ORIGINAL:-}" \
-        "FAKE_RACE_OUTSIDE=${FAKE_RACE_OUTSIDE:-}" \
         "PATH=$PATH"
 }
 
@@ -1183,11 +1080,12 @@ run_system_phase() {
         return 1
     fi
     run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --prepare-package-state --target-user "$target_user" || return $?
-    open_and_lock_package_state || return $?
+    validate_package_state_directory || return $?
+    validate_package_lock_at "$environment_root/state" || return $?
+    reject_existing_package_lock_partials_at "$environment_root/state" || return $?
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${APPROVED_PACKAGES[@]}"
-    write_package_lock_through_dirfd || return $?
-    close_package_state_fd
+    write_package_lock_with_helper || return $?
     write_wsl_configuration
     printf 'system_status=complete\n'
 }
@@ -1216,7 +1114,7 @@ case "$mode" in
         run_toolchain_phase
         ;;
     write-package-lock)
-        fail '--write-package-lock 已由持锁 dirfd root phase 取代'
+        fail '--write-package-lock 已由单进程 openat helper 取代'
         exit 2
         ;;
     prepare-package-state)

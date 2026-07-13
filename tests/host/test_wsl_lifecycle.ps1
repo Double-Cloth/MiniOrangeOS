@@ -698,6 +698,7 @@ try {
 set -euo pipefail
 
 source_script='__MINIOS_BOOTSTRAP_SOURCE__'
+source_writer='__MINIOS_PACKAGE_WRITER_SOURCE__'
 for token in MINIOS_WSL_CONF_PATH --prepare-package-state validate_isolation_identity validate_environment_root run_as_target; do
     grep -Fq -- "$token" "$source_script" || {
         printf 'RED missing bootstrap safety token: %s\n' "$token" >&2
@@ -749,9 +750,10 @@ validate_test_root || { printf 'unsafe atomic bootstrap test root\n' >&2; exit 1
 [[ "$root" != "$old_root" && -L "$old_root" ]] || { printf 'predictable symlink influenced mktemp\n' >&2; exit 1; }
 unset TMPDIR
 /usr/bin/rm -f -- "$old_root"
-mkdir -p -- "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home/minios" "$root/logs"
-chmod 0755 "$root" "$root/repo" "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home" "$root/logs"
+mkdir -p -- "$root/repo/environment/lib" "$root/repo/tools" "$root/fake" "$root/home/minios" "$root/logs"
+chmod 0755 "$root" "$root/repo" "$root/repo/environment" "$root/repo/environment/lib" "$root/repo/tools" "$root/fake" "$root/home" "$root/logs"
 cp -- "$source_script" "$root/repo/environment/bootstrap-inside.sh"
+cp -- "$source_writer" "$root/repo/environment/lib/package_state_writer.py"
 chmod 0755 "$root/repo/environment/bootstrap-inside.sh"
 target_uid="$(/usr/bin/id -u minios)"
 chown -R "minios:$target_uid" "$root/home/minios" "$root/logs"
@@ -869,6 +871,11 @@ set -euo pipefail
 printf 'apt-get' >>"$FAKE_APT_LOG"
 printf ' <%s>' "$@" >>"$FAKE_APT_LOG"
 printf '\n' >>"$FAKE_APT_LOG"
+if [[ -n "${FAKE_APT_BACKGROUND_PID_FILE:-}" \
+    && ! -e "$FAKE_APT_BACKGROUND_PID_FILE" ]]; then
+    (sleep 20 </dev/null >/dev/null 2>&1) &
+    printf '%s\n' "$!" >"$FAKE_APT_BACKGROUND_PID_FILE"
+fi
 EOF
 cat >"$root/fake/dpkg-query" <<'EOF'
 #!/usr/bin/env bash
@@ -1293,36 +1300,31 @@ exercise_state_failure lock-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"
 exercise_state_failure partial-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; ln -s -- "$3" "$1/apt-packages.lock.partial.attack"' sh "$state_path" "$target_uid" "$protected/sentinel"
 rm -rf -- "$state_path"
 
-race_hook="$root/fake/state-race-hook"
-cat >"$race_hook" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "$1" == after-partial ]]
-mv -- "$FAKE_RACE_STATE" "$FAKE_RACE_ORIGINAL"
-ln -s -- "$FAKE_RACE_OUTSIDE" "$FAKE_RACE_STATE"
-EOF
-chmod 0755 "$race_hook"
-mkdir -- "$state_path"
-chown "minios:$target_uid" "$state_path"
-chmod 0755 "$state_path"
-race_original="$environment_root/state-original"
-race_apt_before="$(apt_lines)"
-if "${positive[@]}" MINIOS_PACKAGE_STATE_RACE_HOOK="$race_hook" \
-    MINIOS_PACKAGE_STATE_RACE_PHASE=after-partial \
-    "FAKE_RACE_STATE=$state_path" "FAKE_RACE_ORIGINAL=$race_original" \
-    "FAKE_RACE_OUTSIDE=$protected" "$script" --system-only; then
-    printf 'state parent race unexpectedly passed\n' >&2
-    exit 1
-fi
-[[ "$(apt_lines)" == "$((race_apt_before + 2))" ]] || { printf 'race did not occur after apt phases\n' >&2; exit 1; }
-[[ -L "$state_path" && "$(readlink -- "$state_path")" == "$protected" ]] || { printf 'race hook did not replace pathname\n' >&2; exit 1; }
-[[ ! -e "$protected/apt-packages.lock" && ! -L "$protected/apt-packages.lock" ]] || { printf 'race wrote external final lock\n' >&2; exit 1; }
-[[ -z "$(find "$protected" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'race wrote external partial\n' >&2; exit 1; }
-[[ -z "$(find "$race_original" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'anchored partial cleanup failed\n' >&2; exit 1; }
-rm -f -- "$state_path"
-rm -rf -- "$race_original"
+for race_phase in before-open after-open after-partial; do
+    mkdir -- "$state_path"
+    chown "minios:$target_uid" "$state_path"
+    chmod 0755 "$state_path"
+    race_original="$environment_root/state-original-$race_phase"
+    race_apt_before="$(apt_lines)"
+    if "${positive[@]}" MINIOS_PACKAGE_STATE_RACE_PHASE="$race_phase" \
+        "FAKE_RACE_STATE=$state_path" "FAKE_RACE_ORIGINAL=$race_original" \
+        "FAKE_RACE_OUTSIDE=$protected" "$script" --system-only; then
+        printf 'state parent race unexpectedly passed: %s\n' "$race_phase" >&2
+        exit 1
+    fi
+    [[ "$(apt_lines)" == "$((race_apt_before + 2))" ]] || { printf 'race did not occur after apt phases: %s\n' "$race_phase" >&2; exit 1; }
+    [[ -L "$state_path" && "$(readlink -- "$state_path")" == "$protected" ]] || { printf 'race did not replace pathname: %s\n' "$race_phase" >&2; exit 1; }
+    [[ ! -e "$protected/apt-packages.lock" && ! -L "$protected/apt-packages.lock" ]] || { printf 'race wrote external final lock: %s\n' "$race_phase" >&2; exit 1; }
+    [[ -z "$(find "$protected" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'race wrote external partial: %s\n' "$race_phase" >&2; exit 1; }
+    [[ -z "$(find "$race_original" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]] || { printf 'anchored partial cleanup failed: %s\n' "$race_phase" >&2; exit 1; }
+    rm -f -- "$state_path"
+    rm -rf -- "$race_original"
+done
 positive_apt_before="$(apt_lines)"
-"${positive[@]}" "$script" --system-only
+apt_background_pid_file="$root/apt-background.pid"
+"${positive[@]}" FAKE_APT_BACKGROUND_PID_FILE="$apt_background_pid_file" "$script" --system-only
+apt_background_pid="$(cat -- "$apt_background_pid_file")"
+kill -0 "$apt_background_pid" || { printf 'apt background inheritance probe did not remain alive\n' >&2; exit 1; }
 lock="$environment_root/state/apt-packages.lock"
 [[ -s "$lock" && ! -L "$lock" ]] || { printf 'package lock missing\n' >&2; exit 1; }
 [[ "$(stat -c %u "$lock")" == "$target_uid" ]] || { printf 'package lock owner mismatch\n' >&2; exit 1; }
@@ -1335,9 +1337,11 @@ for package in "${approved_packages[@]}"; do
 done
 [[ -z "$(find "$environment_root/state" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]]
 lock_before="$(sha256sum "$lock")"
-"${positive[@]}" "$script" --system-only
+/usr/bin/timeout 8 "${positive[@]}" "$script" --system-only
 [[ "$(sha256sum "$lock")" == "$lock_before" ]] || { printf 'idempotent lock mismatch\n' >&2; exit 1; }
 [[ "$(apt_lines)" == "$((positive_apt_before + 4))" ]] || { printf 'approved apt phases missing\n' >&2; exit 1; }
+kill "$apt_background_pid" 2>/dev/null || true
+wait "$apt_background_pid" 2>/dev/null || true
 printf 'checkpoint=lock-idempotent\n'
 grep -Fq -- '<install>' "$apt_log"
 grep -Fq -- '<build-essential>' "$apt_log"
@@ -1402,6 +1406,10 @@ printf 'bootstrap_fake_result=PASS\n'
         $BootstrapDrive = $BootstrapFullPath.Substring(0, 1).ToLowerInvariant()
         $BootstrapWslPath = "/mnt/$BootstrapDrive/" + $BootstrapFullPath.Substring(3).Replace('\', '/')
         $Harness = $Harness.Replace('__MINIOS_BOOTSTRAP_SOURCE__', $BootstrapWslPath)
+        $WriterFullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'environment\lib\package_state_writer.py'))
+        $WriterDrive = $WriterFullPath.Substring(0, 1).ToLowerInvariant()
+        $WriterWslPath = "/mnt/$WriterDrive/" + $WriterFullPath.Substring(3).Replace('\', '/')
+        $Harness = $Harness.Replace('__MINIOS_PACKAGE_WRITER_SOURCE__', $WriterWslPath)
         [IO.File]::WriteAllText($HarnessPath, $Harness, [Text.UTF8Encoding]::new($false))
         $HarnessFullPath = [IO.Path]::GetFullPath($HarnessPath)
         $HarnessDrive = $HarnessFullPath.Substring(0, 1).ToLowerInvariant()
