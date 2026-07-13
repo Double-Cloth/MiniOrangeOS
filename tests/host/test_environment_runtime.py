@@ -61,6 +61,49 @@ class EnvironmentRuntimeTests(unittest.TestCase):
                 (directory / command).symlink_to(source)
         return str(directory)
 
+    def _write_fake_podman(self, directory: Path) -> Path:
+        fake_podman = directory / "podman"
+        fake_podman.write_text(
+            """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_PODMAN_LOG"
+case " $* " in
+  *" inspect "*)
+    case "$*" in
+      *Labels*|*labels*|*label*) printf '%s\\n' "$FAKE_PODMAN_LABEL" ;;
+      *Id*|*ID*|*id*) printf '%s\\n' "$FAKE_PODMAN_IMAGE_ID" ;;
+      *)
+        printf '[{"Id":"%s","Config":{"Labels":{"org.miniorangeos.project":"%s"}}}]\\n' \\
+          "$FAKE_PODMAN_IMAGE_ID" "$FAKE_PODMAN_LABEL"
+        ;;
+    esac
+    ;;
+  *" images "*) printf '%s\\n' "$FAKE_PODMAN_IMAGE_ID" ;;
+  *" info "*) printf '%s\\n' true ;;
+  *" version "*) printf '%s\\n' 'podman version 5.0.0-fake' ;;
+  *) : ;;
+esac
+""",
+            encoding="utf-8",
+            newline="\n",
+        )
+        fake_podman.chmod(0o755)
+        return fake_podman
+
+    def _write_container_state(self, environment_root: Path) -> None:
+        state_directory = environment_root / "state"
+        state_directory.mkdir(parents=True)
+        (environment_root / "container-storage" / "graphroot").mkdir(parents=True)
+        (environment_root / "container-storage" / "runroot").mkdir(parents=True)
+        (state_directory / "container.env").write_text(
+            "MINIOS_CONTAINER_IMAGE=miniorangeos-dev:ubuntu-24.04\n"
+            "MINIOS_CONTAINER_LABEL=org.miniorangeos.project=MiniOrangeOS\n"
+            "MINIOS_CONTAINER_IMAGE_ID=sha256:owned-image-id\n"
+            "MINIOS_CONTAINER_IMAGE_DIGEST=sha256:owned-image-digest\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
     def test_with_env_rejects_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             result = self._run_required(
@@ -81,7 +124,7 @@ class EnvironmentRuntimeTests(unittest.TestCase):
             tool_directory.mkdir(parents=True)
             fake_tool = tool_directory / "minios-t01-contract-tool"
             fake_tool.write_text(
-                "#!/bin/sh\nprintf '%s\\n' child-tool-found\n",
+                "#!/bin/sh\nprintf 'path=%s\\n' \"$PATH\"\n",
                 encoding="utf-8",
                 newline="\n",
             )
@@ -93,8 +136,13 @@ class EnvironmentRuntimeTests(unittest.TestCase):
                 env=self._base_env(environment_root),
             )
 
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("child-tool-found", result.stdout.strip())
+            self.assertEqual(0, result.returncode, result.stderr)
+            child_path = result.stdout.removeprefix("path=").strip()
+            self.assertEqual(str(tool_directory), child_path.split(os.pathsep)[0])
+            self.assertEqual(
+                str(fake_tool), shutil.which(fake_tool.name, path=child_path)
+            )
+
         self.assertEqual(original_path, os.environ.get("PATH", ""))
         self.assertIsNone(shutil.which(fake_tool.name, path=original_path))
 
@@ -151,6 +199,64 @@ class EnvironmentRuntimeTests(unittest.TestCase):
             diagnostic,
             r"(?:backend|runtime|not found|unavailable|后端|不可用|未找到|未安装)",
         )
+
+    def test_ubuntu_destroy_rejects_unowned_image_without_removal(self) -> None:
+        cases = (
+            ("错误项目标签", "OtherProject", "sha256:owned-image-id"),
+            ("错误镜像 ID", "MiniOrangeOS", "sha256:foreign-image-id"),
+        )
+        for description, inspected_label, inspected_image_id in cases:
+            with (
+                self.subTest(case=description),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                temporary_root = Path(temporary_directory)
+                environment_root = temporary_root / "environment"
+                command_directory = temporary_root / "commands"
+                runtime_directory = temporary_root / "runtime"
+                command_directory.mkdir()
+                runtime_directory.mkdir()
+                self._write_fake_podman(command_directory)
+                self._write_container_state(environment_root)
+                fake_log = temporary_root / "podman.log"
+
+                env = self._base_env(environment_root)
+                env.update(
+                    {
+                        "FAKE_PODMAN_IMAGE_ID": inspected_image_id,
+                        # fake inspect 把该值作为 org.miniorangeos.project 的 value。
+                        "FAKE_PODMAN_LABEL": inspected_label,
+                        "FAKE_PODMAN_LOG": str(fake_log),
+                        "MINIOS_CONTAINER_BACKEND": "podman",
+                        "PATH": str(command_directory) + os.pathsep + env["PATH"],
+                        "XDG_RUNTIME_DIR": str(runtime_directory),
+                    }
+                )
+
+                result = self._run_required(
+                    "environment/ubuntu/destroy.sh",
+                    "--all",
+                    env=env,
+                )
+
+                self.assertNotEqual(0, result.returncode, description)
+                self.assertTrue(
+                    fake_log.is_file(),
+                    "destroy --all 必须调用 fake Podman 检查镜像 ownership",
+                )
+                commands = fake_log.read_text(encoding="utf-8").splitlines()
+                self.assertTrue(
+                    any("inspect" in command.split() for command in commands),
+                    "负面测试必须实际到达 fake Podman ownership inspect",
+                )
+                removal_tokens = {"rm", "rmi"}
+                self.assertFalse(
+                    any(
+                        removal_tokens.intersection(command.split())
+                        for command in commands
+                    ),
+                    f"{description} 时不得调用 podman rm/rmi：{commands}",
+                )
 
 
 if __name__ == "__main__":
