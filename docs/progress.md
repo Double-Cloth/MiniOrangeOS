@@ -5,7 +5,7 @@
 | 任务 | 状态 | 分支 | 测试证据 | 合并 |
 |---|---|---|---|---|
 | T00 | 完成 | feature/T00-project-bootstrap | ProjectLayoutTests 11/11 PASS | `def1657`：`merge: complete T00 project bootstrap` |
-| T01 | 验收通过，待合并 | feature/T01-environment-toolchain | 正式 WSL 工具链/幂等、rootless Podman 生命周期及 host 回归 PASS | 待 Task 9 no-ff 合并 |
+| T01 | 完成 | feature/T01-environment-toolchain | 正式 WSL 工具链/幂等、rootless Podman 生命周期、host 124/124 与 PowerShell 29/29 PASS | `c07fe81`：`merge: complete T01 environment toolchain` |
 | T02–T74 | 未开始 | — | — | — |
 
 ## 里程碑

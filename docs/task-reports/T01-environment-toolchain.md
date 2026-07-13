@@ -4,7 +4,9 @@
 
 分支：`feature/T01-environment-toolchain`
 
-状态：**T01 验收通过，待合并**
+状态：**完成并合并**
+
+Merge SHA：`c07fe814a5e05eb95988ab95f7052d3798f29080`
 
 ## 实现摘要
 
@@ -72,4 +74,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\environment\wsl\create
 
 ## 结论
 
-固定来源、正式 WSL 构建与幂等、identity-only 迁移、备份、空发行版定向销毁、rootless Podman create/run/destroy、最终安全审查闭环和无全局污染均有真实证据。当前状态为 **T01 验收通过，待合并**；合并、merge SHA 与分支清理由 Task 9 完成后回填。
+固定来源、正式 WSL 构建与幂等、identity-only 迁移、备份、空发行版定向销毁、rootless Podman create/run/destroy、最终安全审查闭环和无全局污染均有真实证据。T01 已通过 `c07fe814a5e05eb95988ab95f7052d3798f29080` 以 `--no-ff` 合并到 `main`。
