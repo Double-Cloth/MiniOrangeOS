@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import stat
 import struct
 import subprocess
@@ -17,6 +19,11 @@ import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows 只收集并跳过真实 WSL 测试
+    resource = None  # type: ignore[assignment]
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,21 +80,40 @@ def _is_wsl_linux() -> bool:
 class BuildRuntimeTests(unittest.TestCase):
     @contextlib.contextmanager
     def _workspace(self) -> Iterator[Path]:
-        with tempfile.TemporaryDirectory(prefix="minios-t02-") as temporary_directory:
-            workspace = Path(temporary_directory) / "workspace"
-            shutil.copytree(
-                ROOT,
-                workspace,
-                ignore=shutil.ignore_patterns(
-                    ".git",
-                    ".superpowers",
-                    "build",
-                    "__pycache__",
-                    ".pytest_cache",
-                    ".cache",
-                ),
-            )
-            yield workspace
+        test_root = ROOT / "build/test-workspaces"
+        test_root.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="minios-t02-", dir=test_root
+            ) as temporary_directory:
+                workspace = Path(temporary_directory) / "workspace"
+                shutil.copytree(
+                    ROOT,
+                    workspace,
+                    ignore=shutil.ignore_patterns(
+                        ".git",
+                        ".superpowers",
+                        "build",
+                        "__pycache__",
+                        ".pytest_cache",
+                        ".cache",
+                    ),
+                )
+                self.assertTrue(
+                    workspace.is_relative_to(test_root),
+                    f"测试工作副本逃逸权威工作树：{workspace}",
+                )
+                self.assertTrue(
+                    workspace.as_posix().startswith("/mnt/"),
+                    f"测试工作副本不在 Windows DrvFS 挂载：{workspace}",
+                )
+                yield workspace
+        finally:
+            for directory in (test_root, ROOT / "build"):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
 
     def _assert_makefile(self, workspace: Path) -> None:
         self.assertTrue((workspace / "Makefile").is_file(), "缺少顶层 Makefile")
@@ -98,8 +124,18 @@ class BuildRuntimeTests(unittest.TestCase):
         *arguments: str,
         timeout: int = 120,
         env: dict[str, str] | None = None,
+        file_size_limit: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = ["bash", "environment/with-env.sh", *arguments]
+
+        def limit_output_file_size() -> None:
+            assert file_size_limit is not None
+            assert resource is not None
+            resource.setrlimit(
+                resource.RLIMIT_FSIZE, (file_size_limit, file_size_limit)
+            )
+            signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+
         return subprocess.run(
             command,
             cwd=workspace,
@@ -110,6 +146,7 @@ class BuildRuntimeTests(unittest.TestCase):
             errors="replace",
             timeout=timeout,
             check=False,
+            preexec_fn=limit_output_file_size if file_size_limit is not None else None,
         )
 
     def _make(
@@ -294,8 +331,24 @@ class BuildRuntimeTests(unittest.TestCase):
 
             source = workspace / "kernel/core/kernel.c"
             old_stat = source.stat()
-            future = max(old_stat.st_mtime_ns + 2_000_000_000, os.stat(build_dir).st_mtime_ns + 1)
+            related_artifacts = (
+                "kernel/core/kernel.o",
+                "kernel/core/kernel.d",
+                "kernel/kernel.elf",
+                "kernel/kernel.bin",
+                "kernel/kernel.map",
+                "kernel/kernel.sym",
+                IMAGE_NAME,
+            )
+            newest_artifact = max(before[path][0] for path in related_artifacts)
+            future = max(old_stat.st_mtime_ns, newest_artifact) + 2_000_000_000
             os.utime(source, ns=(old_stat.st_atime_ns, future))
+            touched_mtime = source.stat().st_mtime_ns
+            self.assertGreater(
+                touched_mtime,
+                newest_artifact,
+                "DrvFS 触碰后的内核源码没有严格晚于依赖产物",
+            )
             result = self._make(workspace, "image")
             self._assert_success(result)
             after = self._snapshot(build_dir)
@@ -308,15 +361,7 @@ class BuildRuntimeTests(unittest.TestCase):
             self.assertTrue(protected)
             for path in protected:
                 self.assertEqual(before[path], after[path], f"内核变更误重建了 {path}")
-            for path in (
-                "kernel/core/kernel.o",
-                "kernel/core/kernel.d",
-                "kernel/kernel.elf",
-                "kernel/kernel.bin",
-                "kernel/kernel.map",
-                "kernel/kernel.sym",
-                IMAGE_NAME,
-            ):
+            for path in related_artifacts:
                 self.assertIn(path, before)
                 self.assertIn(path, after)
                 self.assertGreater(after[path][0], before[path][0], f"内核链未重建：{path}")
@@ -357,6 +402,29 @@ class BuildRuntimeTests(unittest.TestCase):
                 checked += 1
             self.assertGreaterEqual(checked, 3, "镜像未占用区域抽样不足")
 
+            independent_outputs = (
+                workspace / "independent-one.img",
+                workspace / "independent-two.img",
+            )
+            for output in independent_outputs:
+                result = self._run(
+                    workspace,
+                    "python3",
+                    "tools/make_image.py",
+                    "--layout",
+                    str(workspace / "config/image-layout.json"),
+                    "--build-dir",
+                    str(build_dir),
+                    "--output",
+                    str(output),
+                )
+                self._assert_success(result)
+            hashes = {
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (*independent_outputs, build_dir / IMAGE_NAME)
+            }
+            self.assertEqual(1, len(hashes), "相同输入没有生成确定的完整镜像")
+
     def test_clean_is_scoped_and_alternate_build_dir_works(self) -> None:
         with self._workspace() as workspace:
             marker = workspace / "boot/keep-source.txt"
@@ -378,12 +446,78 @@ class BuildRuntimeTests(unittest.TestCase):
             source_build = self._build_dir(workspace)
             layout = json.loads((workspace / "config/image-layout.json").read_text(encoding="utf-8"))
 
+            invalid_layouts: list[tuple[str, object]] = []
+
+            def changed(name: str) -> dict[str, object]:
+                value = copy.deepcopy(layout)
+                invalid_layouts.append((name, value))
+                return value
+
+            invalid_layouts.append(("root-array", []))
+            value = changed("unknown-root-field")
+            value["unknown"] = 1
+            for field in ("format_version", "sector_size", "image_size_bytes", "components"):
+                value = changed(f"missing-root-{field}")
+                del value[field]
+            for name, field, replacement in (
+                ("bool-format", "format_version", True),
+                ("unsupported-format", "format_version", 2),
+                ("bool-sector", "sector_size", True),
+                ("string-sector", "sector_size", "512"),
+                ("zero-sector", "sector_size", 0),
+                ("negative-sector", "sector_size", -512),
+                ("unsupported-sector", "sector_size", 1024),
+                ("non-divisor-sector", "sector_size", 513),
+                ("bool-image-size", "image_size_bytes", True),
+                ("string-image-size", "image_size_bytes", "67108864"),
+                ("zero-image-size", "image_size_bytes", 0),
+                ("negative-image-size", "image_size_bytes", -512),
+                ("non-sector-multiple-image", "image_size_bytes", 64 * 1024 * 1024 + 1),
+                ("components-object", "components", {}),
+                ("components-empty", "components", []),
+            ):
+                value = changed(name)
+                value[field] = replacement
+
+            for field in ("name", "artifact", "lba", "max_sectors"):
+                value = changed(f"missing-component-{field}")
+                del value["components"][0][field]
+            value = changed("unknown-component-field")
+            value["components"][0]["unknown"] = 1
+            for name, field, replacement in (
+                ("bool-name", "name", True),
+                ("empty-name", "name", ""),
+                ("bool-artifact", "artifact", True),
+                ("empty-artifact", "artifact", ""),
+                ("absolute-artifact", "artifact", "/tmp/foreign.bin"),
+                ("parent-artifact", "artifact", "../foreign.bin"),
+                ("nested-parent-artifact", "artifact", "boot/../foreign.bin"),
+                ("bool-lba", "lba", True),
+                ("string-lba", "lba", "0"),
+                ("negative-lba", "lba", -1),
+                ("bool-max-sectors", "max_sectors", True),
+                ("string-max-sectors", "max_sectors", "1"),
+                ("zero-max-sectors", "max_sectors", 0),
+                ("negative-max-sectors", "max_sectors", -1),
+            ):
+                value = changed(name)
+                value["components"][0][field] = replacement
+            value = changed("duplicate-name")
+            value["components"][1]["name"] = value["components"][0]["name"]
+            value = changed("overlapping-components")
+            value["components"][1]["lba"] = value["components"][0]["lba"]
+            value = changed("component-out-of-image")
+            value["components"][2]["lba"] = (
+                value["image_size_bytes"] // value["sector_size"]
+            )
+
             cases: list[tuple[str, Path, Path]] = []
-            bad_layout = workspace / "bad-layout.json"
-            overlapping = json.loads(json.dumps(layout))
-            overlapping["components"][1]["lba"] = overlapping["components"][0]["lba"]
-            bad_layout.write_text(json.dumps(overlapping), encoding="utf-8")
-            cases.append(("bad-layout", bad_layout, source_build))
+            layout_dir = workspace / "invalid-layouts"
+            layout_dir.mkdir()
+            for name, invalid_layout in invalid_layouts:
+                layout_path = layout_dir / f"{name}.json"
+                layout_path.write_text(json.dumps(invalid_layout), encoding="utf-8")
+                cases.append((name, layout_path, source_build))
 
             missing_build = workspace / "missing-component"
             shutil.copytree(source_build, missing_build)
@@ -413,6 +547,40 @@ class BuildRuntimeTests(unittest.TestCase):
                     )
                     self.assertNotEqual(0, result.returncode, f"{name} 被错误接受")
                     self.assertEqual(marker, output.read_bytes(), f"{name} 失败覆盖了既有目标")
+
+    def test_image_tool_write_failure_is_atomic(self) -> None:
+        with self._workspace() as workspace:
+            result = self._make(workspace, "-j4", "all")
+            self._assert_success(result)
+            output_dir = workspace / "atomic-output"
+            output_dir.mkdir()
+            output = output_dir / IMAGE_NAME
+            marker = b"preserve-image-before-write-failure"
+            output.write_bytes(marker)
+            before = output.stat()
+
+            result = self._run(
+                workspace,
+                "python3",
+                "tools/make_image.py",
+                "--layout",
+                str(workspace / "config/image-layout.json"),
+                "--build-dir",
+                str(self._build_dir(workspace)),
+                "--output",
+                str(output),
+                file_size_limit=1024 * 1024,
+            )
+
+            self.assertNotEqual(0, result.returncode, "写入阶段文件大小限制未使镜像生成失败")
+            self.assertEqual(marker, output.read_bytes(), "写入中途失败覆盖了既有镜像")
+            after = output.stat()
+            self.assertEqual(
+                (before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns),
+                (after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns),
+                "写入中途失败改变了既有镜像 metadata",
+            )
+            self.assertEqual([output], list(output_dir.iterdir()), "写入失败残留临时文件")
 
 
 if __name__ == "__main__":

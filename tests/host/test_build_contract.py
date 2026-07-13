@@ -66,6 +66,14 @@ class BuildContractTests(unittest.TestCase):
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()
+        self.assertEqual(
+            {"format_version", "sector_size", "image_size_bytes", "components"},
+            set(layout),
+            "镜像布局顶层字段不稳定",
+        )
+        self.assertIs(type(layout.get("format_version")), int)
+        self.assertIs(type(layout.get("sector_size")), int)
+        self.assertIs(type(layout.get("image_size_bytes")), int)
         self.assertEqual(1, layout.get("format_version"))
         self.assertEqual(512, layout.get("sector_size"))
         self.assertEqual(64 * 1024 * 1024, layout.get("image_size_bytes"))
@@ -89,8 +97,8 @@ class BuildContractTests(unittest.TestCase):
             max_sectors = component.get("max_sectors")
             self.assertIsInstance(name, str)
             self.assertIsInstance(artifact, str)
-            self.assertIsInstance(lba, int)
-            self.assertIsInstance(max_sectors, int)
+            self.assertIs(type(lba), int)
+            self.assertIs(type(max_sectors), int)
             assert isinstance(name, str)
             assert isinstance(artifact, str)
             assert isinstance(lba, int)
