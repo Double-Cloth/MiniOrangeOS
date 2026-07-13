@@ -156,16 +156,171 @@ assert_no_symlink_components() {
     done
 }
 
+mode_is_root_safe() {
+    local mode="$1"
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+    (( (8#$mode & 8#022) == 0 ))
+}
+
+validate_root_owned_safe_directory() {
+    local path="$1"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -d "$path" || -L "$path" ]]; then
+        fail "可信路径组件必须是非 symlink 普通目录：$path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path")
+    if [[ "$item_type" != 'directory' || "$item_uid" != '0' ]] \
+        || ! mode_is_root_safe "$item_mode"; then
+        fail "可信路径组件必须 root 拥有且组/其他用户不可写：$path type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+validate_root_owned_safe_chain() {
+    local base="$1"
+    local candidate="$2"
+    local current="$base"
+    local relative
+    local component
+    if [[ "$base" == '/' ]]; then
+        if [[ "$candidate" != /* ]]; then
+            fail "可信路径不是绝对路径：$candidate"
+            return 1
+        fi
+        relative="${candidate#/}"
+    else
+        if [[ "$candidate" != "$base" && "$candidate" != "$base"/* ]]; then
+            fail "可信路径越过验证根：$candidate"
+            return 1
+        fi
+        relative="${candidate#"$base"}"
+        relative="${relative#/}"
+    fi
+    validate_root_owned_safe_directory "$base" || return $?
+    IFS='/' read -r -a components <<<"$relative"
+    for component in "${components[@]}"; do
+        [[ -n "$component" ]] || continue
+        current="${current%/}/$component"
+        validate_root_owned_safe_directory "$current" || return $?
+    done
+}
+
+validate_root_owned_safe_regular_file() {
+    local path="$1"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "可信 os-release target 必须是非 symlink 普通文件：$path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path")
+    if [[ "$item_type" != 'regular file' || "$item_uid" != '0' ]] \
+        || ! mode_is_root_safe "$item_mode"; then
+        fail "可信 os-release target 必须 root 拥有且组/其他用户不可写：$path type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+select_os_release_entry() {
+    local override="${MINIOS_OS_RELEASE_FILE:-}"
+    local requested="${override:-$PRODUCTION_OS_RELEASE_FILE}"
+    local lexical_path
+    lexical_path="$(realpath -ms -- "$requested")" || return $?
+    if [[ "$requested" != "$lexical_path" ]]; then
+        fail "os-release 必须使用规范绝对入口路径：$requested"
+        return 1
+    fi
+    if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" == '1' ]]; then
+        if [[ -z "$override" ]] || ! is_test_path "$lexical_path"; then
+            fail "测试 os-release 必须位于已验证测试根内：$lexical_path"
+            return 1
+        fi
+    elif [[ -n "$override" || "$lexical_path" != "$PRODUCTION_OS_RELEASE_FILE" ]]; then
+        fail "生产 os-release 入口必须精确为 $PRODUCTION_OS_RELEASE_FILE"
+        return 1
+    fi
+    printf '%s\n' "$lexical_path"
+}
+
+resolve_trusted_os_release() {
+    local entry
+    local chain_base
+    local entry_parent
+    local image_root
+    local expected_target
+    local resolved_target
+    local link_text
+    local link_type
+    local link_uid
+    local link_mode
+    entry="$(select_os_release_entry)" || return $?
+
+    if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" == '1' ]]; then
+        chain_base="$test_root"
+    else
+        chain_base='/'
+    fi
+    entry_parent="${entry%/*}"
+    validate_root_owned_safe_chain "$chain_base" "$entry_parent" || return $?
+
+    if [[ ! -L "$entry" ]]; then
+        if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" == '1' ]]; then
+            fail '测试 os-release 只允许标准 etc/os-release 相对链接镜像'
+            return 1
+        fi
+        validate_root_owned_safe_regular_file "$entry" || return $?
+        printf '%s\n' "$entry"
+        return
+    fi
+
+    IFS='|' read -r link_type link_uid link_mode < <(stat -c '%F|%u|%a' -- "$entry")
+    if [[ "$link_type" != 'symbolic link' || "$link_uid" != '0' || "$link_mode" != '777' ]]; then
+        fail "os-release symlink 元数据不可信：$entry type=$link_type uid=$link_uid mode=$link_mode"
+        return 1
+    fi
+    link_text="$(readlink -- "$entry")" || return $?
+    if [[ "$link_text" != '../usr/lib/os-release' ]]; then
+        fail "os-release symlink 必须精确为 ../usr/lib/os-release：$link_text"
+        return 1
+    fi
+
+    if [[ "$entry" == '/etc/os-release' ]]; then
+        image_root=''
+        expected_target='/usr/lib/os-release'
+    elif [[ "$entry" == */etc/os-release ]]; then
+        image_root="${entry%/etc/os-release}"
+        if [[ -z "$image_root" ]] || ! is_test_path "$image_root"; then
+            fail "测试 os-release 镜像根不可信：$image_root"
+            return 1
+        fi
+        expected_target="$image_root/usr/lib/os-release"
+    else
+        fail "os-release symlink 入口必须位于精确 etc/os-release：$entry"
+        return 1
+    fi
+
+    validate_root_owned_safe_chain "$chain_base" "${expected_target%/*}" || return $?
+    resolved_target="$(realpath -e -- "$entry")" || {
+        fail "os-release symlink target 缺失：$entry"
+        return 1
+    }
+    if [[ "$resolved_target" != "$expected_target" ]]; then
+        fail "os-release symlink target 不精确：$resolved_target"
+        return 1
+    fi
+    validate_root_owned_safe_regular_file "$resolved_target" || return $?
+    printf '%s\n' "$resolved_target"
+}
+
 validate_ubuntu_release() {
     local os_release_file
     local os_id
     local version_id
-    os_release_file="$(select_test_or_production_file \
-        "${MINIOS_OS_RELEASE_FILE:-}" "$PRODUCTION_OS_RELEASE_FILE")" || return $?
-    if [[ ! -f "$os_release_file" || -L "$os_release_file" ]]; then
-        fail "缺少可信 os-release：$os_release_file"
-        return 1
-    fi
+    os_release_file="$(resolve_trusted_os_release)" || return $?
     os_id="$(read_os_value "$os_release_file" ID)" || {
         fail 'os-release 缺少 ID'
         return 1

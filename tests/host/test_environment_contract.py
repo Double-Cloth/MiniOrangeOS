@@ -745,6 +745,25 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             with self.subTest(token=token):
                 self.assertIn(token, content)
 
+    def test_bootstrap_only_accepts_trusted_standard_os_release_link(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        for token in (
+            "readlink",
+            "../usr/lib/os-release",
+            "/usr/lib/os-release",
+            "realpath -e",
+            "symbolic link",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content)
+        preflight = self._function_body(content, "preflight", powershell=False)
+        self.assertLess(
+            preflight.find("validate_ubuntu_release"),
+            preflight.find("ensure_target_user"),
+        )
+
     def test_wsl_scripts_use_single_segment_test_names_and_skip_bootstrap(
         self,
     ) -> None:

@@ -640,6 +640,7 @@ try {
             $SystemStatus = $LASTEXITCODE
             Assert-True ($SystemStatus -ne 0) '普通用户执行 system-only 应失败'
             Assert-True (($SystemOutput -join "`n") -match 'FAIL') 'system-only 失败缺少诊断'
+            Assert-True (($SystemOutput -join "`n") -notmatch 'os-release') '真实标准 os-release 链未通过只读身份门'
 
             $ToolchainOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $BootstrapPath --toolchain-only 2>&1)
             $ToolchainStatus = $LASTEXITCODE
@@ -725,6 +726,20 @@ ID=debian
 VERSION_ID="12"
 EOF
 chmod 0644 "$root/good-os-release" "$root/bad-os-release"
+
+standard_os_root="$root/standard-os-root"
+mkdir -p -- "$standard_os_root/etc" "$standard_os_root/usr/lib"
+cp -- "$root/good-os-release" "$standard_os_root/usr/lib/os-release"
+chmod 0755 "$standard_os_root" "$standard_os_root/etc" "$standard_os_root/usr" "$standard_os_root/usr/lib"
+chmod 0644 "$standard_os_root/usr/lib/os-release"
+ln -s -- ../usr/lib/os-release "$standard_os_root/etc/os-release"
+
+bad_os_root="$root/bad-os-root"
+mkdir -p -- "$bad_os_root/etc" "$bad_os_root/usr/lib"
+cp -- "$root/bad-os-release" "$bad_os_root/usr/lib/os-release"
+chmod 0755 "$bad_os_root" "$bad_os_root/etc" "$bad_os_root/usr" "$bad_os_root/usr/lib"
+chmod 0644 "$bad_os_root/usr/lib/os-release"
+ln -s -- ../usr/lib/os-release "$bad_os_root/etc/os-release"
 
 cat >"$root/fake/getent" <<'EOF'
 #!/usr/bin/env bash
@@ -841,7 +856,8 @@ export FAKE_USERADD_LOG="$useradd_log"
 export MINIOS_BOOTSTRAP_TEST_MODE=1
 export MINIOS_BOOTSTRAP_TEST_ROOT="$root"
 script="$root/repo/environment/bootstrap-inside.sh"
-good_os="$root/good-os-release"
+good_os="$standard_os_root/etc/os-release"
+bad_os="$bad_os_root/etc/os-release"
 wsl_conf="$root/wsl.conf"
 
 apt_lines() { wc -l <"$apt_log"; }
@@ -873,7 +889,93 @@ common=(
     "MINIOS_WSL_CONF_PATH=$wsl_conf"
 )
 
-expect_gate_failure wrong-os "${common[@]}" MINIOS_OS_RELEASE_FILE="$root/bad-os-release" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only
+create_os_case() {
+    local name="$1"
+    os_case_root="$root/os-case-$name"
+    mkdir -p -- "$os_case_root/etc" "$os_case_root/usr/lib"
+    cp -- "$root/good-os-release" "$os_case_root/usr/lib/os-release"
+    chmod 0755 "$os_case_root" "$os_case_root/etc" "$os_case_root/usr" "$os_case_root/usr/lib"
+    chmod 0644 "$os_case_root/usr/lib/os-release"
+    ln -s -- ../usr/lib/os-release "$os_case_root/etc/os-release"
+    os_case_path="$os_case_root/etc/os-release"
+}
+expect_os_gate_failure() {
+    local description="$1"
+    expect_gate_failure "$description" "${common[@]}" \
+        "MINIOS_OS_RELEASE_FILE=$os_case_path" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+        "$script" --system-only
+}
+
+create_os_case absolute-link
+rm -f -- "$os_case_path"
+ln -s -- "$os_case_root/usr/lib/os-release" "$os_case_path"
+expect_os_gate_failure os-release-absolute-link
+
+os_case_path="$root/good-os-release"
+expect_os_gate_failure os-release-arbitrary-test-override
+
+create_os_case escaping-link
+rm -f -- "$os_case_path"
+ln -s -- ../../../../etc/os-release "$os_case_path"
+expect_os_gate_failure os-release-escaping-link
+
+create_os_case nonexact-link
+rm -f -- "$os_case_path"
+ln -s -- ../usr/lib/./os-release "$os_case_path"
+expect_os_gate_failure os-release-nonexact-link
+
+create_os_case chained-target
+mv -- "$os_case_root/usr/lib/os-release" "$os_case_root/usr/lib/os-release.real"
+ln -s -- os-release.real "$os_case_root/usr/lib/os-release"
+expect_os_gate_failure os-release-chained-target
+
+create_os_case missing-target
+rm -f -- "$os_case_root/usr/lib/os-release"
+expect_os_gate_failure os-release-missing-target
+
+create_os_case directory-target
+rm -f -- "$os_case_root/usr/lib/os-release"
+mkdir -- "$os_case_root/usr/lib/os-release"
+expect_os_gate_failure os-release-directory-target
+
+create_os_case writable-target
+chmod 0666 "$os_case_root/usr/lib/os-release"
+expect_os_gate_failure os-release-writable-target
+
+create_os_case nonroot-target
+chown "minios:$target_uid" "$os_case_root/usr/lib/os-release"
+expect_os_gate_failure os-release-nonroot-target
+
+create_os_case symlink-etc-parent
+rm -f -- "$os_case_path"
+rmdir -- "$os_case_root/etc"
+mkdir -- "$os_case_root/real-etc"
+chmod 0755 "$os_case_root/real-etc"
+ln -s -- ../usr/lib/os-release "$os_case_root/real-etc/os-release"
+ln -s -- real-etc "$os_case_root/etc"
+expect_os_gate_failure os-release-symlink-etc-parent
+
+create_os_case symlink-lib-parent
+mkdir -- "$os_case_root/real-lib"
+chmod 0755 "$os_case_root/real-lib"
+mv -- "$os_case_root/usr/lib/os-release" "$os_case_root/real-lib/os-release"
+rmdir -- "$os_case_root/usr/lib"
+ln -s -- ../real-lib "$os_case_root/usr/lib"
+expect_os_gate_failure os-release-symlink-lib-parent
+
+create_os_case writable-etc-parent
+chmod 0777 "$os_case_root/etc"
+expect_os_gate_failure os-release-writable-etc-parent
+
+create_os_case writable-lib-parent
+chmod 0777 "$os_case_root/usr/lib"
+expect_os_gate_failure os-release-writable-lib-parent
+
+create_os_case nonroot-link
+chown -h "minios:$target_uid" "$os_case_path"
+expect_os_gate_failure os-release-nonroot-link
+
+expect_gate_failure wrong-os "${common[@]}" MINIOS_OS_RELEASE_FILE="$bad_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only
 expect_gate_failure missing-identity "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME= MINIOS_CONTAINER= "$script" --system-only
 expect_gate_failure wrong-distro "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=Ubuntu "$script" --system-only
 expect_gate_failure root-target "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only --target-user root
@@ -954,7 +1056,7 @@ expect_gate_failure missing-user-wrong-os \
     "${common[@]}" FAKE_MINIOS_MODE=missing "FAKE_USER_STATE=$missing_state" \
     "FAKE_EXPECTED_HOME=$missing_home" "FAKE_USERADD_MODE=success" \
     "MINIOS_USERADD_EXECUTABLE=$root/fake/useradd" "MINIOS_EXPECTED_MINIOS_HOME=$missing_home" \
-    MINIOS_OS_RELEASE_FILE="$root/bad-os-release" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    MINIOS_OS_RELEASE_FILE="$bad_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
     "$script" --system-only
 [[ "$(wc -l <"$useradd_log")" == "$before_useradd" ]] || { printf 'useradd ran before OS gate\n' >&2; exit 1; }
 
