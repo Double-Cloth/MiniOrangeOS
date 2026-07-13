@@ -120,8 +120,10 @@ WSL_OWNERSHIP_SOURCE_CHAIN = re.compile(
     r"[^\r\n]*\bDistributionName\b[^\r\n]*-ceq\s+\$DistroName\b"
     r"[^\r\n]*Select-Object\s+-ExpandProperty\s+PSPath(?:\s+-First\s+1)?"
     r"\s*$\s*"
-    r"^\s*\$RegisteredBasePath\s*=\s*\(\s*Get-ItemProperty\s+"
-    r"-LiteralPath\s+\$LxssKey\s*\)\.BasePath\s*$"
+    r"^\s*\$Registration\s*=\s*Get-ItemProperty\s+"
+    r"-LiteralPath\s+\$LxssKey\s*$\s*"
+    r"^\s*\$RegisteredBasePath\s*=\s*\$Registration\.BasePath\s*$\s*"
+    r"^\s*\$RegisteredVersion\s*=\s*\$Registration\.Version\s*$"
 )
 
 
@@ -453,7 +455,9 @@ class EnvironmentContractTests(unittest.TestCase):
         valid_chain = r"""
 $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
 $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
-$RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+$Registration = Get-ItemProperty -LiteralPath $LxssKey
+$RegisteredBasePath = $Registration.BasePath
+$RegisteredVersion = $Registration.Version
 """
         unrelated_bypass = r"""
 $Unused = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss').BasePath
@@ -661,6 +665,58 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path|package_lock_partial)",
         )
         self.assertNotIn("NOPASSWD", content)
+
+    def test_wsl_ownership_gates_require_lxss_version_two(self) -> None:
+        for relative_path in (
+            "environment/wsl/create.ps1",
+            "environment/wsl/enter.ps1",
+            "environment/wsl/backup.ps1",
+            "environment/wsl/destroy.ps1",
+        ):
+            with self.subTest(path=relative_path):
+                content = self._without_comments(
+                    self._read_required(relative_path), powershell=True
+                )
+                ownership = self._function_body(
+                    content, "Assert-WslDistributionOwnership", powershell=True
+                )
+                self.assertRegex(ownership, r"(?i)\.Version\b")
+                self.assertRegex(ownership, r"(?i)(?:-ne|-cne)\s*2\b")
+
+    def test_bootstrap_and_verify_require_runtime_isolation_facts(self) -> None:
+        for relative_path in (
+            "environment/bootstrap-inside.sh",
+            "environment/verify.sh",
+        ):
+            with self.subTest(path=relative_path):
+                content = self._without_comments(self._read_required(relative_path))
+                for token in (
+                    "/proc/sys/kernel/osrelease",
+                    "/proc/version",
+                    "WSL2",
+                    "/proc/1/cgroup",
+                    "/proc/1/mountinfo",
+                    "/.dockerenv",
+                    "/run/.containerenv",
+                ):
+                    self.assertIn(token, content)
+
+    def test_package_state_is_prepared_and_validated_before_apt(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        system_phase = self._function_body(
+            content, "run_system_phase", powershell=False
+        )
+        prepare_position = system_phase.find("--prepare-package-state")
+        apt_position = system_phase.find("apt-get update")
+        self.assertGreaterEqual(prepare_position, 0)
+        self.assertGreater(apt_position, prepare_position)
+        state_gate = self._function_body(
+            content, "validate_package_state_directory", powershell=False
+        )
+        for token in ("realpath", "stat", "target_uid", "022", "symlink"):
+            self.assertIn(token, state_gate)
 
     def test_bootstrap_gates_identity_user_and_environment_before_mutation(
         self,

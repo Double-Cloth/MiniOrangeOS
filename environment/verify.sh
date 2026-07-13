@@ -21,6 +21,53 @@ record_fail() {
     failure_count=$((failure_count + 1))
 }
 
+runtime_fact_is_trusted() {
+    local path="$1"
+    local item_type
+    local item_uid
+    local item_mode
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path") || return $?
+    [[ ( "$item_type" == 'regular file' || "$item_type" == 'regular empty file' ) \
+        && "$item_uid" == '0' \
+        && "$item_mode" =~ ^[0-7]{3,4}$ \
+        && $((8#$item_mode & 8#022)) -eq 0 ]]
+}
+
+verify_wsl2_runtime_identity() {
+    local osrelease
+    local version
+    runtime_fact_is_trusted /proc/sys/kernel/osrelease || return 1
+    runtime_fact_is_trusted /proc/version || return 1
+    runtime_fact_is_trusted /proc/sys/fs/binfmt_misc/WSLInterop || return 1
+    osrelease="$(</proc/sys/kernel/osrelease)"
+    version="$(</proc/version)"
+    [[ "${osrelease,,}" == *microsoft* \
+        && "${osrelease,,}" == *wsl2* \
+        && "${version,,}" == *microsoft* \
+        && "${version,,}" == *wsl2* ]]
+}
+
+verify_container_runtime_identity() {
+    local marker=''
+    local cgroup
+    local mountinfo
+    runtime_fact_is_trusted /proc/1/cgroup || return 1
+    runtime_fact_is_trusted /proc/1/mountinfo || return 1
+    if runtime_fact_is_trusted /.dockerenv; then
+        marker='/.dockerenv'
+    elif runtime_fact_is_trusted /run/.containerenv; then
+        marker='/run/.containerenv'
+    else
+        return 1
+    fi
+    cgroup="$(</proc/1/cgroup)"
+    mountinfo="$(</proc/1/mountinfo)"
+    [[ -n "$marker" \
+        && ( "${cgroup,,}" =~ (docker|libpod|podman|containerd|kubepods) \
+            || "${mountinfo,,}" =~ (\ -\ overlay\ |\ -\ fuse\.fuse-overlayfs\ |containers/storage) ) ]]
+}
+
 readonly TOOLCHAIN_BIN="$MINIOS_ENV_ROOT/toolchain/bin"
 PATH="$TOOLCHAIN_BIN:$PATH"
 export PATH
@@ -43,15 +90,17 @@ else
     record_fail "ubuntu" "需要 Ubuntu 24.04，实际 ${ID:-unknown} $ubuntu_version"
 fi
 
-if [[ "${MINIOS_CONTAINER:-0}" == "1" ]]; then
+if [[ "${MINIOS_CONTAINER:-}" == "1" ]] && verify_container_runtime_identity; then
     environment_kind="container"
     record_pass "isolation" "project-container"
-elif [[ "${WSL_DISTRO_NAME:-}" == "$MINIOS_WSL_DISTRO" ]]; then
+elif [[ -z "${MINIOS_CONTAINER:-}" \
+    && "${WSL_DISTRO_NAME:-}" =~ ^MiniOrangeOS-Dev(-Test-[A-Za-z0-9][A-Za-z0-9_-]*)?$ \
+    && verify_wsl2_runtime_identity ]]; then
     environment_kind="wsl"
     record_pass "isolation" "$WSL_DISTRO_NAME"
 else
     environment_kind="unknown"
-    record_fail "isolation" "需要 $MINIOS_WSL_DISTRO 或 MINIOS_CONTAINER=1"
+    record_fail "isolation" "需要可信 $MINIOS_WSL_DISTRO WSL2 或真实 OCI container runtime"
 fi
 printf 'environment_kind=%s\n' "$environment_kind"
 

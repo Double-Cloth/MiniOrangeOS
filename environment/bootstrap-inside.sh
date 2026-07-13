@@ -27,6 +27,7 @@ environment_root=''
 wsl_conf_file=''
 package_lock_partial=''
 test_root=''
+runtime_probe_root=''
 
 usage() {
     printf '用法：%s [--system-only|--toolchain-only] [--target-user USER]\n' "${0##*/}" >&2
@@ -46,7 +47,7 @@ trap cleanup_package_lock_partial EXIT
 
 while (($# > 0)); do
     case "$1" in
-        --system-only|--toolchain-only|--write-package-lock)
+        --system-only|--toolchain-only|--prepare-package-state|--write-package-lock)
             if [[ "$mode" != 'all' ]]; then
                 fail "重复或冲突的阶段参数：$1"
                 exit 2
@@ -76,7 +77,7 @@ is_test_path() {
 
 validate_test_configuration() {
     if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
-        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}" ]]; then
+        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}${MINIOS_RUNTIME_PROBE_ROOT:-}" ]]; then
             fail '测试覆盖仅允许在 MINIOS_BOOTSTRAP_TEST_MODE=1 中使用'
             return 1
         fi
@@ -106,6 +107,21 @@ validate_test_configuration() {
         return 1
     fi
     test_root="$canonical_root"
+
+    local requested_runtime_root="${MINIOS_RUNTIME_PROBE_ROOT:-}"
+    local canonical_runtime_root
+    if [[ -z "$requested_runtime_root" || -L "$requested_runtime_root" ]]; then
+        fail '测试模式必须提供非 symlink 的 runtime probe root'
+        return 1
+    fi
+    canonical_runtime_root="$(realpath -e -- "$requested_runtime_root")" || return $?
+    if [[ "$requested_runtime_root" != "$canonical_runtime_root" ]] \
+        || ! is_test_path "$canonical_runtime_root"; then
+        fail "runtime probe root 必须是测试根内的规范路径：$requested_runtime_root"
+        return 1
+    fi
+    validate_root_owned_safe_chain "$test_root" "$canonical_runtime_root" || return $?
+    runtime_probe_root="$canonical_runtime_root"
 }
 
 select_test_or_production_file() {
@@ -335,8 +351,93 @@ validate_ubuntu_release() {
     fi
 }
 
+runtime_probe_path() {
+    local production_path="$1"
+    if [[ -n "$runtime_probe_root" ]]; then
+        printf '%s%s\n' "$runtime_probe_root" "$production_path"
+    else
+        printf '%s\n' "$production_path"
+    fi
+}
+
+validate_runtime_probe_file() {
+    local path="$1"
+    local expected_owner="${2:-0}"
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        fail "runtime fact 必须是非 symlink 普通文件：$path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path")
+    if [[ ( "$item_type" != 'regular file' && "$item_type" != 'regular empty file' ) \
+        || "$item_uid" != "$expected_owner" \
+        || ! "$item_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$item_mode & 8#022)) -ne 0 ]]; then
+        fail "runtime fact owner/type/mode 不可信：$path type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+validate_wsl2_runtime_identity() {
+    local osrelease_path
+    local version_path
+    local interop_path
+    local osrelease
+    local version
+    osrelease_path="$(runtime_probe_path /proc/sys/kernel/osrelease)" || return $?
+    version_path="$(runtime_probe_path /proc/version)" || return $?
+    interop_path="$(runtime_probe_path /proc/sys/fs/binfmt_misc/WSLInterop)" || return $?
+    validate_runtime_probe_file "$osrelease_path" || return $?
+    validate_runtime_probe_file "$version_path" || return $?
+    validate_runtime_probe_file "$interop_path" || return $?
+    osrelease="$(<"$osrelease_path")"
+    version="$(<"$version_path")"
+    if [[ "${osrelease,,}" != *microsoft* \
+        || "${osrelease,,}" != *wsl2* \
+        || "${version,,}" != *microsoft* \
+        || "${version,,}" != *wsl2* ]]; then
+        fail "WSL identity 缺少 Microsoft WSL2 kernel/runtime 事实：osrelease=$osrelease"
+        return 1
+    fi
+}
+
+validate_container_runtime_identity() {
+    local cgroup_path
+    local mountinfo_path
+    local docker_marker
+    local podman_marker
+    local marker=''
+    local cgroup
+    local mountinfo
+    cgroup_path="$(runtime_probe_path /proc/1/cgroup)" || return $?
+    mountinfo_path="$(runtime_probe_path /proc/1/mountinfo)" || return $?
+    docker_marker="$(runtime_probe_path /.dockerenv)" || return $?
+    podman_marker="$(runtime_probe_path /run/.containerenv)" || return $?
+    validate_runtime_probe_file "$cgroup_path" || return $?
+    validate_runtime_probe_file "$mountinfo_path" || return $?
+    if [[ -f "$docker_marker" && ! -L "$docker_marker" ]]; then
+        marker="$docker_marker"
+    elif [[ -f "$podman_marker" && ! -L "$podman_marker" ]]; then
+        marker="$podman_marker"
+    else
+        fail '容器 identity 缺少可信 /.dockerenv 或 /run/.containerenv marker'
+        return 1
+    fi
+    validate_runtime_probe_file "$marker" || return $?
+    cgroup="$(<"$cgroup_path")"
+    mountinfo="$(<"$mountinfo_path")"
+    if [[ ! "${cgroup,,}" =~ (docker|libpod|podman|containerd|kubepods) \
+        && ! "${mountinfo,,}" =~ (\ -\ overlay\ |\ -\ fuse\.fuse-overlayfs\ |containers/storage) ]]; then
+        fail '容器 identity 缺少 OCI cgroup 或容器 rootfs mount 事实'
+        return 1
+    fi
+}
+
 validate_isolation_identity() {
     if [[ "${MINIOS_CONTAINER:-}" == '1' ]]; then
+        validate_container_runtime_identity || return $?
         environment_kind='container'
         return
     fi
@@ -349,6 +450,7 @@ validate_isolation_identity() {
         fail "只允许项目 WSL 发行版或 MINIOS_CONTAINER=1：${WSL_DISTRO_NAME:-missing}"
         return 1
     fi
+    validate_wsl2_runtime_identity || return $?
     environment_kind='wsl'
 }
 
@@ -661,12 +763,98 @@ validate_wsl_configuration_path() {
 }
 
 preflight() {
-    validate_test_configuration
-    validate_ubuntu_release
-    validate_isolation_identity
-    ensure_target_user
-    validate_environment_root
-    validate_wsl_configuration_path
+    validate_test_configuration || return $?
+    validate_ubuntu_release || return $?
+    validate_isolation_identity || return $?
+    ensure_target_user || return $?
+    validate_environment_root || return $?
+    validate_wsl_configuration_path || return $?
+}
+
+validate_package_state_directory() {
+    local state_directory="$environment_root/state"
+    local resolved_state
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        fail "package state 目录不存在：$state_directory"
+        return 1
+    fi
+    if [[ ! -d "$state_directory" || -L "$state_directory" ]]; then
+        fail "package state 必须是非 symlink 普通目录：$state_directory"
+        return 1
+    fi
+    assert_no_symlink_components "$state_directory" || return $?
+    resolved_state="$(realpath -e -- "$state_directory")" || return $?
+    if [[ "$resolved_state" != "$state_directory" \
+        || "$state_directory" != "$environment_root/state" ]]; then
+        fail "package state canonical 边界不匹配：$state_directory"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$state_directory")
+    if [[ "$item_type" != 'directory' || "$item_uid" != "$target_uid" \
+        || ! "$item_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$item_mode & 8#022)) -ne 0 ]]; then
+        fail "package state 必须 target-owned 且组/其他用户不可写：type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+validate_package_lock_file() {
+    local lock_path="$environment_root/state/apt-packages.lock"
+    local resolved_lock
+    local item_type
+    local item_uid
+    local item_mode
+    if [[ ! -e "$lock_path" && ! -L "$lock_path" ]]; then
+        return 0
+    fi
+    if [[ ! -f "$lock_path" || -L "$lock_path" ]]; then
+        fail "package lock 必须是非 symlink 普通文件：$lock_path"
+        return 1
+    fi
+    resolved_lock="$(realpath -e -- "$lock_path")" || return $?
+    if [[ "$resolved_lock" != "$lock_path" ]]; then
+        fail "package lock canonical 边界不匹配：$lock_path"
+        return 1
+    fi
+    IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$lock_path")
+    if [[ ( "$item_type" != 'regular file' && "$item_type" != 'regular empty file' ) \
+        || "$item_uid" != "$target_uid" || "$item_mode" != '644' ]]; then
+        fail "package lock owner/type/mode 不匹配：type=$item_type uid=$item_uid mode=$item_mode"
+        return 1
+    fi
+}
+
+reject_existing_package_lock_partials() {
+    local partial
+    for partial in "$environment_root/state"/apt-packages.lock.partial.*; do
+        if [[ -e "$partial" || -L "$partial" ]]; then
+            fail "拒绝预存 package lock partial（普通文件或 symlink）：$partial"
+            return 1
+        fi
+    done
+}
+
+prepare_package_state_as_target() {
+    if ((EUID == 0)) || [[ "$(id -u)" != "$target_uid" || "$(id -un)" != "$target_user" ]]; then
+        fail 'package state 准备阶段必须由目标普通用户执行'
+        return 1
+    fi
+    validate_environment_root || return $?
+    local state_directory="$environment_root/state"
+    if [[ ! -e "$environment_root" && ! -L "$environment_root" ]]; then
+        (umask 022; mkdir -m 0755 -- "$environment_root") || return $?
+        validate_environment_root || return $?
+    fi
+    if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
+        (umask 022; mkdir -m 0755 -- "$state_directory") || return $?
+    fi
+    validate_environment_root || return $?
+    validate_package_state_directory || return $?
+    validate_package_lock_file || return $?
+    reject_existing_package_lock_partials
 }
 
 write_package_lock_as_target() {
@@ -678,19 +866,43 @@ write_package_lock_as_target() {
         fail '包锁写入阶段必须是目标普通用户'
         return 1
     fi
-    validate_environment_root
-    mkdir -p -- "$environment_root/state"
-    validate_environment_root
+    validate_environment_root || return $?
+    validate_package_state_directory || return $?
+    validate_package_lock_file || return $?
+    reject_existing_package_lock_partials || return $?
     local state_directory="$environment_root/state"
     local lock_path="$state_directory/apt-packages.lock"
-    package_lock_partial="$(mktemp "$state_directory/apt-packages.lock.partial.XXXXXX")"
+    package_lock_partial="$(mktemp "$state_directory/apt-packages.lock.partial.XXXXXX")" || return $?
+    local partial_type
+    local partial_uid
+    local partial_mode
+    local resolved_partial
+    resolved_partial="$(realpath -e -- "$package_lock_partial")" || return $?
+    IFS='|' read -r partial_type partial_uid partial_mode < <(stat -c '%F|%u|%a' -- "$package_lock_partial")
+    if [[ "$resolved_partial" != "$package_lock_partial" \
+        || "$package_lock_partial" != "$state_directory"/apt-packages.lock.partial.* \
+        || ( "$partial_type" != 'regular file' && "$partial_type" != 'regular empty file' ) \
+        || "$partial_uid" != "$target_uid" || "$partial_mode" != '600' ]]; then
+        fail "mktemp 未生成可信 package lock partial：$package_lock_partial"
+        return 1
+    fi
     local package
     for package in "${APPROVED_PACKAGES[@]}"; do
         dpkg-query -W -f='${Package}=${Version}\n' "$package" >>"$package_lock_partial"
     done
     chmod 0644 "$package_lock_partial"
+    validate_package_state_directory || return $?
+    validate_package_lock_file || return $?
+    IFS='|' read -r partial_type partial_uid partial_mode < <(stat -c '%F|%u|%a' -- "$package_lock_partial")
+    if [[ ( "$partial_type" != 'regular file' && "$partial_type" != 'regular empty file' ) \
+        || "$partial_uid" != "$target_uid" || "$partial_mode" != '644' \
+        || -L "$package_lock_partial" ]]; then
+        fail "package lock partial 写入后边界不可信：$package_lock_partial"
+        return 1
+    fi
     mv -- "$package_lock_partial" "$lock_path"
     package_lock_partial=''
+    validate_package_lock_file
 }
 
 identity_environment_arguments() {
@@ -704,6 +916,7 @@ identity_environment_arguments() {
         "MINIOS_EXPECTED_MINIOS_HOME=${MINIOS_EXPECTED_MINIOS_HOME:-}" \
         "MINIOS_OS_RELEASE_FILE=${MINIOS_OS_RELEASE_FILE:-}" \
         "MINIOS_WSL_CONF_PATH=${MINIOS_WSL_CONF_PATH:-}" \
+        "MINIOS_RUNTIME_PROBE_ROOT=${MINIOS_RUNTIME_PROBE_ROOT:-}" \
         "PATH=$PATH"
 }
 
@@ -740,6 +953,7 @@ run_system_phase() {
         fail '--system-only 必须由 root 执行'
         return 1
     fi
+    run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --prepare-package-state --target-user "$target_user"
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${APPROVED_PACKAGES[@]}"
     run_as_target "$SCRIPT_DIR/bootstrap-inside.sh" --write-package-lock --target-user "$target_user"
@@ -770,6 +984,10 @@ case "$mode" in
     write-package-lock)
         preflight
         write_package_lock_as_target
+        ;;
+    prepare-package-state)
+        preflight
+        prepare_package_state_as_target
         ;;
     all)
         preflight

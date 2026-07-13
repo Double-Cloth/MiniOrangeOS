@@ -53,7 +53,8 @@ function Invoke-WithFakeLxss {
         [string]$ScriptPath,
         [hashtable]$Arguments,
         [string]$RegisteredName,
-        [string]$RegisteredBasePath
+        [string]$RegisteredBasePath,
+        [int]$RegisteredVersion = 2
     )
 
     function Get-ChildItem {
@@ -65,6 +66,7 @@ function Invoke-WithFakeLxss {
         [pscustomobject]@{
             DistributionName = $RegisteredName
             BasePath = $RegisteredBasePath
+            Version = $RegisteredVersion
         }
     }
     function wsl.exe {
@@ -581,23 +583,16 @@ try {
         Assert-True ((Read-FakeLog $FakeLog) -match "-d $([regex]::Escape($DistroName))") '精确名称未进入 fake 发行版'
     }
 
-    Invoke-Test 'enter 复杂命令参数逐项保持不变' {
+    Invoke-Test 'enter 单个命令字符串通过 bash -lc 精确保持' {
         $ArgumentsLog = Join-Path $TemporaryRoot 'wsl-arguments.log'
         $env:FAKE_WSL_JSON_LOG = $ArgumentsLog
         $env:FAKE_WSL_LIST = $DistroName
-        $ComplexCommand = @(
-            'bash',
-            '-lc',
-            'printf-%s-$HOME; echo a b',
-            '--',
-            'semi;colon',
-            'space value'
-        )
+        $ComplexCommand = 'printf "%s" "$HOME"; printf " second value"'
         $Arguments = @{
             DistroName = $DistroName
             AuthorizedRoot = $AuthorizedRoot
             WslExecutable = $FakeWslArguments
-            Command = $ComplexCommand
+            Command = @($ComplexCommand)
         }
         Invoke-WithFakeLxss $EnterScript $Arguments $DistroName $InstallPath
         $Lines = [IO.File]::ReadAllLines($ArgumentsLog)
@@ -606,9 +601,40 @@ try {
         $ActualArguments = @($Lines[($LastCall + 1)..($Lines.Length - 1)] | ForEach-Object {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
         })
-        $ExpectedArguments = @('-d', $DistroName, '--') + $ComplexCommand
-        Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("复杂参数发生变化：" + ($ActualArguments -join '|'))
+        $ExpectedArguments = @('-d', $DistroName, '--', 'bash', '-lc', $ComplexCommand)
+        Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("命令字符串边界发生变化：" + ($ActualArguments -join '|'))
         Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
+    }
+
+    Invoke-Test 'enter 拒绝含糊的多值 Command' {
+        Reset-FakeLog $FakeLog
+        $env:FAKE_WSL_LIST = $DistroName
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWsl
+            Command = @('printf one', 'printf two')
+        }
+        $Thrown = $false
+        try { Invoke-WithFakeLxss $EnterScript $Arguments $DistroName $InstallPath } catch { $Thrown = $true }
+        Assert-True $Thrown '多值 Command 应被拒绝'
+        Assert-True ((Read-FakeLog $FakeLog) -notmatch '(?m)^-d ') '多值 Command 仍进入发行版'
+    }
+
+    Invoke-Test '已有 WSL1 注册项拒绝且不 bootstrap' {
+        Reset-FakeLog $FakeLog
+        $env:FAKE_WSL_LIST = $DistroName
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = 'wsl.exe'
+            Bootstrap = $true
+        }
+        $Thrown = $false
+        try { Invoke-WithFakeLxss $CreateScript $Arguments $DistroName $InstallPath 1 } catch { $Thrown = $true }
+        Assert-True $Thrown 'WSL1 注册项应被拒绝'
+        $Log = Read-FakeLog $FakeLog
+        Assert-True ($Log -notmatch '--import|(?m)^-d ') 'WSL1 注册项仍触发 import/bootstrap'
     }
 
     Invoke-Test '真实 MiniOrangeOS-Dev 名称和 BasePath 只读验证' {
@@ -618,8 +644,10 @@ try {
         $Key = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq 'MiniOrangeOS-Dev' } | Select-Object -First 1
         Assert-True ($null -ne $Key) '未找到真实发行版 Lxss 注册项'
         $BasePath = [IO.Path]::GetFullPath((Get-ItemProperty -LiteralPath $Key.PSPath).BasePath)
+        $Version = (Get-ItemProperty -LiteralPath $Key.PSPath).Version
         $Expected = [IO.Path]::GetFullPath('D:\ApplicationData\MiniOrangeOS\rootfs')
         Assert-True ($BasePath -ceq $Expected) "真实 BasePath 不匹配：$BasePath"
+        Assert-True ($Version -eq 2) "真实发行版不是 WSL2：Version=$Version"
         $Current = [IO.Path]::GetPathRoot($Expected)
         foreach ($Part in $Expected.Substring($Current.Length).Split([IO.Path]::DirectorySeparatorChar)) {
             if (-not $Part) { continue }
@@ -631,8 +659,14 @@ try {
         }
     }
 
+    Invoke-Test '真实 enter 单条命令使用 bash -lc 执行' {
+        & $EnterScript -Command 'test "$(printf enter-ok && printf second)" = enter-oksecond'
+    }
+
     Invoke-Test 'bootstrap 阶段拒绝错误权限且不触发 apt 或工具链' {
-        $BootstrapPath = '/mnt/d/DC/program-projects/OTHER/MiniOrangeOS/environment/bootstrap-inside.sh'
+        $BootstrapFullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'environment\bootstrap-inside.sh'))
+        $BootstrapDrive = $BootstrapFullPath.Substring(0, 1).ToLowerInvariant()
+        $BootstrapPath = "/mnt/$BootstrapDrive/" + $BootstrapFullPath.Substring(3).Replace('\', '/')
         $PreviousErrorAction = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
@@ -658,7 +692,7 @@ try {
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_script='/mnt/d/DC/program-projects/OTHER/MiniOrangeOS/environment/bootstrap-inside.sh'
+source_script='__MINIOS_BOOTSTRAP_SOURCE__'
 for token in MINIOS_WSL_CONF_PATH --write-package-lock validate_isolation_identity validate_environment_root run_as_target; do
     grep -Fq -- "$token" "$source_script" || {
         printf 'RED missing bootstrap safety token: %s\n' "$token" >&2
@@ -733,6 +767,26 @@ cp -- "$root/good-os-release" "$standard_os_root/usr/lib/os-release"
 chmod 0755 "$standard_os_root" "$standard_os_root/etc" "$standard_os_root/usr" "$standard_os_root/usr/lib"
 chmod 0644 "$standard_os_root/usr/lib/os-release"
 ln -s -- ../usr/lib/os-release "$standard_os_root/etc/os-release"
+
+wsl2_probe_root="$root/runtime-wsl2"
+mkdir -p -- "$wsl2_probe_root/proc/sys/kernel" "$wsl2_probe_root/proc/sys/fs/binfmt_misc"
+printf '%s\n' '6.6.87.2-microsoft-standard-WSL2' >"$wsl2_probe_root/proc/sys/kernel/osrelease"
+printf '%s\n' 'Linux version 6.6.87.2-microsoft-standard-WSL2' >"$wsl2_probe_root/proc/version"
+: >"$wsl2_probe_root/proc/sys/fs/binfmt_misc/WSLInterop"
+chmod -R go-w -- "$wsl2_probe_root"
+
+native_probe_root="$root/runtime-native"
+mkdir -p -- "$native_probe_root/proc/sys/kernel" "$native_probe_root/proc/sys/fs/binfmt_misc"
+printf '%s\n' '6.8.0-generic' >"$native_probe_root/proc/sys/kernel/osrelease"
+printf '%s\n' 'Linux version 6.8.0-generic' >"$native_probe_root/proc/version"
+chmod -R go-w -- "$native_probe_root"
+
+container_probe_root="$root/runtime-container"
+mkdir -p -- "$container_probe_root/proc/1" "$container_probe_root/run"
+printf '%s\n' '0::/libpod-test.scope' >"$container_probe_root/proc/1/cgroup"
+printf '%s\n' '1 0 0:1 / / rw - overlay overlay rw' >"$container_probe_root/proc/1/mountinfo"
+: >"$container_probe_root/run/.containerenv"
+chmod -R go-w -- "$container_probe_root"
 
 bad_os_root="$root/bad-os-root"
 mkdir -p -- "$bad_os_root/etc" "$bad_os_root/usr/lib"
@@ -886,6 +940,7 @@ common=(
     "FAKE_USERADD_LOG=$FAKE_USERADD_LOG"
     MINIOS_BOOTSTRAP_TEST_MODE=1
     "MINIOS_BOOTSTRAP_TEST_ROOT=$root"
+    "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root"
     "MINIOS_WSL_CONF_PATH=$wsl_conf"
 )
 
@@ -978,6 +1033,8 @@ expect_os_gate_failure os-release-nonroot-link
 expect_gate_failure wrong-os "${common[@]}" MINIOS_OS_RELEASE_FILE="$bad_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only
 expect_gate_failure missing-identity "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME= MINIOS_CONTAINER= "$script" --system-only
 expect_gate_failure wrong-distro "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=Ubuntu "$script" --system-only
+expect_gate_failure native-wsl-name-spoof "${common[@]}" MINIOS_RUNTIME_PROBE_ROOT="$native_probe_root" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only
+expect_gate_failure container-env-spoof "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME= MINIOS_CONTAINER=1 "$script" --system-only
 expect_gate_failure root-target "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only --target-user root
 expect_gate_failure uid0-alias "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only --target-user evil
 expect_gate_failure wsl-conf-traversal "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev MINIOS_WSL_CONF_PATH="$root/logs/../protected-wsl-conf" "$script" --system-only
@@ -1033,7 +1090,7 @@ tail -n 1 "$useradd_log" | grep -Fqx -- 'useradd <--create-home> <--shell> </bin
     "FAKE_MINIOS_MODE=missing" "FAKE_USER_STATE=$missing_state" \
     "FAKE_EXPECTED_HOME=$missing_home" "FAKE_WRONG_HOME=$missing_wrong_home" \
     "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_OS_RELEASE_FILE=$good_os" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$missing_home/environment" \
     "$script" --toolchain-only --target-user minios
 grep -Fq -- "root=$missing_home/environment" "$tool_log"
@@ -1071,7 +1128,7 @@ expect_gate_failure container-missing-user \
 if /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" FAKE_MINIOS_MODE=missing \
     "FAKE_USER_STATE=$missing_state" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_OS_RELEASE_FILE=$good_os" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --toolchain-only --target-user minios; then
     printf 'toolchain-only created missing user\n' >&2
     exit 1
@@ -1171,17 +1228,35 @@ chown root:root "$root/home/minios/.local" "$root/home/minios/.local/share"
 chmod 0755 "$root/home/minios/.local" "$root/home/minios/.local/share"
 chown "minios:$target_uid" "$environment_root"
 chmod 0755 "$environment_root"
-positive_apt_before="$(apt_lines)"
+
+state_path="$environment_root/state"
+exercise_state_failure() {
+    local description="$1"
+    shift
+    rm -rf -- "$state_path"
+    "$@"
+    expect_gate_failure "$description" "${positive[@]}" "$script" --system-only
+}
 positive=(
     "${common[@]}"
     "MINIOS_OS_RELEASE_FILE=$good_os"
     WSL_DISTRO_NAME=MiniOrangeOS-Dev
     "MINIOS_ENV_ROOT=$environment_root"
 )
+exercise_state_failure state-symlink ln -s -- "$protected" "$state_path"
+exercise_state_failure state-nondirectory sh -c 'printf bad >"$1"' sh "$state_path"
+exercise_state_failure state-wrong-owner sh -c 'mkdir -- "$1"; chown root:root "$1"; chmod 0755 "$1"' sh "$state_path"
+exercise_state_failure state-writable sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; chmod 0775 "$1"' sh "$state_path" "$target_uid"
+exercise_state_failure lock-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; ln -s -- "$3" "$1/apt-packages.lock"' sh "$state_path" "$target_uid" "$protected/sentinel"
+exercise_state_failure partial-symlink sh -c 'mkdir -- "$1"; chown "minios:$2" "$1"; ln -s -- "$3" "$1/apt-packages.lock.partial.attack"' sh "$state_path" "$target_uid" "$protected/sentinel"
+rm -rf -- "$state_path"
+positive_apt_before="$(apt_lines)"
 "${positive[@]}" "$script" --system-only
 lock="$environment_root/state/apt-packages.lock"
 [[ -s "$lock" && ! -L "$lock" ]] || { printf 'package lock missing\n' >&2; exit 1; }
 [[ "$(stat -c %u "$lock")" == "$target_uid" ]] || { printf 'package lock owner mismatch\n' >&2; exit 1; }
+[[ "$(stat -c %a "$lock")" == 644 ]] || { printf 'package lock mode mismatch\n' >&2; exit 1; }
+[[ "$(stat -c '%F|%u|%a' "$environment_root/state")" == "directory|$target_uid|755" ]] || { printf 'state metadata mismatch\n' >&2; exit 1; }
 approved_packages=(build-essential bison flex libgmp-dev libmpfr-dev libmpc-dev texinfo nasm qemu-system-x86 qemu-utils gdb python3 python3-venv ca-certificates curl xz-utils sudo)
 [[ "$(wc -l <"$lock")" == "${#approved_packages[@]}" ]] || { printf 'package lock line count mismatch\n' >&2; exit 1; }
 for package in "${approved_packages[@]}"; do
@@ -1212,14 +1287,14 @@ if missing_final_output="$("${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_
     exit 1
 fi
 [[ "$missing_final_output" == *'Permission denied'* || "$missing_final_output" == *'FAIL'* ]] || { printf 'missing final failure lacked clear diagnostic: %s\n' "$missing_final_output" >&2; exit 1; }
-[[ "$(apt_lines)" == "$((missing_final_apt_before + 2))" ]] || { printf 'missing final did not fail in lowered phase\n' >&2; exit 1; }
+[[ "$(apt_lines)" == "$missing_final_apt_before" ]] || { printf 'missing final reached apt before state preflight\n' >&2; exit 1; }
 [[ ! -e "$missing_final_root" && ! -L "$missing_final_root" ]] || { printf 'root wrote missing user environment root\n' >&2; exit 1; }
 printf 'checkpoint=root-ancestor-missing-final\n'
 
 /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" \
     "MINIOS_OS_RELEASE_FILE=$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
     "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --toolchain-only --target-user minios
@@ -1231,7 +1306,7 @@ before_hint="$(apt_lines)"
 hint_output="$(/usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     MINIOS_BOOTSTRAP_TEST_MODE=1 "MINIOS_OS_RELEASE_FILE=$good_os" \
-    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --target-user minios 2>&1 || true)"
 [[ "$hint_output" == *'wsl.exe -d MiniOrangeOS-Dev -u root'* ]] || { printf 'hint output missing command: %s\n' "$hint_output" >&2; exit 1; }
@@ -1243,7 +1318,7 @@ container_root="$root/container-root"
 mkdir -p -- "$container_root"
 chown "minios:$target_uid" "$container_root"
 container_before="$(test -e "$wsl_conf" && sha256sum "$wsl_conf")"
-"${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" MINIOS_CONTAINER=1 \
+"${common[@]}" MINIOS_RUNTIME_PROBE_ROOT="$container_probe_root" MINIOS_OS_RELEASE_FILE="$good_os" MINIOS_CONTAINER=1 \
     MINIOS_ENV_ROOT="$container_root" "$script" --system-only
 container_after="$(test -e "$wsl_conf" && sha256sum "$wsl_conf")"
 [[ "$container_before" == "$container_after" ]] || { printf 'container changed wsl.conf\n' >&2; exit 1; }
@@ -1252,6 +1327,10 @@ printf 'checkpoint=container\n'
 
 printf 'bootstrap_fake_result=PASS\n'
 '@
+        $BootstrapFullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'environment\bootstrap-inside.sh'))
+        $BootstrapDrive = $BootstrapFullPath.Substring(0, 1).ToLowerInvariant()
+        $BootstrapWslPath = "/mnt/$BootstrapDrive/" + $BootstrapFullPath.Substring(3).Replace('\', '/')
+        $Harness = $Harness.Replace('__MINIOS_BOOTSTRAP_SOURCE__', $BootstrapWslPath)
         [IO.File]::WriteAllText($HarnessPath, $Harness, [Text.UTF8Encoding]::new($false))
         $HarnessFullPath = [IO.Path]::GetFullPath($HarnessPath)
         $HarnessDrive = $HarnessFullPath.Substring(0, 1).ToLowerInvariant()
