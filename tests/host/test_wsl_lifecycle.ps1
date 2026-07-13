@@ -76,6 +76,9 @@ function Invoke-WithFakeLxss {
         if ($Arguments.Count -ge 2 -and $Arguments[0] -ceq '--list') {
             Write-Output $env:FAKE_WSL_LIST
         }
+        if ($Arguments.Count -ge 2 -and $Arguments[0] -ceq '--terminate' -and $env:FAKE_WSL_TERMINATE_PARTIAL) {
+            [IO.File]::WriteAllText($env:FAKE_WSL_TERMINATE_PARTIAL, 'concurrent-unknown', [Text.Encoding]::UTF8)
+        }
         if ($Arguments.Count -ge 3 -and $Arguments[0] -ceq '--export') {
             $Partial = $Arguments[2]
             switch ($env:FAKE_WSL_EXPORT_MODE) {
@@ -531,6 +534,24 @@ try {
         Assert-True ([IO.File]::ReadAllText($PreexistingPartial) -eq 'unknown') '预存 partial 被改写'
         Assert-True ((Read-FakeLog $FakeLog) -notmatch '--terminate|--export') '预存 partial 仍触发后端'
         Remove-Item -LiteralPath $PreexistingPartial -Force
+
+        Reset-FakeLog $FakeLog
+        $TerminateRaceExport = Join-Path $Exports 'terminate-race.tar'
+        $TerminateRacePartial = $TerminateRaceExport + '.partial'
+        $env:FAKE_WSL_TERMINATE_PARTIAL = $TerminateRacePartial
+        $RaceArguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = 'wsl.exe'
+            ExportPath = $TerminateRaceExport
+        }
+        $RaceThrown = $false
+        try { Invoke-WithFakeLxss $BackupScript $RaceArguments $DistroName $InstallPath } catch { $RaceThrown = $true }
+        Assert-True $RaceThrown 'terminate 后出现 partial 应拒绝'
+        Assert-True ([IO.File]::ReadAllText($TerminateRacePartial) -eq 'concurrent-unknown') 'terminate 竞态 partial 被删除或改写'
+        Assert-True ((Read-FakeLog $FakeLog) -notmatch '--export') 'terminate 竞态仍触发 export'
+        Remove-Item -LiteralPath $TerminateRacePartial -Force
+        Remove-Item Env:FAKE_WSL_TERMINATE_PARTIAL -ErrorAction SilentlyContinue
         Remove-Item Env:FAKE_WSL_EXPORT_MODE -ErrorAction SilentlyContinue
         Remove-Item Env:FAKE_WSL_JUNCTION_TARGET -ErrorAction SilentlyContinue
     }
@@ -644,11 +665,50 @@ for token in MINIOS_WSL_CONF_PATH --write-package-lock validate_isolation_identi
     }
 done
 
-root="/tmp/minios-bootstrap-test-$$"
+root=''
+old_root="/tmp/minios-bootstrap-test-$$"
+validate_test_root() {
+    local canonical
+    local metadata
+    canonical="$(/usr/bin/realpath -e -- "$root")" || return 1
+    [[ "$root" == "$canonical" \
+        && "$canonical" =~ ^/tmp/minios-bootstrap-test-[A-Za-z0-9]{8}$ \
+        && -d "$canonical" && ! -L "$canonical" ]] || return 1
+    metadata="$(/usr/bin/stat -c '%F|%u|%a' -- "$canonical")" || return 1
+    local item_type item_uid item_mode
+    IFS='|' read -r item_type item_uid item_mode <<<"$metadata"
+    [[ "$item_type" == directory && "$item_uid" == 0 \
+        && "$item_mode" =~ ^[0-7]{3,4}$ \
+        && $((8#$item_mode & 8#022)) -eq 0 ]]
+}
 cleanup() {
-    case "$root" in /tmp/minios-bootstrap-test-*) rm -rf -- "$root" ;; *) exit 97 ;; esac
+    local status=$?
+    trap - EXIT
+    if [[ -n "$root" ]]; then
+        if validate_test_root; then
+            /usr/bin/rm -rf -- "$root" || status=98
+        else
+            printf 'refusing unsafe bootstrap test cleanup: %s\n' "$root" >&2
+            status=97
+        fi
+    fi
+    if [[ -L "$old_root" && "$(/usr/bin/readlink -- "$old_root")" == '/' ]]; then
+        /usr/bin/rm -f -- "$old_root" || status=96
+    elif [[ -e "$old_root" || -L "$old_root" ]]; then
+        printf 'refusing unknown predictable test path: %s\n' "$old_root" >&2
+        status=95
+    fi
+    exit "$status"
 }
 trap cleanup EXIT
+[[ ! -e "$old_root" && ! -L "$old_root" ]] || { printf 'predictable path already occupied\n' >&2; exit 1; }
+/usr/bin/ln -s -- / "$old_root"
+export TMPDIR="$old_root"
+root="$(/usr/bin/mktemp -d /tmp/minios-bootstrap-test-XXXXXXXX)"
+validate_test_root || { printf 'unsafe atomic bootstrap test root\n' >&2; exit 1; }
+[[ "$root" != "$old_root" && -L "$old_root" ]] || { printf 'predictable symlink influenced mktemp\n' >&2; exit 1; }
+unset TMPDIR
+/usr/bin/rm -f -- "$old_root"
 mkdir -p -- "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home/minios" "$root/logs"
 chmod 0755 "$root" "$root/repo" "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home" "$root/logs"
 cp -- "$source_script" "$root/repo/environment/bootstrap-inside.sh"
@@ -670,12 +730,64 @@ cat >"$root/fake/getent" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == passwd && "$2" == minios ]]; then
-    printf 'minios:x:%s:%s::%s:/bin/bash\n' "$FAKE_TARGET_UID" "$FAKE_TARGET_UID" "$FAKE_TARGET_HOME"
+    if [[ "${FAKE_MINIOS_MODE:-existing}" == missing && ! -f "${FAKE_USER_STATE:-/nonexistent}" ]]; then
+        exit 2
+    fi
+    state="${FAKE_MINIOS_MODE:-existing}"
+    [[ "$state" != missing ]] || state="$(cat -- "$FAKE_USER_STATE")"
+    case "$state" in
+        existing)
+            printf 'minios:x:%s:%s::%s:/bin/bash\n' "$FAKE_TARGET_UID" "$FAKE_TARGET_UID" "$FAKE_TARGET_HOME"
+            ;;
+        success|symlink)
+            printf 'minios:x:%s:%s::%s:/bin/bash\n' "$FAKE_TARGET_UID" "$FAKE_TARGET_UID" "$FAKE_EXPECTED_HOME"
+            ;;
+        uid0)
+            printf 'minios:x:0:0::%s:/bin/bash\n' "$FAKE_EXPECTED_HOME"
+            ;;
+        wrong-home)
+            printf 'minios:x:%s:%s::%s:/bin/bash\n' "$FAKE_TARGET_UID" "$FAKE_TARGET_UID" "$FAKE_WRONG_HOME"
+            ;;
+        *) exit 3 ;;
+    esac
 elif [[ "$1" == passwd && "$2" == evil ]]; then
     printf 'evil:x:0:0::%s:/bin/bash\n' "$FAKE_TARGET_HOME"
 else
     exec /usr/bin/getent "$@"
 fi
+EOF
+cat >"$root/fake/useradd" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'useradd' >>"$FAKE_USERADD_LOG"
+printf ' <%s>' "$@" >>"$FAKE_USERADD_LOG"
+printf '\n' >>"$FAKE_USERADD_LOG"
+if [[ "$#" != 5 || "$1" != --create-home || "$2" != --shell \
+    || "$3" != /bin/bash || "$4" != -- || "$5" != minios ]]; then
+    exit 90
+fi
+case "${FAKE_USERADD_MODE:-success}" in
+    failure) exit 9 ;;
+    success)
+        mkdir -- "$FAKE_EXPECTED_HOME"
+        chown "minios:$FAKE_TARGET_UID" "$FAKE_EXPECTED_HOME"
+        printf 'success\n' >"$FAKE_USER_STATE"
+        ;;
+    uid0)
+        mkdir -- "$FAKE_EXPECTED_HOME"
+        printf 'uid0\n' >"$FAKE_USER_STATE"
+        ;;
+    wrong-home)
+        mkdir -- "$FAKE_WRONG_HOME"
+        chown "minios:$FAKE_TARGET_UID" "$FAKE_WRONG_HOME"
+        printf 'wrong-home\n' >"$FAKE_USER_STATE"
+        ;;
+    symlink)
+        ln -s -- "$FAKE_SYMLINK_TARGET" "$FAKE_EXPECTED_HOME"
+        printf 'symlink\n' >"$FAKE_USER_STATE"
+        ;;
+    *) exit 10 ;;
+esac
 EOF
 cat >"$root/fake/apt-get" <<'EOF'
 #!/usr/bin/env bash
@@ -712,10 +824,12 @@ chmod 0755 "$root/fake/"* "$root/repo/tools/build_toolchain.sh"
 apt_log="$root/apt.log"
 runuser_log="$root/runuser.log"
 tool_log="$root/logs/tool.log"
+useradd_log="$root/useradd.log"
 : >"$apt_log"
 : >"$runuser_log"
 : >"$tool_log"
-chmod 0666 "$apt_log" "$runuser_log" "$tool_log"
+: >"$useradd_log"
+chmod 0666 "$apt_log" "$runuser_log" "$tool_log" "$useradd_log"
 
 export PATH="$root/fake:/usr/sbin:/usr/bin:/sbin:/bin"
 export FAKE_TARGET_UID="$target_uid"
@@ -723,7 +837,9 @@ export FAKE_TARGET_HOME="$root/home/minios"
 export FAKE_APT_LOG="$apt_log"
 export FAKE_RUNUSER_LOG="$runuser_log"
 export FAKE_TOOL_LOG="$tool_log"
+export FAKE_USERADD_LOG="$useradd_log"
 export MINIOS_BOOTSTRAP_TEST_MODE=1
+export MINIOS_BOOTSTRAP_TEST_ROOT="$root"
 script="$root/repo/environment/bootstrap-inside.sh"
 good_os="$root/good-os-release"
 wsl_conf="$root/wsl.conf"
@@ -751,7 +867,9 @@ common=(
     "FAKE_APT_LOG=$FAKE_APT_LOG"
     "FAKE_RUNUSER_LOG=$FAKE_RUNUSER_LOG"
     "FAKE_TOOL_LOG=$FAKE_TOOL_LOG"
+    "FAKE_USERADD_LOG=$FAKE_USERADD_LOG"
     MINIOS_BOOTSTRAP_TEST_MODE=1
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root"
     "MINIOS_WSL_CONF_PATH=$wsl_conf"
 )
 
@@ -772,7 +890,95 @@ expect_gate_failure symlink-env "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os"
 protected_after="$(stat -c '%u|%a|%s' "$protected/sentinel")|$(cat "$protected/sentinel")"
 [[ "$protected_before" == "$protected_after" ]] || { printf 'protected target changed\n' >&2; exit 1; }
 
+prepare_missing_case() {
+    local case_name="$1"
+    missing_parent="$root/missing-$case_name"
+    missing_home="$missing_parent/minios"
+    missing_wrong_home="$missing_parent/wrong-home"
+    missing_state="$root/state-$case_name"
+    mkdir -- "$missing_parent"
+    chmod 0755 "$missing_parent"
+    rm -f -- "$missing_state"
+}
+missing_command() {
+    local useradd_mode="$1"
+    shift
+    "${common[@]}" \
+        FAKE_MINIOS_MODE=missing \
+        "FAKE_USER_STATE=$missing_state" \
+        "FAKE_EXPECTED_HOME=$missing_home" \
+        "FAKE_WRONG_HOME=$missing_wrong_home" \
+        "FAKE_SYMLINK_TARGET=$protected" \
+        "FAKE_USERADD_MODE=$useradd_mode" \
+        "MINIOS_USERADD_EXECUTABLE=$root/fake/useradd" \
+        "MINIOS_EXPECTED_MINIOS_HOME=$missing_home" \
+        MINIOS_OS_RELEASE_FILE="$good_os" \
+        WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+        "MINIOS_ENV_ROOT=$missing_home/environment" \
+        "$@"
+}
+
+prepare_missing_case success
+missing_apt_before="$(apt_lines)"
+missing_useradd_before="$(wc -l <"$useradd_log")"
+missing_command success "$script" --system-only
+[[ "$(apt_lines)" == "$((missing_apt_before + 2))" ]] || { printf 'missing user success did not run exact apt phases\n' >&2; exit 1; }
+[[ "$(wc -l <"$useradd_log")" == "$((missing_useradd_before + 1))" ]] || { printf 'useradd invocation count mismatch\n' >&2; exit 1; }
+tail -n 1 "$useradd_log" | grep -Fqx -- 'useradd <--create-home> <--shell> </bin/bash> <--> <minios>'
+[[ -s "$missing_home/environment/state/apt-packages.lock" ]]
+/usr/sbin/runuser -u minios -- env \
+    "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
+    "FAKE_MINIOS_MODE=missing" "FAKE_USER_STATE=$missing_state" \
+    "FAKE_EXPECTED_HOME=$missing_home" "FAKE_WRONG_HOME=$missing_wrong_home" \
+    "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$missing_home/environment" \
+    "$script" --toolchain-only --target-user minios
+grep -Fq -- "root=$missing_home/environment" "$tool_log"
+
+for failure_mode in failure uid0 wrong-home symlink; do
+    prepare_missing_case "$failure_mode"
+    before_apt="$(apt_lines)"
+    before_useradd="$(wc -l <"$useradd_log")"
+    if missing_command "$failure_mode" "$script" --system-only; then
+        printf 'missing user failure mode unexpectedly passed: %s\n' "$failure_mode" >&2
+        exit 1
+    fi
+    [[ "$(apt_lines)" == "$before_apt" ]] || { printf 'apt reached after useradd failure: %s\n' "$failure_mode" >&2; exit 1; }
+    [[ "$(wc -l <"$useradd_log")" == "$((before_useradd + 1))" ]] || { printf 'useradd count mismatch: %s\n' "$failure_mode" >&2; exit 1; }
+done
+
+prepare_missing_case identity-first
+before_useradd="$(wc -l <"$useradd_log")"
+expect_gate_failure missing-user-wrong-os \
+    "${common[@]}" FAKE_MINIOS_MODE=missing "FAKE_USER_STATE=$missing_state" \
+    "FAKE_EXPECTED_HOME=$missing_home" "FAKE_USERADD_MODE=success" \
+    "MINIOS_USERADD_EXECUTABLE=$root/fake/useradd" "MINIOS_EXPECTED_MINIOS_HOME=$missing_home" \
+    MINIOS_OS_RELEASE_FILE="$root/bad-os-release" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" --system-only
+[[ "$(wc -l <"$useradd_log")" == "$before_useradd" ]] || { printf 'useradd ran before OS gate\n' >&2; exit 1; }
+
+before_useradd="$(wc -l <"$useradd_log")"
+expect_gate_failure other-missing-user \
+    "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "$script" --system-only --target-user minios_missing_other
+expect_gate_failure container-missing-user \
+    "${common[@]}" FAKE_MINIOS_MODE=missing "FAKE_USER_STATE=$missing_state" \
+    MINIOS_OS_RELEASE_FILE="$good_os" MINIOS_CONTAINER=1 \
+    "$script" --system-only
+if /usr/sbin/runuser -u minios -- env \
+    "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" FAKE_MINIOS_MODE=missing \
+    "FAKE_USER_STATE=$missing_state" MINIOS_BOOTSTRAP_TEST_MODE=1 \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" "MINIOS_OS_RELEASE_FILE=$good_os" \
+    WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --toolchain-only --target-user minios; then
+    printf 'toolchain-only created missing user\n' >&2
+    exit 1
+fi
+[[ "$(wc -l <"$useradd_log")" == "$before_useradd" ]] || { printf 'forbidden phase invoked useradd\n' >&2; exit 1; }
+printf 'checkpoint=missing-user-gates\n'
+
 environment_root="$root/home/minios/custom env"
+positive_apt_before="$(apt_lines)"
 positive=(
     "${common[@]}"
     "MINIOS_OS_RELEASE_FILE=$good_os"
@@ -792,7 +998,7 @@ done
 lock_before="$(sha256sum "$lock")"
 "${positive[@]}" "$script" --system-only
 [[ "$(sha256sum "$lock")" == "$lock_before" ]] || { printf 'idempotent lock mismatch\n' >&2; exit 1; }
-[[ "$(apt_lines)" == 4 ]] || { printf 'approved apt phases missing\n' >&2; exit 1; }
+[[ "$(apt_lines)" == "$((positive_apt_before + 4))" ]] || { printf 'approved apt phases missing\n' >&2; exit 1; }
 printf 'checkpoint=lock-idempotent\n'
 grep -Fq -- '<install>' "$apt_log"
 grep -Fq -- '<build-essential>' "$apt_log"
@@ -804,6 +1010,7 @@ printf 'checkpoint=system-evidence\n'
 /usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" \
     "MINIOS_OS_RELEASE_FILE=$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
     "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --toolchain-only --target-user minios
@@ -815,6 +1022,7 @@ before_hint="$(apt_lines)"
 hint_output="$(/usr/sbin/runuser -u minios -- env \
     "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
     MINIOS_BOOTSTRAP_TEST_MODE=1 "MINIOS_OS_RELEASE_FILE=$good_os" \
+    "MINIOS_BOOTSTRAP_TEST_ROOT=$root" \
     WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$environment_root" \
     "$script" --target-user minios 2>&1 || true)"
 [[ "$hint_output" == *'wsl.exe -d MiniOrangeOS-Dev -u root'* ]] || { printf 'hint output missing command: %s\n' "$hint_output" >&2; exit 1; }

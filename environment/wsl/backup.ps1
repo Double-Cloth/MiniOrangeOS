@@ -106,6 +106,9 @@ Assert-NoReparsePointComponents $ExportsRoot
 & $WslExecutable --terminate $DistroName
 if ($LASTEXITCODE -ne 0) { throw "终止 WSL 失败：$DistroName" }
 Assert-NoReparsePointComponents $ExportsRoot
+if (Test-Path -LiteralPath $ExportPath) { throw "终止期间备份目标被占用：$ExportPath" }
+if (Test-Path -LiteralPath $PartialPath) { throw "终止期间出现未知 partial，拒绝导出：$PartialPath" }
+Assert-NoReparsePointComponents $ExportPath
 Assert-NoReparsePointComponents $PartialPath
 & $WslExecutable --export $DistroName $PartialPath
 if ($LASTEXITCODE -ne 0) {

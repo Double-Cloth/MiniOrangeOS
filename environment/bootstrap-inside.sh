@@ -26,6 +26,7 @@ target_home=''
 environment_root=''
 wsl_conf_file=''
 package_lock_partial=''
+test_root=''
 
 usage() {
     printf '用法：%s [--system-only|--toolchain-only] [--target-user USER]\n' "${0##*/}" >&2
@@ -69,7 +70,42 @@ done
 is_test_path() {
     local path="$1"
     [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" == '1' \
-        && "$path" == /tmp/minios-bootstrap-test-* ]]
+        && -n "$test_root" \
+        && ( "$path" == "$test_root" || "$path" == "$test_root"/* ) ]]
+}
+
+validate_test_configuration() {
+    if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
+        if [[ -n "${MINIOS_BOOTSTRAP_TEST_ROOT:-}${MINIOS_USERADD_EXECUTABLE:-}${MINIOS_EXPECTED_MINIOS_HOME:-}" ]]; then
+            fail '测试覆盖仅允许在 MINIOS_BOOTSTRAP_TEST_MODE=1 中使用'
+            return 1
+        fi
+        return 0
+    fi
+
+    local requested_root="${MINIOS_BOOTSTRAP_TEST_ROOT:-}"
+    local canonical_root
+    local root_type
+    local root_uid
+    local root_mode
+    if [[ -z "$requested_root" || -L "$requested_root" ]]; then
+        fail '测试模式必须提供非 symlink 的 MINIOS_BOOTSTRAP_TEST_ROOT'
+        return 1
+    fi
+    canonical_root="$(realpath -e -- "$requested_root")" || return $?
+    if [[ "$requested_root" != "$canonical_root" \
+        || ! "$canonical_root" =~ ^/tmp/minios-bootstrap-test-[A-Za-z0-9]{8}$ ]]; then
+        fail "测试根必须是 mktemp 创建的规范路径：$requested_root"
+        return 1
+    fi
+    IFS='|' read -r root_type root_uid root_mode < <(stat -c '%F|%u|%a' -- "$canonical_root")
+    if [[ "$root_type" != 'directory' || "$root_uid" != '0' \
+        || ! "$root_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$root_mode & 8#022)) -ne 0 ]]; then
+        fail "测试根必须是 root 拥有且组/其他用户不可写的普通目录：$canonical_root"
+        return 1
+    fi
+    test_root="$canonical_root"
 }
 
 select_test_or_production_file() {
@@ -212,6 +248,109 @@ resolve_target_user() {
     target_home="$(realpath -e -- "$passwd_home")"
 }
 
+validate_target_user_name() {
+    if [[ ! "$target_user" =~ ^[a-z_][a-z0-9_-]*$ || "$target_user" == 'root' ]]; then
+        fail "拒绝无效或特权目标用户：$target_user"
+        return 1
+    fi
+}
+
+select_expected_minios_home() {
+    local requested_home="${MINIOS_EXPECTED_MINIOS_HOME:-/home/minios}"
+    local canonical_home
+    canonical_home="$(realpath -m -- "$requested_home")" || return $?
+    if [[ "$requested_home" != "$canonical_home" ]]; then
+        fail "minios home 必须是规范绝对路径：$requested_home"
+        return 1
+    fi
+    if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" == '1' ]]; then
+        if ! is_test_path "$canonical_home"; then
+            fail "测试 minios home 必须位于已验证测试根内：$canonical_home"
+            return 1
+        fi
+    elif [[ "$canonical_home" != '/home/minios' ]]; then
+        fail '生产 minios home 必须精确为 /home/minios'
+        return 1
+    fi
+    printf '%s\n' "$canonical_home"
+}
+
+validate_minios_home_creation_path() {
+    local expected_home="$1"
+    local home_parent="${expected_home%/*}"
+    local parent_type
+    local parent_uid
+    local parent_mode
+    if [[ ! -d "$home_parent" || -L "$home_parent" ]]; then
+        fail "minios home 父目录必须是现有普通目录：$home_parent"
+        return 1
+    fi
+    assert_no_symlink_components "$home_parent" || return $?
+    IFS='|' read -r parent_type parent_uid parent_mode < <(stat -c '%F|%u|%a' -- "$home_parent")
+    if [[ "$parent_type" != 'directory' || "$parent_uid" != '0' \
+        || ! "$parent_mode" =~ ^[0-7]{3,4}$ \
+        || $((8#$parent_mode & 8#022)) -ne 0 ]]; then
+        fail "minios home 父目录必须 root 拥有且组/其他用户不可写：$home_parent"
+        return 1
+    fi
+    if [[ -e "$expected_home" || -L "$expected_home" ]]; then
+        fail "拒绝在已有 minios home 上执行 useradd：$expected_home"
+        return 1
+    fi
+}
+
+select_useradd_command() {
+    local command='/usr/sbin/useradd'
+    local canonical_command
+    if [[ -n "${MINIOS_USERADD_EXECUTABLE:-}" ]]; then
+        if [[ "${MINIOS_BOOTSTRAP_TEST_MODE:-}" != '1' ]]; then
+            fail '生产模式禁止覆盖 useradd'
+            return 1
+        fi
+        canonical_command="$(realpath -e -- "$MINIOS_USERADD_EXECUTABLE")" || return $?
+        if [[ "$MINIOS_USERADD_EXECUTABLE" != "$canonical_command" \
+            || ! -f "$canonical_command" || -L "$MINIOS_USERADD_EXECUTABLE" \
+            || ! -x "$canonical_command" ]]; then
+            fail "测试 useradd 必须是测试根内的可信可执行普通文件：$MINIOS_USERADD_EXECUTABLE"
+            return 1
+        fi
+        if ! is_test_path "$canonical_command"; then
+            fail "测试 useradd 越过已验证测试根：$canonical_command"
+            return 1
+        fi
+        assert_no_symlink_components "$canonical_command" || return $?
+        command="$canonical_command"
+    fi
+    printf '%s\n' "$command"
+}
+
+ensure_target_user() {
+    local expected_home
+    local useradd_command
+    validate_target_user_name || return $?
+    if getent passwd "$target_user" >/dev/null 2>&1; then
+        resolve_target_user
+        return
+    fi
+    if [[ "$target_user" != 'minios' || "$environment_kind" != 'wsl' \
+        || ( "$mode" != 'system-only' && "$mode" != 'all' ) || EUID -ne 0 ]]; then
+        fail "目标用户不存在且当前阶段禁止创建：$target_user mode=$mode kind=$environment_kind uid=$EUID"
+        return 1
+    fi
+    expected_home="$(select_expected_minios_home)" || return $?
+    validate_minios_home_creation_path "$expected_home" || return $?
+    useradd_command="$(select_useradd_command)" || return $?
+    if ! "$useradd_command" --create-home --shell /bin/bash -- minios; then
+        fail '创建 minios 用户失败'
+        return 1
+    fi
+    resolve_target_user || return $?
+    if [[ "$target_home" != "$expected_home" ]]; then
+        fail "新建 minios home 与固定路径不一致：$target_home"
+        return 1
+    fi
+}
+
 validate_user_owned_existing_components() {
     local base="$1"
     local candidate="$2"
@@ -292,9 +431,10 @@ validate_wsl_configuration_path() {
 }
 
 preflight() {
+    validate_test_configuration
     validate_ubuntu_release
     validate_isolation_identity
-    resolve_target_user
+    ensure_target_user
     validate_environment_root
     validate_wsl_configuration_path
 }
@@ -329,6 +469,9 @@ identity_environment_arguments() {
         "WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-}" \
         "MINIOS_CONTAINER=${MINIOS_CONTAINER:-}" \
         "MINIOS_BOOTSTRAP_TEST_MODE=${MINIOS_BOOTSTRAP_TEST_MODE:-}" \
+        "MINIOS_BOOTSTRAP_TEST_ROOT=${MINIOS_BOOTSTRAP_TEST_ROOT:-}" \
+        "MINIOS_USERADD_EXECUTABLE=${MINIOS_USERADD_EXECUTABLE:-}" \
+        "MINIOS_EXPECTED_MINIOS_HOME=${MINIOS_EXPECTED_MINIOS_HOME:-}" \
         "MINIOS_OS_RELEASE_FILE=${MINIOS_OS_RELEASE_FILE:-}" \
         "MINIOS_WSL_CONF_PATH=${MINIOS_WSL_CONF_PATH:-}" \
         "PATH=$PATH"

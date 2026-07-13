@@ -626,6 +626,18 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertRegex(content, r"(?i)--export\s+(?:--\s+)?\$DistroName\b")
         self.assertNotRegex(content, r"(?i)--export\s+[^$\r\n]")
 
+    def test_wsl_backup_rechecks_artifacts_after_terminate(self) -> None:
+        content = self._without_comments(
+            self._read_required("environment/wsl/backup.ps1"), powershell=True
+        )
+        terminate = content.find("--terminate $DistroName")
+        export = content.find("--export $DistroName")
+        self.assertGreaterEqual(terminate, 0)
+        self.assertGreater(export, terminate)
+        window = content[terminate:export]
+        self.assertRegex(window, r"(?i)Test-Path\s+-LiteralPath\s+\$ExportPath")
+        self.assertRegex(window, r"(?i)Test-Path\s+-LiteralPath\s+\$PartialPath")
+
     def test_bootstrap_has_separate_privilege_phases_and_atomic_package_lock(
         self,
     ) -> None:
@@ -686,6 +698,52 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
             r"(?:environment_root|state_directory|lock_path)",
             "root 主流程不得在目标用户路径执行写入或权限变更",
         )
+
+    def test_bootstrap_missing_user_creation_is_fixed_and_test_injection_scoped(
+        self,
+    ) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        for token in (
+            "/usr/sbin/useradd",
+            "--create-home",
+            "--shell",
+            "/bin/bash",
+            "MINIOS_BOOTSTRAP_TEST_ROOT",
+            "MINIOS_USERADD_EXECUTABLE",
+            "MINIOS_EXPECTED_MINIOS_HOME",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content)
+        self.assertRegex(
+            content,
+            r"(?m)^\s*if\s+!\s+[\"']\$useradd_command[\"']\s+"
+            r"--create-home\s+--shell\s+/bin/bash\s+--\s+minios\b",
+        )
+        preflight = self._function_body(content, "preflight", powershell=False)
+        ordered_gates = (
+            "validate_ubuntu_release",
+            "validate_isolation_identity",
+            "ensure_target_user",
+            "validate_environment_root",
+        )
+        positions = [preflight.find(token) for token in ordered_gates]
+        self.assertTrue(all(position >= 0 for position in positions))
+        self.assertEqual(positions, sorted(positions))
+
+    def test_bootstrap_fake_harness_uses_atomic_owned_temp_root(self) -> None:
+        content = self._read_required("tests/host/test_wsl_lifecycle.ps1")
+        for token in (
+            "/usr/bin/mktemp -d /tmp/minios-bootstrap-test-XXXXXXXX",
+            "/usr/bin/realpath -e",
+            "/usr/bin/stat -c",
+            "/usr/bin/rm -rf -- \"$root\"",
+            "TMPDIR",
+            "validate_test_root",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content)
 
     def test_wsl_scripts_use_single_segment_test_names_and_skip_bootstrap(
         self,
