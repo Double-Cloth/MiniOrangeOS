@@ -757,6 +757,7 @@ class BuildRuntimeTests(unittest.TestCase):
                     disabled_ready = disabled_control / "ready"
                     disabled_continue = disabled_control / "continue"
                     disabled_log = disabled_control / "hook.log"
+                    disabled_continue.write_text("continue\n", encoding="utf-8")
                     disabled_env = os.environ.copy()
                     disabled_env.pop("MINIOS_TEST_MODE", None)
                     disabled_env.update(
