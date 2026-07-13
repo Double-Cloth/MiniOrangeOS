@@ -28,7 +28,7 @@ fi
 
 [[ "$STATE_CONTAINER_STORAGE_ROOT" == "$MINIOS_ENV_ROOT/container-storage" ]] || exit 1
 [[ "$STATE_CONTAINER_GRAPHROOT" == "$MINIOS_ENV_ROOT/container-storage/graphroot" ]] || exit 1
-[[ "$STATE_CONTAINER_RUNROOT" == "$MINIOS_ENV_ROOT/container-storage/runroot" ]] || exit 1
+[[ "$STATE_CONTAINER_RUNROOT" == "$MINIOS_CONTAINER_RUNROOT" ]] || exit 1
 [[ "$MINIOS_CONTAINER_STATE_FILE" == "$MINIOS_ENV_ROOT/state/container.env" ]] || exit 1
 
 if ((apply == 0)); then

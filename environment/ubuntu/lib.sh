@@ -25,7 +25,8 @@ readonly MINIOS_CONTAINER_TASK_LABEL_VALUE="${MINIOS_CONTAINER_TASK_LABEL#*=}"
 readonly MINIOS_CONTAINER_INTENT_LABEL_KEY='org.miniorangeos.intent'
 readonly MINIOS_CONTAINER_STORAGE_ROOT="$MINIOS_ENV_ROOT/container-storage"
 readonly MINIOS_CONTAINER_GRAPHROOT="$MINIOS_CONTAINER_STORAGE_ROOT/graphroot"
-readonly MINIOS_CONTAINER_RUNROOT="$MINIOS_CONTAINER_STORAGE_ROOT/runroot"
+readonly MINIOS_CONTAINER_RUNTIME_BASE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+readonly MINIOS_CONTAINER_RUNROOT="$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01"
 readonly MINIOS_CONTAINER_BUILDER_PREFIX='miniorangeos-dev-builder-'
 readonly MINIOS_CONTAINER_PODMAN_BUILDER='podman-rootless'
 readonly MINIOS_CONTAINER_STATE_DIR="$MINIOS_ENV_ROOT/state"
@@ -139,6 +140,38 @@ container_prepare_directory() {
     container_assert_directory_metadata "$candidate"
 }
 
+container_assert_runtime_path() {
+    local candidate="$1"
+    local expected="$2"
+
+    container_assert_lexical_path "$MINIOS_CONTAINER_RUNTIME_BASE" || return $?
+    container_assert_directory_metadata "$MINIOS_CONTAINER_RUNTIME_BASE" || return $?
+    container_assert_lexical_path "$candidate" || return $?
+    if [[ "$candidate" != "$expected" \
+        || "$candidate" != "$MINIOS_CONTAINER_RUNTIME_BASE/"* ]]; then
+        container_fail "容器 runtime 路径与固定边界不一致：actual=$candidate expected=$expected"
+        return 1
+    fi
+}
+
+container_prepare_runtime_directory() {
+    local candidate="$1"
+    local expected="$2"
+    container_assert_runtime_path "$candidate" "$expected" || return $?
+    mkdir -p -- "$candidate" || return $?
+    container_assert_runtime_path "$candidate" "$expected" || return $?
+    container_assert_directory_metadata "$candidate"
+}
+
+container_assert_optional_runtime_directory() {
+    local candidate="$1"
+    local expected="$2"
+    container_assert_runtime_path "$candidate" "$expected" || return $?
+    if [[ -e "$candidate" || -L "$candidate" ]]; then
+        container_assert_directory_metadata "$candidate" || return $?
+    fi
+}
+
 container_assert_directory_metadata() {
     local candidate="$1"
     local item_type
@@ -163,8 +196,8 @@ container_validate_resource_boundaries() {
         "$MINIOS_ENV_ROOT/container-storage" || return $?
     container_assert_owned_path "$MINIOS_CONTAINER_GRAPHROOT" \
         "$MINIOS_ENV_ROOT/container-storage/graphroot" || return $?
-    container_assert_owned_path "$MINIOS_CONTAINER_RUNROOT" \
-        "$MINIOS_ENV_ROOT/container-storage/runroot" || return $?
+    container_assert_runtime_path "$MINIOS_CONTAINER_RUNROOT" \
+        "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
     container_assert_owned_path "$MINIOS_CONTAINER_STATE_DIR" \
         "$MINIOS_ENV_ROOT/state" || return $?
     container_assert_owned_path "$MINIOS_CONTAINER_STATE_FILE" \
@@ -189,8 +222,8 @@ container_validate_partial_storage_boundaries() {
         "$MINIOS_ENV_ROOT/container-storage" || return $?
     container_assert_optional_directory "$MINIOS_CONTAINER_GRAPHROOT" \
         "$MINIOS_ENV_ROOT/container-storage/graphroot" || return $?
-    container_assert_optional_directory "$MINIOS_CONTAINER_RUNROOT" \
-        "$MINIOS_ENV_ROOT/container-storage/runroot" || return $?
+    container_assert_optional_runtime_directory "$MINIOS_CONTAINER_RUNROOT" \
+        "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
     container_assert_owned_path "$MINIOS_CONTAINER_STATE_DIR" \
         "$MINIOS_ENV_ROOT/state" || return $?
     container_assert_owned_path "$MINIOS_CONTAINER_STATE_FILE" \
@@ -202,12 +235,16 @@ container_remove_storage_components() {
     local candidate
     for candidate in \
         "$MINIOS_CONTAINER_GRAPHROOT" \
-        "$MINIOS_CONTAINER_RUNROOT" \
         "$MINIOS_CONTAINER_STORAGE_ROOT"; do
         if [[ -e "$candidate" || -L "$candidate" ]]; then
             rm -rf -- "$candidate" || return $?
         fi
     done
+    if [[ -e "$MINIOS_CONTAINER_RUNROOT" || -L "$MINIOS_CONTAINER_RUNROOT" ]]; then
+        container_assert_runtime_path "$MINIOS_CONTAINER_RUNROOT" \
+            "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
+        rm -rf -- "$MINIOS_CONTAINER_RUNROOT" || return $?
+    fi
 }
 
 container_assert_state_metadata() {
@@ -352,8 +389,8 @@ container_prepare_project_paths() {
         "$MINIOS_ENV_ROOT/container-storage" || return $?
     container_prepare_directory "$MINIOS_CONTAINER_GRAPHROOT" \
         "$MINIOS_ENV_ROOT/container-storage/graphroot" || return $?
-    container_prepare_directory "$MINIOS_CONTAINER_RUNROOT" \
-        "$MINIOS_ENV_ROOT/container-storage/runroot" || return $?
+    container_prepare_runtime_directory "$MINIOS_CONTAINER_RUNROOT" \
+        "$MINIOS_CONTAINER_RUNTIME_BASE/miniorangeos-t01" || return $?
     container_prepare_directory "$MINIOS_CONTAINER_STATE_DIR" \
         "$MINIOS_ENV_ROOT/state" || return $?
 }
@@ -374,6 +411,10 @@ container_try_podman() {
     fi
     if [[ "${rootless,,}" != 'true' ]]; then
         minios_log 'INFO' 'Podman 可执行但不是 rootless backend'
+        return 1
+    fi
+    if ((${#MINIOS_CONTAINER_RUNROOT} > 50)); then
+        container_fail "Podman runroot 超过 50 字符：$MINIOS_CONTAINER_RUNROOT"
         return 1
     fi
     CONTAINER_BACKEND='podman'
@@ -709,7 +750,7 @@ container_validate_loaded_state_boundaries() {
         "$MINIOS_CONTAINER_STORAGE_ROOT" || return $?
     container_assert_owned_path "$STATE_CONTAINER_GRAPHROOT" \
         "$MINIOS_CONTAINER_GRAPHROOT" || return $?
-    container_assert_owned_path "$STATE_CONTAINER_RUNROOT" \
+    container_assert_runtime_path "$STATE_CONTAINER_RUNROOT" \
         "$MINIOS_CONTAINER_RUNROOT" || return $?
 }
 

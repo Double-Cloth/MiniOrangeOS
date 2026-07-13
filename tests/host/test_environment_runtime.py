@@ -343,7 +343,8 @@ esac
         state_directory = environment_root / "state"
         state_directory.mkdir(parents=True)
         (environment_root / "container-storage" / "graphroot").mkdir(parents=True)
-        (environment_root / "container-storage" / "runroot").mkdir(parents=True)
+        runroot = environment_root.parent / "runtime" / "miniorangeos-t01"
+        runroot.mkdir(parents=True, exist_ok=True)
         actual_storage_root = storage_root or str(
             environment_root / "container-storage"
         )
@@ -368,7 +369,7 @@ esac
             "786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54\n"
             f"MINIOS_CONTAINER_STORAGE_ROOT={actual_storage_root}\n"
             f"MINIOS_CONTAINER_GRAPHROOT={actual_storage_root}/graphroot\n"
-            f"MINIOS_CONTAINER_RUNROOT={actual_storage_root}/runroot\n"
+            f"MINIOS_CONTAINER_RUNROOT={runroot}\n"
             f"MINIOS_CONTAINER_BUILDER={actual_builder}\n"
             "MINIOS_CONTAINER_SOURCE_VERSION=T01\n",
             encoding="utf-8",
@@ -1739,6 +1740,33 @@ exit 0
                 else:
                     self.assertTrue(any("buildx" in call for call in calls))
 
+    def test_podman_runroot_uses_short_project_runtime_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            environment_root = (
+                temporary_root
+                / "intentionally-long-miniorangeos-environment-root"
+            )
+            env, _, _ = self._container_env(
+                temporary_root, environment_root, "podman"
+            )
+            env["MINIOS_CONTAINER_BACKEND"] = "podman"
+
+            result = self._run_required(
+                "environment/ubuntu/create.sh", env=env
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            state = dict(
+                line.split("=", 1)
+                for line in (
+                    environment_root / "state/container.env"
+                ).read_text(encoding="utf-8").splitlines()
+            )
+            expected = Path(env["XDG_RUNTIME_DIR"]) / "miniorangeos-t01"
+            self.assertEqual(str(expected), state["MINIOS_CONTAINER_RUNROOT"])
+            self.assertLessEqual(len(state["MINIOS_CONTAINER_RUNROOT"]), 50)
+
     def test_ubuntu_create_detects_podman_before_project_storage_intent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -1966,7 +1994,7 @@ exit 0
                         ).unlink(missing_ok=True)
                     elif stage == "partial-storage":
                         shutil.rmtree(
-                            environment_root / "container-storage/runroot"
+                            temporary_root / "runtime/miniorangeos-t01"
                         )
                         (
                             runtime
@@ -2667,10 +2695,11 @@ exit 0
                         environment_root, backend=backend, phase="destroying"
                     )
                     storage = environment_root / "container-storage"
+                    runroot = temporary_root / "runtime/miniorangeos-t01"
                     if remaining != "graphroot":
                         shutil.rmtree(storage / "graphroot")
                     if remaining != "runroot":
-                        shutil.rmtree(storage / "runroot")
+                        shutil.rmtree(runroot)
                     runtime = temporary_root / "fake-container-runtime"
                     for name in (
                         "image.exists",
