@@ -103,6 +103,20 @@ class QemuRuntimeTests(unittest.TestCase):
             "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.1); raise SystemExit(33)\n"
             "elif scenario == 'pass':\n"
             "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.45); raise SystemExit(33)\n"
+            "elif scenario == 'pass-exit-zero':\n"
+            "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.1); raise SystemExit(0)\n"
+            "elif scenario == 'pass-exit-other':\n"
+            "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.1); raise SystemExit(42)\n"
+            "elif scenario == 'pass-sigsegv':\n"
+            "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.1); os.kill(os.getpid(), 11)\n"
+            "elif scenario == 'pass-zombies':\n"
+            "    zombie_pid = os.fork()\n"
+            "    if zombie_pid == 0: os._exit(0)\n"
+            "    with open(pid_file, encoding='utf-8') as stream: orphan_pids = json.load(stream)\n"
+            "    orphan_pids.append(zombie_pid)\n"
+            "    with open(pid_file, 'w', encoding='utf-8') as stream: json.dump(orphan_pids, stream)\n"
+            "    time.sleep(0.15)\n"
+            "    sys.stdout.write(valid); sys.stdout.flush(); time.sleep(0.1); raise SystemExit(33)\n"
             "elif scenario == 'fail':\n"
             "    print('[TEST] suite=framework begin', flush=True)\n"
             "    print('[TEST] case=protocol FAIL code=E_FAKE tick=1 pid=1', flush=True)\n"
@@ -490,6 +504,101 @@ class QemuRuntimeTests(unittest.TestCase):
         self.assertTrue(log.is_file())
         self.assertIn("[TEST] all PASS", log.read_text(encoding="utf-8"))
 
+    def test_complete_protocol_requires_exact_debug_exit_status(self) -> None:
+        for scenario in ("pass-exit-zero", "pass-exit-other", "pass-sigsegv"):
+            with self.subTest(scenario=scenario):
+                for path in (self.pid_file, self.leader_file):
+                    path.unlink(missing_ok=True)
+                log = self.workspace / f"build/test-logs/{scenario}.log"
+                result = self._run_rooted(
+                    image=self.workspace / "build/miniorangeos.img",
+                    log=log,
+                    scenario=scenario,
+                )
+                self.assertNotEqual(
+                    0,
+                    result.returncode,
+                    "只有 isa-debug-exit 约定的 QEMU 状态 33 才能证明成功",
+                )
+                self.assertIn("[TEST] all PASS", log.read_text(encoding="utf-8"))
+                self._assert_pids_gone(self._recorded_descendants())
+
+    def test_subreaper_runner_reaps_orphaned_descendants_in_container_semantics(self) -> None:
+        wrapper = self.workspace / "subreaper-wrapper.py"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import ctypes, os, sys\n"
+            "PR_SET_CHILD_SUBREAPER = 36\n"
+            "if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:\n"
+            "    raise OSError(ctypes.get_errno(), 'prctl(PR_SET_CHILD_SUBREAPER)')\n"
+            "value = ctypes.c_int()\n"
+            "if ctypes.CDLL(None, use_errno=True).prctl(37, ctypes.byref(value), 0, 0, 0) != 0 or value.value != 1:\n"
+            "    raise RuntimeError('subreaper 未生效')\n"
+            "open(os.environ['MINIOS_SUBREAPER_MARKER'], 'w').write('enabled')\n"
+            "os.execvp(sys.argv[1], sys.argv[1:])\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+        observation = self.workspace / "subreaper-after-cleanup.log"
+        hook = self.workspace / "subreaper-observer.py"
+        hook.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, pathlib, sys\n"
+            "if sys.argv[1] == 'after-cleanup':\n"
+            "    pids = json.loads(pathlib.Path(os.environ['MINIOS_FAKE_PID_FILE']).read_text())\n"
+            "    states = []\n"
+            "    for pid in pids:\n"
+            "        try:\n"
+            "            text = pathlib.Path(f'/proc/{pid}/stat').read_text()\n"
+            "            states.append(f\"{pid}:{text[text.rfind(chr(41)) + 2]}\")\n"
+            "        except FileNotFoundError: pass\n"
+            "    pathlib.Path(os.environ['MINIOS_SUBREAPER_OBSERVATION']).write_text(','.join(states))\n",
+            encoding="utf-8",
+        )
+        hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+        log = self.workspace / "build/test-logs/subreaper.log"
+        base = self._direct_runner_arguments(
+            image=self.workspace / "build/miniorangeos.img",
+            log=log,
+            rooted=True,
+        )
+        command = [base[0], base[1], str(wrapper), *base[2:]]
+        env = os.environ.copy()
+        marker = self.workspace / "subreaper-enabled.marker"
+        env.update(self._fake_env("pass-zombies"))
+        env["MINIOS_SUBREAPER_MARKER"] = str(marker)
+        env.update(
+            {
+                "MINIOS_TEST_MODE": "1",
+                "MINIOS_QEMU_TEST_HOOK": str(hook),
+                "MINIOS_SUBREAPER_OBSERVATION": str(observation),
+            }
+        )
+        result = subprocess.run(
+            command,
+            cwd=self.workspace,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+        descendants = self._recorded_descendants()
+        self.assertEqual("enabled", marker.read_text(encoding="utf-8"))
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(
+            "",
+            observation.read_text(encoding="utf-8"),
+            "runner 完成 cleanup 时不得仍持有 orphan zombie",
+        )
+        self._assert_pids_gone(descendants)
+        self.assertFalse(
+            any(Path(f"/proc/{pid}/stat").exists() for pid in descendants),
+            "subreaper 模式不得遗留 orphan zombie",
+        )
+
     def test_protocol_fail_returns_nonzero_and_cleans_process_tree(self) -> None:
         with self._foreign_same_name_process():
             result = self._make("test-qemu", scenario="fail")
@@ -655,6 +764,69 @@ class QemuRuntimeTests(unittest.TestCase):
         self.assertEqual(0, enabled.returncode, enabled.stdout + enabled.stderr)
         stages = hook_log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(["after-spawn", "before-cleanup", "after-cleanup"], stages)
+
+    def test_log_identity_hook_is_gated_and_detects_temp_replacement(self) -> None:
+        ignored = self._run_rooted(
+            image=self.workspace / "build/miniorangeos.img",
+            log=self.workspace / "build/test-logs/log-hook-ignored.log",
+            extra_env={"MINIOS_QEMU_LOG_TEST_HOOK": "/definitely/not/a/log-hook"},
+        )
+        self.assertEqual(0, ignored.returncode, ignored.stdout + ignored.stderr)
+
+        hook = self.workspace / "replace-log-temp-hook.py"
+        hook.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys\n"
+            "stage, temporary = sys.argv[1:]\n"
+            "if stage != 'before-log-commit': raise SystemExit(2)\n"
+            "pathlib.Path(os.environ['MINIOS_LOG_HOOK_MARKER']).write_text(stage)\n"
+            "matches = list(pathlib.Path(os.environ['MINIOS_LOG_BUILD']).rglob(temporary))\n"
+            "if len(matches) != 1: raise SystemExit(4)\n"
+            "target = matches[0]\n"
+            "target.unlink()\n"
+            "attack = os.environ['MINIOS_LOG_ATTACK']\n"
+            "external = pathlib.Path(os.environ['MINIOS_LOG_EXTERNAL'])\n"
+            "if attack == 'symlink': target.symlink_to(external)\n"
+            "elif attack == 'hardlink': os.link(external, target)\n"
+            "elif attack == 'foreign': target.write_bytes(b'FOREIGN-LOG')\n"
+            "else: raise SystemExit(3)\n",
+            encoding="utf-8",
+        )
+        hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+
+        for attack in ("symlink", "hardlink", "foreign"):
+            with self.subTest(attack=attack):
+                for path in (self.pid_file, self.leader_file):
+                    path.unlink(missing_ok=True)
+                log_dir = self.workspace / "build/test-logs"
+                if log_dir.exists():
+                    shutil.rmtree(log_dir)
+                external = self.outside_root / f"{attack}-sentinel.log"
+                external.write_text(f"sentinel-{attack}", encoding="utf-8")
+                marker = self.workspace / f"log-hook-{attack}.marker"
+                marker.unlink(missing_ok=True)
+                final_log = log_dir / f"{attack}.log"
+                result = self._run_rooted(
+                    image=self.workspace / "build/miniorangeos.img",
+                    log=final_log,
+                    extra_env={
+                        "MINIOS_TEST_MODE": "1",
+                        "MINIOS_QEMU_LOG_TEST_HOOK": str(hook),
+                        "MINIOS_LOG_HOOK_MARKER": str(marker),
+                        "MINIOS_LOG_ATTACK": attack,
+                        "MINIOS_LOG_EXTERNAL": str(external),
+                        "MINIOS_LOG_BUILD": str(self.workspace / "build"),
+                    },
+                )
+                self.assertTrue(marker.is_file(), "gated 日志身份 hook 未执行")
+                self.assertNotEqual(0, result.returncode, "临时日志身份变化必须失败")
+                self.assertEqual(
+                    f"sentinel-{attack}", external.read_text(encoding="utf-8")
+                )
+                self.assertFalse(
+                    final_log.exists(), "身份不可信的临时文件不得提交为成功日志"
+                )
+                self._assert_pids_gone(self._recorded_descendants())
 
     def test_rooted_runner_accepts_only_paths_inside_verified_build_tree(self) -> None:
         result = self._run_rooted(
