@@ -4,9 +4,9 @@
 
 分支：`feature/T03-qemu-test-framework`
 
-状态：**验收通过，待合并**
+状态：**完成并合并**
 
-Merge SHA：待合并
+Merge SHA：`5577dc418442c23bc6f632a49b90b9739364ca9f`
 
 ## 实现摘要
 
