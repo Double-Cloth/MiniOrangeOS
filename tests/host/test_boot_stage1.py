@@ -7,10 +7,11 @@ import os
 import platform
 import re
 import shutil
-import signal
 import struct
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 STAGE1_SOURCE = ROOT / "boot/stage1/boot.asm"
 LAYOUT_PATH = ROOT / "config/image-layout.json"
+HANDOFF_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_handoff.asm"
 
 
 def _is_supported_linux() -> bool:
@@ -31,7 +33,11 @@ class BootStage1Tests(unittest.TestCase):
     build_directory: Path
     stage1_binary: Path
     image: Path
+    handoff_fixture: Path
+    handoff_image: Path
+    floppy_image: Path
     stage2_layout: dict[str, object]
+    layout_document: dict[str, object]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -43,6 +49,7 @@ class BootStage1Tests(unittest.TestCase):
         cls.build_relative = cls.build_directory.relative_to(ROOT)
 
         layout = json.loads(LAYOUT_PATH.read_text(encoding="utf-8"))
+        cls.layout_document = layout
         cls.stage2_layout = next(
             component
             for component in layout["components"]
@@ -58,6 +65,41 @@ class BootStage1Tests(unittest.TestCase):
             )
         cls.stage1_binary = cls.build_directory / "boot/stage1.bin"
         cls.image = cls.build_directory / "miniorangeos.img"
+        cls.handoff_fixture = cls.build_directory / "test-fixtures/stage2-handoff.bin"
+        cls.handoff_fixture.parent.mkdir(parents=True, exist_ok=True)
+        assembled = subprocess.run(
+            [
+                "nasm",
+                "-f",
+                "bin",
+                "-o",
+                str(cls.handoff_fixture),
+                str(HANDOFF_FIXTURE_SOURCE),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        if assembled.returncode != 0:
+            raise AssertionError(assembled.stdout + assembled.stderr)
+
+        cls.handoff_image = cls.build_directory / "test-fixtures/stage1-handoff.img"
+        shutil.copyfile(cls.image, cls.handoff_image)
+        fixture = cls.handoff_fixture.read_bytes()
+        stage2_size = int(cls.stage2_layout["max_sectors"]) * 512
+        if len(fixture) > stage2_size:
+            raise AssertionError("Stage 2 handoff fixture 越过配置保留区域")
+        with cls.handoff_image.open("r+b") as stream:
+            stream.seek(int(cls.stage2_layout["lba"]) * 512)
+            stream.write(fixture)
+            stream.write(b"\x00" * (stage2_size - len(fixture)))
+
+        cls.floppy_image = cls.build_directory / "test-fixtures/stage1-only.img"
+        cls.floppy_image.write_bytes(cls.stage1_binary.read_bytes())
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -83,6 +125,100 @@ class BootStage1Tests(unittest.TestCase):
             timeout=timeout,
             check=False,
         )
+
+    @classmethod
+    def _run_qemu_test(
+        cls,
+        image: Path,
+        log: Path,
+        *,
+        timeout: int,
+        drive_interface: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        arguments = [
+            sys.executable,
+            "tools/qemu_test.py",
+            "--image",
+            str(image),
+            "--log",
+            str(log),
+            "--timeout",
+            str(timeout),
+            "--max-log-bytes",
+            "262144",
+            "--repo",
+            str(ROOT),
+            "--build-dir",
+            cls.build_relative.as_posix(),
+        ]
+        if drive_interface is not None:
+            arguments.extend(("--drive-interface", drive_interface))
+        return subprocess.run(
+            arguments,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout + 10,
+            check=False,
+        )
+
+    def _prepare_generator_workspace(self, parent: Path) -> Path:
+        workspace = parent / "workspace"
+        shutil.copytree(
+            ROOT,
+            workspace,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".superpowers",
+                "build",
+                ".t10-host-*",
+                "__pycache__",
+                ".pytest_cache",
+            ),
+        )
+        prepared = subprocess.run(
+            ["bash", "environment/with-env.sh", "make", "BUILD_DIR=build", "prepare-build-dir"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        (workspace / "build/boot").mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def _run_generator(
+        self, workspace: Path, *, timeout: float = 2
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "tools/generate_boot_layout.py",
+                    "--repo",
+                    str(workspace),
+                    "--build-dir",
+                    "build",
+                    "--layout",
+                    "config/image-layout.json",
+                    "--output",
+                    "build/boot/image-layout.inc",
+                ],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(f"布局生成器阻塞且未及时拒绝特殊文件：{error}")
 
     def test_stage1_binary_is_exact_boot_sector(self) -> None:
         payload = self.stage1_binary.read_bytes()
@@ -170,6 +306,12 @@ class BootStage1Tests(unittest.TestCase):
                 )
                 dap_candidates.append((lba, sector_count, physical, offset))
 
+        self.assertTrue(dap_candidates, "未找到 Stage 2 DAP")
+        self.assertTrue(
+            all(offset % 4 == 0 for _, _, _, offset in dap_candidates),
+            "两个 DAP 在 stage1.bin 中都必须按 4 字节对齐",
+        )
+
         actual_requests = sorted(
             (lba, sector_count, physical)
             for lba, sector_count, physical, _ in dap_candidates
@@ -232,6 +374,14 @@ class BootStage1Tests(unittest.TestCase):
             except ValueError:
                 continue
             instructions.append((address, fields[2]))
+
+        self.assertGreaterEqual(len(instructions), 2, "启动扇区缺少入口指令")
+        self.assertEqual(instructions[0], (0, "cli"), "入口首条有效指令必须是 CLI")
+        self.assertRegex(
+            instructions[1][1],
+            r"^jmp\s+0x0:0x[0-9a-f]+$",
+            "CLI 后必须用远跳规范化 CS",
+        )
 
         extension_reads = [
             index
@@ -307,10 +457,62 @@ class BootStage1Tests(unittest.TestCase):
             failure_targets.append(carry_target)
             previous_call = call_index
 
+        probe_setters = [
+            index
+            for index, (_, instruction) in enumerate(instructions)
+            if re.fullmatch(r"mov\s+ah,0x41", instruction)
+        ]
+        probe_calls: list[int] = []
+        for call_index in all_disk_calls:
+            preceding_setters = [index for index in ah_setters if index < call_index]
+            if preceding_setters and preceding_setters[-1] in probe_setters:
+                probe_calls.append(call_index)
+        self.assertEqual(len(probe_setters), 1, "必须恰好设置一次 AH=0x41")
+        self.assertEqual(len(probe_calls), 1, "必须恰好执行一次 INT 13h extensions 探测")
+        probe_call = probe_calls[0]
+        probe_prefix = [
+            instruction
+            for _, instruction in instructions[max(0, probe_call - 6) : probe_call]
+        ]
+        self.assertTrue(
+            any(re.fullmatch(r"mov\s+bx,0x55aa", item) for item in probe_prefix),
+            "AH=0x41 探测前必须输入 BX=0x55AA",
+        )
+        probe_following = [
+            instruction for _, instruction in instructions[probe_call + 1 : probe_call + 8]
+        ]
+        self.assertGreaterEqual(len(probe_following), 5, "AH=0x41 探测缺少完整返回检查")
+        probe_patterns = (
+            r"jc(?:\s+short)?\s+(0x[0-9a-f]+)",
+            r"cmp\s+bx,0xaa55",
+            r"j(?:ne|nz)(?:\s+short)?\s+(0x[0-9a-f]+)",
+            r"test\s+cx,(?:byte\s+\+)?0x1",
+            r"jz(?:\s+short)?\s+(0x[0-9a-f]+)",
+        )
+        probe_matches = [
+            re.fullmatch(pattern, instruction)
+            for pattern, instruction in zip(probe_patterns, probe_following)
+        ]
+        self.assertTrue(
+            all(match is not None for match in probe_matches),
+            "AH=0x41 返回后必须依次检查 CF、BX=0xAA55 与 CX bit 0",
+        )
+        probe_targets = [
+            int(match.group(1), 16)
+            for match in (probe_matches[0], probe_matches[2], probe_matches[4])
+            if match is not None
+        ]
+        self.assertEqual(
+            len(set(probe_targets)),
+            1,
+            "AH=0x41 的 CF/BX/CX 失败必须汇入同一错误路径",
+        )
+        failure_targets.extend(probe_targets)
+
         self.assertEqual(
             len(set(failure_targets)),
             1,
-            "两次磁盘读取失败必须汇入同一错误路径",
+            "EDD 探测和两次磁盘读取失败必须汇入同一错误路径",
         )
         failure_target = failure_targets[0]
         failure_index = next(
@@ -334,61 +536,177 @@ class BootStage1Tests(unittest.TestCase):
             "错误路径可先输出错误信息，但最终必须关中断并永久停机",
         )
 
-    def test_real_qemu_serial_messages_are_exact_and_ordered(self) -> None:
-        qemu = shutil.which("qemu-system-i386")
-        self.assertIsNotNone(qemu, "专用 Linux/WSL 环境必须提供 qemu-system-i386")
-        assert qemu is not None
-
-        process = subprocess.Popen(
-            [
-                qemu,
-                "-machine",
-                "pc,accel=tcg",
-                "-m",
-                "16M",
-                "-drive",
-                f"file={self.image},format=raw,if=ide",
-                "-boot",
-                "c",
-                "-snapshot",
-                "-display",
-                "none",
-                "-serial",
-                "stdio",
-                "-monitor",
-                "none",
-                "-no-reboot",
-                "-no-shutdown",
-            ],
-            cwd=ROOT,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+    def test_real_qemu_handoff_registers_and_protocol(self) -> None:
+        log = self.build_directory / "test-logs/stage1-handoff.log"
+        result = self._run_qemu_test(self.handoff_image, log, timeout=5)
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Stage 1 真实交接失败：\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
-        output = b""
-        try:
-            try:
-                output, _ = process.communicate(timeout=3)
-            except subprocess.TimeoutExpired as error:
-                output = error.output or b""
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-            tail, _ = process.communicate(timeout=5)
-            if tail and not output.endswith(tail):
-                output += tail
+        output = log.read_text(encoding="utf-8", errors="replace")
+        stage1_lines = re.findall(r"(?m)^\[S1\][^\r\n]*", output)
+        self.assertEqual(stage1_lines, ["[S1] boot", "[S1] loader loaded"])
+        protocol_lines = re.findall(r"(?m)^\[TEST\][^\r\n]*", output)
+        self.assertEqual(
+            protocol_lines,
+            [
+                "[TEST] suite=stage1_handoff begin",
+                "[TEST] case=registers PASS",
+                "[TEST] suite=stage1_handoff PASS",
+                "[TEST] all PASS",
+            ],
+            f"Stage 2 fixture 未证明完整寄存器交接：\n{output}",
+        )
 
-        with self.assertRaises(ProcessLookupError, msg="本次 QEMU 进程必须已被回收"):
-            os.kill(process.pid, 0)
-
-        decoded = output.decode("utf-8", errors="replace")
-        stage1_lines = re.findall(r"(?m)^\[S1\][^\r\n]*", decoded)
+    def test_real_qemu_floppy_read_failure_is_logged_and_cleaned(self) -> None:
+        log = self.build_directory / "test-logs/stage1-floppy-failure.log"
+        result = self._run_qemu_test(
+            self.floppy_image,
+            log,
+            timeout=2,
+            drive_interface="floppy",
+        )
+        self.assertNotEqual(result.returncode, 0, "缺少 Stage 2 时不得报告测试成功")
+        self.assertIn("QEMU 超时", result.stderr, "负测必须真实启动并由 runner 超时清理")
+        output = log.read_text(encoding="utf-8", errors="replace")
+        stage1_lines = re.findall(r"(?m)^\[S1\][^\r\n]*", output)
         self.assertEqual(
             stage1_lines,
-            ["[S1] boot", "[S1] loader loaded"],
-            f"Stage 1 串口日志必须精确且有序；QEMU 输出：\n{decoded}",
+            ["[S1] boot", "[S1] disk error"],
+            f"软盘失败路径日志错误：\n{output}",
         )
+        self.assertNotIn("[S1] loader loaded", output)
+
+    def test_layout_generator_rejects_malformed_input_without_clobber(self) -> None:
+        valid = json.dumps(self.layout_document, separators=(",", ":"))
+        duplicate = valid.replace(
+            '"format_version":1',
+            '"format_version":1,"format_version":1',
+            1,
+        )
+        nan_value = valid.replace(
+            f'"image_size_bytes":{self.layout_document["image_size_bytes"]}',
+            '"image_size_bytes":NaN',
+            1,
+        )
+        cases = {
+            "duplicate-key": duplicate.encode("utf-8"),
+            "nan": nan_value.encode("utf-8"),
+            "oversized": valid.encode("utf-8") + b" " * (2 * 1024 * 1024),
+        }
+        with tempfile.TemporaryDirectory(prefix="generator-invalid-") as directory:
+            workspace = self._prepare_generator_workspace(Path(directory))
+            layout = workspace / "config/image-layout.json"
+            output = workspace / "build/boot/image-layout.inc"
+            for name, payload in cases.items():
+                with self.subTest(name=name):
+                    layout.write_bytes(payload)
+                    output.write_bytes(b"old-output\n")
+                    result = self._run_generator(workspace)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(output.read_bytes(), b"old-output\n")
+
+    def test_layout_generator_rejects_special_input_files_without_clobber(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="generator-input-") as directory:
+            workspace = self._prepare_generator_workspace(Path(directory))
+            layout = workspace / "config/image-layout.json"
+            output = workspace / "build/boot/image-layout.inc"
+            valid_payload = json.dumps(self.layout_document).encode("utf-8")
+            backing = workspace / "config/layout-backing.json"
+            backing.write_bytes(valid_payload)
+            for name in ("symlink", "hardlink", "fifo"):
+                with self.subTest(name=name):
+                    layout.unlink(missing_ok=True)
+                    if name == "symlink":
+                        layout.symlink_to(backing)
+                    elif name == "hardlink":
+                        os.link(backing, layout)
+                    else:
+                        os.mkfifo(layout)
+                    output.write_bytes(b"old-output\n")
+                    result = self._run_generator(workspace, timeout=1)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(output.read_bytes(), b"old-output\n")
+
+    def test_layout_generator_rejects_special_output_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="generator-output-") as directory:
+            workspace = self._prepare_generator_workspace(Path(directory))
+            output = workspace / "build/boot/image-layout.inc"
+            peer = workspace / "build/boot/output-peer.inc"
+            peer.write_bytes(b"old-output\n")
+            for name in ("symlink", "fifo", "hardlink"):
+                with self.subTest(name=name):
+                    output.unlink(missing_ok=True)
+                    if name == "symlink":
+                        output.symlink_to(peer)
+                    elif name == "fifo":
+                        os.mkfifo(output)
+                    else:
+                        os.link(peer, output)
+                    before = os.lstat(output)
+                    result = self._run_generator(workspace)
+                    after = os.lstat(output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+                    self.assertEqual(peer.read_bytes(), b"old-output\n")
+
+    def test_layout_make_dependency_rebuilds_only_after_config_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="minios-t10-rebuild-") as directory:
+            workspace = Path(directory) / "workspace"
+            shutil.copytree(
+                ROOT,
+                workspace,
+                ignore=shutil.ignore_patterns(
+                    ".git",
+                    ".superpowers",
+                    "build",
+                    ".t10-host-*",
+                    "__pycache__",
+                    ".pytest_cache",
+                ),
+            )
+            target = workspace / "build/boot/image-layout.inc"
+
+            def run_make() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "environment/with-env.sh",
+                        "make",
+                        "BUILD_DIR=build",
+                        str(target),
+                    ],
+                    cwd=workspace,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                    check=False,
+                )
+
+            first = run_make()
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            first_status = target.stat()
+            first_payload = target.read_bytes()
+            second = run_make()
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertEqual(target.stat().st_mtime_ns, first_status.st_mtime_ns)
+            self.assertEqual(target.read_bytes(), first_payload)
+            self.assertNotIn("tools/generate_boot_layout.py", second.stdout)
+
+            config_path = workspace / "config/image-layout.json"
+            changed = json.loads(config_path.read_text(encoding="utf-8"))
+            stage2 = next(item for item in changed["components"] if item["name"] == "stage2")
+            stage2["max_sectors"] = int(stage2["max_sectors"]) - 1
+            time.sleep(0.02)
+            config_path.write_text(json.dumps(changed, indent=2) + "\n", encoding="utf-8")
+            third = run_make()
+            self.assertEqual(third.returncode, 0, third.stdout + third.stderr)
+            self.assertGreater(target.stat().st_mtime_ns, first_status.st_mtime_ns)
+            self.assertNotEqual(target.read_bytes(), first_payload)
+            self.assertIn("tools/generate_boot_layout.py", third.stdout)
 
 
 if __name__ == "__main__":
