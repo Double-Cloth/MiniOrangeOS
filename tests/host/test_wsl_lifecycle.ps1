@@ -668,27 +668,64 @@ try {
         & $EnterScript -Command 'test "$(printf enter-ok && printf second)" = enter-oksecond'
     }
 
-    Invoke-Test '正式 bootstrap 缺少可信 identity 时只读拒绝' {
-        $BootstrapFullPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot 'environment\bootstrap-inside.sh'))
-        $BootstrapDrive = $BootstrapFullPath.Substring(0, 1).ToLowerInvariant()
-        $BootstrapPath = "/mnt/$BootstrapDrive/" + $BootstrapFullPath.Substring(3).Replace('\', '/')
+    Invoke-Test '正式 WSL identity 与 Windows Lxss 注册绑定' {
+        $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+        $Keys = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object {
+            (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq 'MiniOrangeOS-Dev'
+        })
+        Assert-True ($Keys.Count -eq 1) '正式发行版必须且只能有一个精确 Lxss 注册项'
+        $Registration = Get-ItemProperty -LiteralPath $Keys[0].PSPath
+        $RegistrationId = (Split-Path -Leaf $Keys[0].PSPath).ToLowerInvariant()
+        Assert-True ($RegistrationId -cmatch '^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$') '正式 Lxss registration ID 格式不可信'
+        Assert-True ($Registration.DistributionName -ceq 'MiniOrangeOS-Dev') '正式 Lxss 发行版名称不匹配'
+        Assert-True ($Registration.Version -eq 2) '正式 Lxss 注册项不是 WSL2'
+
+        $BasePath = [IO.Path]::GetFullPath($Registration.BasePath)
+        $ExpectedBasePath = [IO.Path]::GetFullPath('D:\ApplicationData\MiniOrangeOS\rootfs')
+        Assert-True ($BasePath -ceq $ExpectedBasePath) '正式 Lxss BasePath 不匹配'
+        $Sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $BasePathBytes = [Text.Encoding]::UTF8.GetBytes($BasePath.ToLowerInvariant())
+            $BasePathSha256 = ([BitConverter]::ToString($Sha256.ComputeHash($BasePathBytes))).Replace('-', '').ToLowerInvariant()
+            $ExpectedRecord = "schema=1`ndistro=MiniOrangeOS-Dev`nregistration_id=$RegistrationId`nbase_path_sha256=$BasePathSha256`n"
+            $ExpectedRecordBytes = [Text.Encoding]::UTF8.GetBytes($ExpectedRecord)
+            $ExpectedRecordSha256 = ([BitConverter]::ToString($Sha256.ComputeHash($ExpectedRecordBytes))).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $Sha256.Dispose()
+        }
+
         $PreviousErrorAction = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $SystemOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u minios -- bash $BootstrapPath --system-only 2>&1)
-            $SystemStatus = $LASTEXITCODE
-            Assert-True ($SystemStatus -ne 0) '普通用户执行 system-only 应失败'
-            Assert-True (($SystemOutput -join "`n") -match 'FAIL') 'system-only 失败缺少诊断'
-            Assert-True (($SystemOutput -join "`n") -match 'identity record') '正式发行版缺少 identity 时未在权限检查前拒绝'
-
-            $ToolchainOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $BootstrapPath --toolchain-only 2>&1)
-            $ToolchainStatus = $LASTEXITCODE
-            Assert-True ($ToolchainStatus -ne 0) 'root 执行 toolchain-only 应失败'
-            Assert-True (($ToolchainOutput -join "`n") -match 'FAIL') 'toolchain-only 失败缺少诊断'
+            $IdentityScript = @'
+set -euo pipefail
+identity=/etc/miniorangeos/instance.identity
+[[ -f "$identity" && ! -L "$identity" ]]
+mapfile -t lines <"$identity"
+[[ "${#lines[@]}" -eq 4 ]]
+printf 'metadata=%s\n' "$(stat -c '%F|%U|%G|%a' -- "$identity")"
+printf 'schema_line=%s\n' "${lines[0]}"
+printf 'distro_line=%s\n' "${lines[1]}"
+printf 'record_sha256=%s\n' "$(sha256sum -- "$identity" | cut -d ' ' -f 1)"
+'@
+            $IdentityOutput = @($IdentityScript | & wsl.exe -d MiniOrangeOS-Dev -u root -- bash -s -- 2>&1)
+            $IdentityStatus = $LASTEXITCODE
         }
         finally {
             $ErrorActionPreference = $PreviousErrorAction
         }
+        Assert-True ($IdentityStatus -eq 0) ("正式 identity 只读检查失败：" + ($IdentityOutput -join "`n"))
+        $IdentityFacts = @{}
+        foreach ($Line in $IdentityOutput) {
+            $Separator = $Line.IndexOf('=')
+            Assert-True ($Separator -gt 0) "正式 identity 检查返回了非法事实行：$Line"
+            $IdentityFacts[$Line.Substring(0, $Separator)] = $Line.Substring($Separator + 1)
+        }
+        Assert-True ($IdentityFacts['metadata'] -ceq 'regular file|root|root|644') '正式 identity 必须是 root:root 0644 普通文件且非 symlink'
+        Assert-True ($IdentityFacts['schema_line'] -ceq 'schema=1') '正式 identity schema 不匹配'
+        Assert-True ($IdentityFacts['distro_line'] -ceq 'distro=MiniOrangeOS-Dev') '正式 identity distro 不匹配'
+        Assert-True ($IdentityFacts['record_sha256'] -ceq $ExpectedRecordSha256) '正式 identity 未绑定已验证的 Lxss registration ID/BasePath'
     }
 
     Invoke-Test 'bootstrap fake 后端覆盖身份、降权状态写入与幂等' {
