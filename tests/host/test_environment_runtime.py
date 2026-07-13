@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -135,6 +136,149 @@ esac
             "MINIOS_CONTAINER_IMAGE_DIGEST=sha256:owned-image-digest\n",
             encoding="utf-8",
             newline="\n",
+        )
+
+    def _write_toolchain_archive(
+        self,
+        archive: Path,
+        source_directory_name: str,
+        component: str,
+    ) -> str:
+        """创建只含 configure 的微型源码包，供构建状态机测试使用。"""
+        staging_root = archive.parent / f"{component}-staging"
+        source_directory = staging_root / source_directory_name
+        source_directory.mkdir(parents=True)
+        configure = source_directory / "configure"
+        self._write_executable(
+            configure,
+            "#!/bin/sh\n"
+            "set -eu\n"
+            f"printf 'configure component={component} cwd=%s args=%s\\n' "
+            '"$PWD" "$*" >> "$FAKE_TOOLCHAIN_LOG"\n'
+            f"printf '%s\\n' '{component}' > .minios-component\n",
+        )
+        with tarfile.open(archive, "w:xz") as tar:
+            tar.add(source_directory, arcname=source_directory_name)
+        shutil.rmtree(staging_root)
+        return hashlib.sha256(archive.read_bytes()).hexdigest()
+
+    def _write_fake_make(self, command_directory: Path) -> None:
+        self._write_executable(
+            command_directory / "make",
+            """#!/bin/sh
+set -eu
+printf 'make cwd=%s args=%s\n' "$PWD" "$*" >> "$FAKE_TOOLCHAIN_LOG"
+component=$(cat .minios-component)
+case " $* " in
+  *" install "*)
+    if [ "$component" = "binutils" ]; then
+      mkdir -p "$FAKE_TOOLCHAIN_PREFIX/bin"
+      cat > "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-ld" <<'EOF'
+#!/bin/sh
+printf 'GNU ld (GNU Binutils) 1.0\n'
+EOF
+      chmod +x "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-ld"
+    fi
+    ;;
+  *" install-gcc "*)
+    mkdir -p "$FAKE_TOOLCHAIN_PREFIX/bin"
+    cat > "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-gcc" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  -dumpmachine) printf 'i686-elf\n' ;;
+  --version) printf 'i686-elf-gcc (GCC) 1.0\n' ;;
+  *) exit 64 ;;
+esac
+EOF
+    chmod +x "$FAKE_TOOLCHAIN_PREFIX/bin/i686-elf-gcc"
+    ;;
+  *) : ;;
+esac
+""",
+        )
+
+    def _write_toolchain_fixture(
+        self, temporary_root: Path
+    ) -> tuple[Path, Path, dict[str, str]]:
+        """复制最小脚本布局并把固定来源替换为本地可校验源码包。"""
+        fixture_root = temporary_root / "repo"
+        (fixture_root / "tools").mkdir(parents=True)
+        (fixture_root / "environment" / "lib").mkdir(parents=True)
+        builder_source = ROOT / "tools" / "build_toolchain.sh"
+        self.assertTrue(builder_source.is_file(), "缺少 T01 工具链构建器")
+        shutil.copy2(
+            builder_source,
+            fixture_root / "tools" / "build_toolchain.sh",
+        )
+        shutil.copy2(
+            ROOT / "environment" / "lib" / "common.sh",
+            fixture_root / "environment" / "lib" / "common.sh",
+        )
+
+        fixture_sources = temporary_root / "fixture-sources"
+        fixture_sources.mkdir()
+        binutils_archive = fixture_sources / "binutils-1.0.tar.xz"
+        gcc_archive = fixture_sources / "gcc-1.0.tar.xz"
+        binutils_sha256 = self._write_toolchain_archive(
+            binutils_archive, "binutils-1.0", "binutils"
+        )
+        gcc_sha256 = self._write_toolchain_archive(
+            gcc_archive, "gcc-1.0", "gcc"
+        )
+        (fixture_root / "environment" / "versions.env").write_text(
+            "MINIOS_TARGET=i686-elf\n"
+            "MINIOS_WSL_DISTRO=MiniOrangeOS-Dev\n"
+            "MINIOS_WSL_IMAGE_VERSION=24.04.4\n"
+            "MINIOS_WSL_IMAGE_URL=https://example.invalid/rootfs\n"
+            f"MINIOS_WSL_IMAGE_SHA256={'1' * 64}\n"
+            "MINIOS_CONTAINER_IMAGE=miniorangeos-dev:ubuntu-24.04\n"
+            "MINIOS_CONTAINER_LABEL=org.miniorangeos.project=MiniOrangeOS\n"
+            "MINIOS_CONTAINER_BASE_IMAGE=ubuntu:noble-test\n"
+            f"MINIOS_CONTAINER_BASE_DIGEST=sha256:{'2' * 64}\n"
+            "MINIOS_BINUTILS_VERSION=1.0\n"
+            f"MINIOS_BINUTILS_URL={binutils_archive.as_uri()}\n"
+            f"MINIOS_BINUTILS_SHA256={binutils_sha256}\n"
+            "MINIOS_GCC_VERSION=1.0\n"
+            f"MINIOS_GCC_URL={gcc_archive.as_uri()}\n"
+            f"MINIOS_GCC_SHA256={gcc_sha256}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        environment_root = temporary_root / "environment"
+        command_directory = temporary_root / "commands"
+        command_directory.mkdir()
+        self._write_fake_make(command_directory)
+        log = temporary_root / "toolchain.log"
+        env = self._base_env(environment_root)
+        env.update(
+            {
+                "FAKE_TOOLCHAIN_LOG": str(log),
+                "FAKE_TOOLCHAIN_PREFIX": str(environment_root / "toolchain"),
+                "MINIOS_BUILD_JOBS": "2",
+                "PATH": str(command_directory) + os.pathsep + env["PATH"],
+            }
+        )
+        return fixture_root, log, env
+
+    def _run_fixture_toolchain(
+        self,
+        fixture_root: Path,
+        *arguments: str,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/bin/bash",
+                str(fixture_root / "tools" / "build_toolchain.sh"),
+                *arguments,
+            ],
+            cwd=fixture_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
 
     def test_with_env_rejects_missing_command(self) -> None:
@@ -389,8 +533,8 @@ esac
             self.assertEqual(0, generic_result.returncode, generic_result.stderr)
             self.assertEqual("generic-command-ok", generic_result.stdout)
 
-    def test_verify_rejects_missing_or_empty_freestanding_object(self) -> None:
-        for object_mode in ("missing", "empty"):
+    def test_verify_rejects_missing_empty_or_symlink_freestanding_object(self) -> None:
+        for object_mode in ("missing", "empty", "symlink"):
             with (
                 self.subTest(object_mode=object_mode),
                 tempfile.TemporaryDirectory() as temporary_directory,
@@ -416,6 +560,9 @@ for argument in "$@"; do
 done
 if [ "${FAKE_GCC_OBJECT_MODE:-missing}" = "empty" ] && [ -n "$output" ]; then
     : > "$output"
+fi
+if [ "${FAKE_GCC_OBJECT_MODE:-missing}" = "symlink" ] && [ -n "$output" ]; then
+    ln -s /dev/null "$output"
 fi
 exit 0
 """,
@@ -443,13 +590,29 @@ exit 0
 
     def test_toolchain_print_plan_is_pinned_and_side_effect_free(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            environment_root = Path(temporary_directory)
+            temporary_root = Path(temporary_directory)
+            environment_root = temporary_root / "environment"
+            command_directory = temporary_root / "commands"
+            command_directory.mkdir()
+            network_marker = temporary_root / "network-used"
+            self._write_executable(
+                command_directory / "curl",
+                "#!/bin/sh\nprintf used > \"$NETWORK_MARKER\"\nexit 99\n",
+            )
+            env = self._base_env(environment_root)
+            env.update(
+                {
+                    "NETWORK_MARKER": str(network_marker),
+                    "PATH": str(command_directory) + os.pathsep + env["PATH"],
+                }
+            )
             result = self._run_required(
                 "tools/build_toolchain.sh",
                 "--print-plan",
-                env=self._base_env(environment_root),
+                env=env,
             )
-            self.assertEqual([], list(environment_root.iterdir()), "--print-plan 不得写入环境根")
+            self.assertFalse(environment_root.exists(), "--print-plan 不得创建环境根")
+            self.assertFalse(network_marker.exists(), "--print-plan 不得访问网络")
 
         self.assertEqual(0, result.returncode, result.stderr)
         output = result.stdout.lower()
@@ -457,6 +620,158 @@ exit 0
         self.assertIn("binutils_version=2.42", output)
         self.assertIn("gcc_version=13.2.0", output)
         self.assertIn(f"prefix={environment_root}/toolchain".lower(), output)
+        self.assertIn("binutils_configure=--target=i686-elf", output)
+        self.assertIn("--with-sysroot", output)
+        self.assertIn("gcc_configure=--target=i686-elf", output)
+        self.assertIn("--enable-languages=c", output)
+        self.assertIn("gcc_build_targets=all-gcc all-target-libgcc", output)
+        self.assertIn("gcc_install_targets=install-gcc install-target-libgcc", output)
+
+    def test_toolchain_rejects_dangerous_roots_and_invalid_arguments(self) -> None:
+        for dangerous_root in ("", ".", "/", "/usr", "/usr/local", str(ROOT)):
+            with self.subTest(environment_root=dangerous_root):
+                result = self._run_required(
+                    "tools/build_toolchain.sh",
+                    "--print-plan",
+                    env=self._base_env(dangerous_root),
+                )
+                self.assertNotEqual(0, result.returncode)
+
+        argument_cases = (
+            ("--unknown",),
+            ("--print-plan", "--download-only"),
+            ("--print-plan", "--force"),
+            ("--download-only", "--force"),
+            ("--force", "--force"),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for arguments in argument_cases:
+                with self.subTest(arguments=arguments):
+                    result = self._run_required(
+                        "tools/build_toolchain.sh",
+                        *arguments,
+                        env=self._base_env(temporary_directory),
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertRegex(
+                        (result.stdout + result.stderr).lower(),
+                        r"(?:usage|参数|冲突|未知|重复)",
+                    )
+
+    def test_toolchain_download_only_verifies_archives_without_extracting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, _, env = self._write_toolchain_fixture(temporary_root)
+            result = self._run_fixture_toolchain(
+                fixture_root, "--download-only", env=env
+            )
+
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            downloads = environment_root / "downloads"
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(
+                {"binutils-1.0.tar.xz", "gcc-1.0.tar.xz"},
+                {path.name for path in downloads.iterdir()},
+            )
+            self.assertFalse(any(downloads.glob("*.partial")))
+            self.assertFalse((environment_root / "sources").exists())
+            self.assertFalse((environment_root / "build").exists())
+            self.assertFalse((environment_root / "toolchain").exists())
+            self.assertIn("download_status=complete", result.stdout)
+
+    def test_toolchain_build_is_pinned_truthful_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, log, env = self._write_toolchain_fixture(temporary_root)
+            first = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, first.returncode, first.stderr)
+
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            marker = environment_root / "state" / "toolchain.env"
+            self.assertTrue(marker.is_file())
+            marker_text = marker.read_text(encoding="utf-8")
+            self.assertRegex(marker_text, r"(?m)^lock_fingerprint=[0-9a-f]{64}$")
+            self.assertIn("target=i686-elf", marker_text)
+            self.assertIn(f"prefix={environment_root}/toolchain", marker_text)
+            log_before = log.read_text(encoding="utf-8")
+            self.assertIn(
+                "configure component=binutils", log_before
+            )
+            self.assertIn("--target=i686-elf", log_before)
+            self.assertIn("--with-sysroot", log_before)
+            self.assertIn("--enable-languages=c", log_before)
+            self.assertIn("--without-headers", log_before)
+            self.assertIn("make cwd=", log_before)
+            self.assertIn("all-gcc", log_before)
+            self.assertIn("all-target-libgcc", log_before)
+            self.assertIn("install-gcc", log_before)
+            self.assertIn("install-target-libgcc", log_before)
+
+            second = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertIn("toolchain_status=up-to-date", second.stdout)
+            self.assertEqual(log_before, log.read_text(encoding="utf-8"))
+
+            (environment_root / "toolchain" / "bin" / "i686-elf-ld").unlink()
+            third = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, third.returncode, third.stderr)
+            self.assertNotIn("toolchain_status=up-to-date", third.stdout)
+            self.assertGreater(len(log.read_text(encoding="utf-8")), len(log_before))
+
+    def test_toolchain_force_preserves_downloads_sources_and_unknown_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, _, env = self._write_toolchain_fixture(temporary_root)
+            first = self._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, first.returncode, first.stderr)
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            download_sentinel = environment_root / "downloads" / "keep.txt"
+            source_sentinel = environment_root / "sources" / "keep.txt"
+            unknown_sentinel = environment_root / "unknown" / "keep.txt"
+            unrelated_build = environment_root / "build" / "unrelated" / "keep.txt"
+            for sentinel in (
+                download_sentinel,
+                source_sentinel,
+                unknown_sentinel,
+                unrelated_build,
+            ):
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.write_text("keep\n", encoding="utf-8")
+
+            forced = self._run_fixture_toolchain(fixture_root, "--force", env=env)
+            self.assertEqual(0, forced.returncode, forced.stderr)
+            for sentinel in (
+                download_sentinel,
+                source_sentinel,
+                unknown_sentinel,
+                unrelated_build,
+            ):
+                self.assertTrue(sentinel.is_file(), f"--force 误删：{sentinel}")
+
+    def test_toolchain_force_rejects_symlinked_owned_path_before_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, _, env = self._write_toolchain_fixture(temporary_root)
+            environment_root = Path(env["MINIOS_ENV_ROOT"])
+            build_directory = environment_root / "build" / "binutils-1.0"
+            build_directory.mkdir(parents=True)
+            build_sentinel = build_directory / "keep.txt"
+            build_sentinel.write_text("keep\n", encoding="utf-8")
+            outside = temporary_root / "outside"
+            outside.mkdir()
+            outside_sentinel = outside / "keep.txt"
+            outside_sentinel.write_text("keep\n", encoding="utf-8")
+            environment_root.mkdir(exist_ok=True)
+            (environment_root / "toolchain").symlink_to(
+                outside, target_is_directory=True
+            )
+
+            result = self._run_fixture_toolchain(
+                fixture_root, "--force", env=env
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertTrue(outside_sentinel.is_file())
+            self.assertTrue(build_sentinel.is_file(), "安全预检失败前不得部分删除")
 
     def test_ubuntu_create_reports_when_no_backend_is_available(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
