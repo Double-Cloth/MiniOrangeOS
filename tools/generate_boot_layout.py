@@ -10,7 +10,7 @@ import secrets
 import stat
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import NoReturn
 
 import build_dir_guard as guard
@@ -465,9 +465,16 @@ def _load_stage2(raw: bytes) -> tuple[int, int]:
         component_names.add(name)
         if type(artifact) is not str or not artifact:
             _fail(f"components[{index}].artifact 必须是非空字符串")
-        artifact_path = Path(artifact)
-        if artifact_path.is_absolute() or ".." in artifact_path.parts:
-            _fail(f"components[{index}].artifact 必须位于 BUILD_DIR 内")
+        if (
+            PurePosixPath(artifact).is_absolute()
+            or PureWindowsPath(artifact).is_absolute()
+            or "\\" in artifact
+            or "\x00" in artifact
+        ):
+            _fail(f"components[{index}].artifact 必须是 POSIX 相对路径")
+        artifact_parts = artifact.split("/")
+        if any(part in {"", ".", ".."} for part in artifact_parts):
+            _fail(f"components[{index}].artifact 含无效目录段")
         lba = _integer(component["lba"], f"components[{index}].lba")
         count = _integer(
             component["max_sectors"], f"components[{index}].max_sectors"
