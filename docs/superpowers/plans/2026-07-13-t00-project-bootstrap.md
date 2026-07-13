@@ -311,17 +311,21 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertEqual([], missing, f"缺少文件：{missing}")
 
     def test_gitignore_contains_required_rules(self) -> None:
+        path = ROOT / ".gitignore"
+        self.assertTrue(path.is_file(), "缺少文件：.gitignore")
         rules = {
             line.strip()
-            for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+            for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.startswith("#")
         }
         self.assertEqual(set(), REQUIRED_IGNORE_RULES - rules)
 
     def test_gitattributes_contains_required_rules(self) -> None:
+        path = ROOT / ".gitattributes"
+        self.assertTrue(path.is_file(), "缺少文件：.gitattributes")
         rules = {
             line.strip()
-            for line in (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+            for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.startswith("#")
         }
         self.assertEqual(set(), REQUIRED_ATTRIBUTE_RULES - rules)
@@ -337,7 +341,9 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertEqual([], bad_files, f"发现 CRLF：{bad_files}")
 
     def test_readme_records_authoritative_worktree(self) -> None:
-        content = (ROOT / "README.md").read_text(encoding="utf-8")
+        path = ROOT / "README.md"
+        self.assertTrue(path.is_file(), "缺少文件：README.md")
+        content = path.read_text(encoding="utf-8")
         self.assertIn("D:\\DC\\program-projects\\OTHER\\MiniOrangeOS", content)
         self.assertIn("MiniOrangeOS-Dev", content)
         self.assertIn("/mnt/d/DC/program-projects/OTHER/MiniOrangeOS", content)
