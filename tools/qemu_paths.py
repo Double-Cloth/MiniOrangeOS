@@ -57,9 +57,13 @@ class BoundLog:
 
     directory_descriptor: int
     name: str
-    validate_directory: Callable[[], None]
+    open_directory: Callable[[], int]
     original_target: tuple[int, int, int, int] | None
     test_hook: Callable[[str, str], None] | None = None
+
+    def _validate_directory(self) -> None:
+        descriptor = self.open_directory()
+        os.close(descriptor)
 
     def _target_identity(self) -> tuple[int, int, int, int] | None:
         try:
@@ -81,7 +85,7 @@ class BoundLog:
     def write_atomic(self, content: bytes, temporary_name: str) -> None:
         descriptor = -1
         try:
-            self.validate_directory()
+            self._validate_directory()
             self._validate_target()
             descriptor = os.open(
                 temporary_name,
@@ -110,7 +114,7 @@ class BoundLog:
             )
             if self.test_hook is not None:
                 self.test_hook("before-log-commit", temporary_name)
-            self.validate_directory()
+            self._validate_directory()
             self._validate_target()
             temporary_status = os.stat(
                 temporary_name,
@@ -134,34 +138,35 @@ class BoundLog:
                 src_dir_fd=self.directory_descriptor,
                 dst_dir_fd=self.directory_descriptor,
             )
-            committed = os.stat(
-                self.name,
-                dir_fd=self.directory_descriptor,
-                follow_symlinks=False,
-            )
-            committed_identity = (
-                committed.st_dev,
-                committed.st_ino,
-                committed.st_mode,
-                committed.st_nlink,
-                committed.st_size,
-            )
-            current_descriptor = os.fstat(descriptor)
-            descriptor_identity = (
-                current_descriptor.st_dev,
-                current_descriptor.st_ino,
-                current_descriptor.st_mode,
-                current_descriptor.st_nlink,
-                current_descriptor.st_size,
-            )
-            if (
-                committed_identity != descriptor_identity
-                or not stat.S_ISREG(committed.st_mode)
-                or committed.st_nlink != 1
-            ):
-                raise PathBoundaryError("最终日志身份与已写入临时文件不匹配")
-            os.fsync(self.directory_descriptor)
-            self.validate_directory()
+            # DrvFS/v9fs 在 renameat 后、写入 FD 仍打开时不会让目标名称可见。
+            # rename 已绑定经过身份复核的临时文件，提交后关闭 FD，再从重新验证
+            # 的同一目录读取目标并与 rename 前保存的完整身份比较。
+            os.close(descriptor)
+            descriptor = -1
+            committed_directory = self.open_directory()
+            try:
+                committed = os.stat(
+                    self.name,
+                    dir_fd=committed_directory,
+                    follow_symlinks=False,
+                )
+                committed_identity = (
+                    committed.st_dev,
+                    committed.st_ino,
+                    committed.st_mode,
+                    committed.st_nlink,
+                    committed.st_size,
+                )
+                if (
+                    committed_identity != expected_identity
+                    or not stat.S_ISREG(committed.st_mode)
+                    or committed.st_nlink != 1
+                ):
+                    raise PathBoundaryError("最终日志身份与已写入临时文件不匹配")
+                os.fsync(committed_directory)
+            finally:
+                os.close(committed_directory)
+            self._validate_directory()
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -321,7 +326,7 @@ class BoundBuild:
                 descriptor = next_descriptor
             expected_directory = guard._identity(os.fstat(descriptor))
 
-            def validate_directory() -> None:
+            def open_directory() -> int:
                 fresh = self._fresh_build()
                 try:
                     for part in parts[:-1]:
@@ -330,10 +335,13 @@ class BoundBuild:
                         fresh = next_descriptor
                     if guard._identity(os.fstat(fresh)) != expected_directory:
                         raise PathBoundaryError("日志父目录在运行过程中被替换")
+                    return fresh
                 except OSError as error:
-                    raise PathBoundaryError(f"无法复核日志父目录：{error}") from error
-                finally:
                     os.close(fresh)
+                    raise PathBoundaryError(f"无法复核日志父目录：{error}") from error
+                except BaseException:
+                    os.close(fresh)
+                    raise
 
             try:
                 status = os.stat(
@@ -350,11 +358,12 @@ class BoundBuild:
                     status.st_mode,
                     status.st_nlink,
                 )
-            validate_directory()
+            validated_descriptor = open_directory()
+            os.close(validated_descriptor)
             return BoundLog(
                 descriptor,
                 parts[-1],
-                validate_directory,
+                open_directory,
                 original_target,
                 test_hook,
             )

@@ -1075,6 +1075,59 @@ class QemuRuntimeTests(unittest.TestCase):
         self.assertIn("[TEST] case=", text)
         self.assertIn("[TEST] all PASS", text)
 
+    def test_real_public_entry_commits_log_on_drvfs(self) -> None:
+        filesystem = subprocess.run(
+            ["stat", "-f", "-c", "%T", str(ROOT)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if filesystem.returncode != 0 or filesystem.stdout.strip() != "v9fs":
+            self.skipTest("仅在 WSL DrvFS/v9fs 权威工作树验证提交可见性")
+
+        build_dir = f"build/t03-drvfs-public-{os.getpid()}-{time.time_ns()}"
+        command = [
+            "bash",
+            "environment/with-env.sh",
+            "make",
+            "test-qemu",
+            f"BUILD_DIR={build_dir}",
+            "QEMU_TIMEOUT=5",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            log = ROOT / build_dir / "test-logs/qemu-serial.log"
+            self.assertIn("[TEST] all PASS", log.read_text(encoding="utf-8"))
+        finally:
+            cleanup = subprocess.run(
+                [
+                    "bash",
+                    "environment/with-env.sh",
+                    "make",
+                    "clean",
+                    f"BUILD_DIR={build_dir}",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                cleanup.returncode,
+                "DrvFS 测试构建目录清理失败：" + cleanup.stdout + cleanup.stderr,
+            )
+
     def test_real_fixture_completes_debug_exit_handshake_without_runner_kill(self) -> None:
         fixture = self.workspace / "build/test-fixtures/protocol-pass.img"
         command = [
