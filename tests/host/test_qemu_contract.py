@@ -49,7 +49,7 @@ class QemuContractTests(unittest.TestCase):
         text = self._makefile()
         for variable, default in (
             ("QEMU", "qemu-system-i386"),
-            ("GDB", "i686-elf-gdb"),
+            ("GDB", "gdb"),
             ("QEMU_TIMEOUT", None),
             ("QEMU_LOG_MAX_BYTES", None),
             ("GDB_ENDPOINT", "tcp:127.0.0.1:1234"),
