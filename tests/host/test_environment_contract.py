@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -109,6 +110,18 @@ VERIFY_READ_ONLY_PROTECTED_LINES = (
         r"\s+[\"']?/usr/local/bin/i686-elf-(?:gcc|ld|\*)[\"']?"
         r"\s*(?:\]\]?|;\s*then)?\s*$"
     ),
+)
+
+WSL_OWNERSHIP_SOURCE_CHAIN = re.compile(
+    r"(?im)^\s*\$LxssRoot\s*=\s*"
+    r"[\"']HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss[\"']"
+    r"\s*$\s*"
+    r"^\s*\$LxssKey\s*=\s*Get-ChildItem\s+-LiteralPath\s+\$LxssRoot\b"
+    r"[^\r\n]*\bDistributionName\b[^\r\n]*-ceq\s+\$DistroName\b"
+    r"[^\r\n]*Select-Object\s+-ExpandProperty\s+PSPath(?:\s+-First\s+1)?"
+    r"\s*$\s*"
+    r"^\s*\$RegisteredBasePath\s*=\s*\(\s*Get-ItemProperty\s+"
+    r"-LiteralPath\s+\$LxssKey\s*\)\.BasePath\s*$"
 )
 
 
@@ -234,15 +247,59 @@ class EnvironmentContractTests(unittest.TestCase):
                 value = expanded
             return value
 
+        def split_unquoted_semicolons(line: str) -> list[str]:
+            segments: list[str] = []
+            start = 0
+            quote: str | None = None
+            escaped = False
+            for index, character in enumerate(line):
+                if escaped:
+                    escaped = False
+                    continue
+                if character == "\\":
+                    escaped = True
+                    continue
+                if quote is not None:
+                    if character == quote:
+                        quote = None
+                    continue
+                if character in {"'", '"'}:
+                    quote = character
+                elif character == ";":
+                    segments.append(line[start:index])
+                    start = index + 1
+            segments.append(line[start:])
+            return segments
+
         for line in content.splitlines():
-            expanded_line = expand(line)
-            match = assignment_pattern.match(expanded_line)
-            if match is not None:
-                raw_value = next(
-                    value for value in match.groups()[1:] if value is not None
-                )
-                assignments[match.group(1)] = expand(raw_value)
-            expanded_lines.append(expanded_line)
+            for segment in split_unquoted_semicolons(line):
+                expanded_segment = expand(segment.strip())
+                try:
+                    tokens = shlex.split(expanded_segment, comments=False)
+                except ValueError:
+                    tokens = []
+                if tokens and tokens[0] in {"export", "readonly", "local"}:
+                    compound_assignments = tokens[1:]
+                    if compound_assignments and all(
+                        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token)
+                        for token in compound_assignments
+                    ):
+                        expanded_tokens = [tokens[0]]
+                        for token in compound_assignments:
+                            key, raw_value = token.split("=", 1)
+                            value = expand(raw_value)
+                            assignments[key] = value
+                            expanded_tokens.append(f"{key}={value}")
+                        expanded_lines.append(" ".join(expanded_tokens))
+                        continue
+
+                match = assignment_pattern.match(expanded_segment)
+                if match is not None:
+                    raw_value = next(
+                        value for value in match.groups()[1:] if value is not None
+                    )
+                    assignments[match.group(1)] = expand(raw_value)
+                expanded_lines.append(expanded_segment)
         return "\n".join(expanded_lines)
 
     def _shell_policy_violations(
@@ -359,6 +416,14 @@ class EnvironmentContractTests(unittest.TestCase):
                 "root=/usr\nleaf=/local\ntarget=\"${root}${leaf}\"\n"
                 "cp tool \"$target/bin/tool\"\n"
             ),
+            "semicolon variable split": (
+                "root=/usr; leaf=/local\ntarget=\"${root}${leaf}\"; "
+                "cp tool \"$target/bin/tool\"\n"
+            ),
+            "local compound variable split": (
+                "local root=/usr leaf=/local\n"
+                "target=\"${root}${leaf}\"\ncp tool \"$target/bin/tool\"\n"
+            ),
         }
         for bypass, source in malicious_sources.items():
             with self.subTest(bypass=bypass):
@@ -380,6 +445,24 @@ class EnvironmentContractTests(unittest.TestCase):
                 "environment/verify.sh",
                 "if compgen -G '/usr/local/bin/i686-elf-*' > /dev/null; then\nfi\n",
             ),
+        )
+
+    def test_wsl_ownership_source_chain_rejects_unrelated_registry_value(
+        self,
+    ) -> None:
+        valid_chain = r"""
+$LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+$LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
+$RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+"""
+        unrelated_bypass = r"""
+$Unused = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss').BasePath
+$RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated').BasePath
+"""
+        self.assertIsNotNone(WSL_OWNERSHIP_SOURCE_CHAIN.search(valid_chain))
+        self.assertIsNone(
+            WSL_OWNERSHIP_SOURCE_CHAIN.search(unrelated_bypass),
+            "未使用的 Lxss 读取不能为无关 RegisteredBasePath 提供 ownership 证据",
         )
 
     def test_wsl_scripts_restrict_names_and_authorized_root(self) -> None:
@@ -425,16 +508,8 @@ class EnvironmentContractTests(unittest.TestCase):
 
         self.assertRegex(
             ownership,
-            r"(?is)Get-ItemProperty(?:Value)?\b.*Lxss.*BasePath",
-            "ownership helper 必须从当前用户 Lxss 注册项读取 BasePath",
-        )
-        self.assertRegex(
-            ownership,
-            r"(?im)^\s*\$RegisteredBasePath\s*=\s*(?:"
-            r"\(\s*Get-ItemProperty\b[^\r\n]*\)\.BasePath|"
-            r"Get-ItemPropertyValue\b[^\r\n]*(?:-Name\s+)?"
-            r"[\"']?BasePath[\"']?)\s*$",
-            "Lxss BasePath 注册读取结果必须直接赋给 RegisteredBasePath",
+            WSL_OWNERSHIP_SOURCE_CHAIN,
+            "RegisteredBasePath 必须绑定到按 DistroName 选出的固定 HKCU LxssKey",
         )
         self.assertRegex(
             ownership,
