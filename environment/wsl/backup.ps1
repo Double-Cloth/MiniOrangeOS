@@ -9,11 +9,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
+$SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 
 function Assert-AllowedDistroName {
     if ($DistroName -ceq 'MiniOrangeOS-Dev') { return }
-    if ($DistroName.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal) -and
-        $DistroName.Length -gt 'MiniOrangeOS-Dev-Test-'.Length) { return }
+    if ($DistroName -cmatch '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$') { return }
     throw "拒绝非项目 WSL 发行版名：$DistroName"
 }
 
@@ -57,21 +57,29 @@ function Get-WslDistributionNames {
 function Assert-WslDistributionOwnership {
     param([string]$DistroName, [string]$ExpectedPath)
     $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    $LxssMatches = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName })
+    if ($LxssMatches.Count -ne 1) { throw "Lxss 注册项必须唯一：$DistroName count=$($LxssMatches.Count)" }
     $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
     $RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+    if ($LxssMatches[0].PSPath -cne $LxssKey) { throw "Lxss 注册项在 ownership 检查期间发生变化：$DistroName" }
     if (-not $LxssKey -or -not $RegisteredBasePath) { throw "发行版缺少可信 Lxss BasePath：$DistroName" }
     $RegisteredFullPath = [IO.Path]::GetFullPath($RegisteredBasePath)
     $ExpectedFullPath = [IO.Path]::GetFullPath($ExpectedPath)
     if ($RegisteredFullPath -cne $ExpectedFullPath) { throw "Lxss BasePath 不匹配：$RegisteredFullPath" }
     [void](Assert-PathWithinRoot $RegisteredFullPath $AuthorizedRoot)
     Assert-NoReparsePointComponents $RegisteredFullPath
+    if (-not (Test-Path -LiteralPath $RegisteredFullPath -PathType Container)) { throw "注册 BasePath 末端必须是现有目录：$RegisteredFullPath" }
+    $RegisteredItem = Get-Item -LiteralPath $RegisteredFullPath -Force
+    if (-not $RegisteredItem.PSIsContainer -or ($RegisteredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "注册 BasePath 末端不是可信普通目录：$RegisteredFullPath"
+    }
 }
 
 if ($AuthorizedRoot -cne $ProductionAuthorizedRoot) {
     $TestPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\minios-wsl-test-'
     if ($env:MINIOS_WSL_TEST_MODE -cne '1' -or
         -not [IO.Path]::GetFullPath($AuthorizedRoot).StartsWith($TestPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $DistroName.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal)) {
+        -not ($DistroName -cmatch $SafeTestDistroPattern)) {
         throw "授权根只能是 $ProductionAuthorizedRoot；临时测试根必须位于系统临时目录"
     }
 }
@@ -97,10 +105,26 @@ Assert-WslDistributionOwnership $DistroName $ExpectedPath
 Assert-NoReparsePointComponents $ExportsRoot
 & $WslExecutable --terminate $DistroName
 if ($LASTEXITCODE -ne 0) { throw "终止 WSL 失败：$DistroName" }
+Assert-NoReparsePointComponents $ExportsRoot
+Assert-NoReparsePointComponents $PartialPath
 & $WslExecutable --export $DistroName $PartialPath
 if ($LASTEXITCODE -ne 0) {
     if (Test-Path -LiteralPath $PartialPath) { Remove-Item -LiteralPath $PartialPath -Force }
     throw "导出 WSL 失败：$DistroName"
 }
-Move-Item -LiteralPath $PartialPath -Destination $ExportPath
+try {
+    if (-not (Test-Path -LiteralPath $PartialPath -PathType Leaf)) { throw "导出未生成普通 partial 文件：$PartialPath" }
+    $PartialItem = Get-Item -LiteralPath $PartialPath -Force
+    if ($PartialItem.PSIsContainer -or
+        ($PartialItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $PartialItem.Length -le 0) {
+        throw "导出 partial 必须是非空、非 reparse 普通文件：$PartialPath"
+    }
+    if (Test-Path -LiteralPath $ExportPath) { throw "导出期间目标被占用，拒绝移动：$ExportPath" }
+    Move-Item -LiteralPath $PartialPath -Destination $ExportPath -ErrorAction Stop
+}
+catch {
+    if (Test-Path -LiteralPath $PartialPath) { Remove-Item -LiteralPath $PartialPath -Force }
+    throw
+}
 Write-Host "备份完成：$ExportPath"

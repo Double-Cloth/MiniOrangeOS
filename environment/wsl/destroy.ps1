@@ -10,12 +10,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
+$SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 $Script:DestructionConfirmed = $false
 
 function Assert-AllowedDistroName {
     if ($DistroName -ceq 'MiniOrangeOS-Dev') { return }
-    if ($DistroName.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal) -and
-        $DistroName.Length -gt 'MiniOrangeOS-Dev-Test-'.Length) { return }
+    if ($DistroName -cmatch '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$') { return }
     throw "拒绝非项目 WSL 发行版名：$DistroName"
 }
 
@@ -44,6 +44,9 @@ function Assert-WslDistributionOwnership {
     $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
     $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
     $RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+    $LxssMatches = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName })
+    if ($LxssMatches.Count -ne 1) { throw "Lxss 注册项必须唯一：$DistroName count=$($LxssMatches.Count)" }
+    if ($LxssMatches[0].PSPath -cne $LxssKey) { throw "Lxss 注册项在 ownership 检查期间发生变化：$DistroName" }
     if (-not $LxssKey -or -not $RegisteredBasePath) { throw "发行版缺少可信 Lxss BasePath：$DistroName" }
     $RegisteredFullPath = [IO.Path]::GetFullPath($RegisteredBasePath)
     $ExpectedFullPath = [IO.Path]::GetFullPath($ExpectedPath)
@@ -56,6 +59,9 @@ function Assert-WslDistributionOwnership {
     $RegisteredItem = Get-Item -LiteralPath $RegisteredFullPath -Force
     if ($RegisteredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "注册路径本身是 ReparsePoint：$RegisteredFullPath"
+    }
+    if (-not $RegisteredItem.PSIsContainer -or -not (Test-Path -LiteralPath $RegisteredFullPath -PathType Container)) {
+        throw "注册 BasePath 末端必须是现有普通目录：$RegisteredFullPath"
     }
     Assert-NoReparsePointComponents $RegisteredFullPath
 }
@@ -87,7 +93,7 @@ if ($AuthorizedRoot -cne $ProductionAuthorizedRoot) {
     $TestPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\minios-wsl-test-'
     if ($env:MINIOS_WSL_TEST_MODE -cne '1' -or
         -not [IO.Path]::GetFullPath($AuthorizedRoot).StartsWith($TestPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $DistroName.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal)) {
+        -not ($DistroName -cmatch $SafeTestDistroPattern)) {
         throw "授权根只能是 $ProductionAuthorizedRoot；临时测试根必须位于系统临时目录"
     }
 }
@@ -104,6 +110,7 @@ Assert-WslDistributionOwnership $DistroName $ExpectedPath
 Confirm-WslDestruction -Apply:$Apply -ConfirmName $ConfirmName -DistroName $DistroName
 if (-not $Script:DestructionConfirmed) { return }
 Invoke-ExactWslUnregister -DistroName $DistroName -WslExecutable $WslExecutable
+Assert-NoReparsePointComponents $ExpectedPath
 if (Test-Path -LiteralPath $ExpectedPath) {
     $Remaining = @(Get-ChildItem -LiteralPath $ExpectedPath -Force)
     if ($Remaining.Count -eq 0) { Remove-Item -LiteralPath $ExpectedPath -Force }

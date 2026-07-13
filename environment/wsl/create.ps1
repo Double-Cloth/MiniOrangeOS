@@ -4,6 +4,7 @@ param(
     [string]$AuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS',
     [string]$RootfsPath = '',
     [switch]$Bootstrap,
+    [switch]$SkipBootstrap,
     [string]$WslExecutable = 'wsl.exe',
     [string]$DownloadExecutable = ''
 )
@@ -15,6 +16,7 @@ $ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $VersionsPath = Join-Path $RepoRoot 'environment\versions.env'
 $RepoWslPath = '/mnt/d/DC/program-projects/OTHER/MiniOrangeOS'
+$SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 
 function Assert-RootOverrideAllowed {
     if ($AuthorizedRoot -cne $ProductionAuthorizedRoot) {
@@ -22,7 +24,7 @@ function Assert-RootOverrideAllowed {
         $RequestedRoot = [IO.Path]::GetFullPath($AuthorizedRoot)
         if ($env:MINIOS_WSL_TEST_MODE -cne '1' -or
             -not $RequestedRoot.StartsWith($TestPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-            -not $DistroName.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal)) {
+            -not ($DistroName -cmatch $SafeTestDistroPattern)) {
             throw "授权根只能是 $ProductionAuthorizedRoot；临时测试根必须位于系统临时目录"
         }
     }
@@ -31,8 +33,7 @@ function Assert-RootOverrideAllowed {
 function Assert-AllowedDistroName {
     param([string]$Name)
     if ($Name -ceq 'MiniOrangeOS-Dev') { return }
-    if ($Name.StartsWith('MiniOrangeOS-Dev-Test-', [StringComparison]::Ordinal) -and
-        $Name.Length -gt 'MiniOrangeOS-Dev-Test-'.Length) { return }
+    if ($Name -cmatch '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$') { return }
     throw "拒绝非项目 WSL 发行版名：$Name"
 }
 
@@ -86,8 +87,11 @@ function Test-WslDistributionExists {
 function Assert-WslDistributionOwnership {
     param([string]$DistroName, [string]$ExpectedPath)
     $LxssRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    $LxssMatches = @(Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName })
+    if ($LxssMatches.Count -ne 1) { throw "Lxss 注册项必须唯一：$DistroName count=$($LxssMatches.Count)" }
     $LxssKey = Get-ChildItem -LiteralPath $LxssRoot | Where-Object { (Get-ItemProperty -LiteralPath $_.PSPath).DistributionName -ceq $DistroName } | Select-Object -ExpandProperty PSPath -First 1
     $RegisteredBasePath = (Get-ItemProperty -LiteralPath $LxssKey).BasePath
+    if ($LxssMatches[0].PSPath -cne $LxssKey) { throw "Lxss 注册项在 ownership 检查期间发生变化：$DistroName" }
     if (-not $LxssKey -or -not $RegisteredBasePath) {
         throw "发行版缺少可信 Lxss BasePath：$DistroName"
     }
@@ -98,6 +102,14 @@ function Assert-WslDistributionOwnership {
     }
     [void](Assert-PathWithinAuthorizedRoot $RegisteredFullPath)
     Assert-NoReparsePointComponents $RegisteredFullPath
+    if (-not (Test-Path -LiteralPath $RegisteredFullPath -PathType Container)) {
+        throw "注册 BasePath 末端必须是现有目录：$RegisteredFullPath"
+    }
+    $RegisteredItem = Get-Item -LiteralPath $RegisteredFullPath -Force
+    if (-not $RegisteredItem.PSIsContainer -or
+        ($RegisteredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "注册 BasePath 末端不是可信普通目录：$RegisteredFullPath"
+    }
 }
 
 function Read-VersionLock {
@@ -175,6 +187,7 @@ function Invoke-Bootstrap {
 
 Assert-RootOverrideAllowed
 Assert-AllowedDistroName $DistroName
+if ($Bootstrap -and $SkipBootstrap) { throw '-Bootstrap 与 -SkipBootstrap 不能同时使用' }
 $ExpectedPath = Get-ExpectedInstallPath $DistroName
 [void](Assert-PathWithinAuthorizedRoot $ExpectedPath)
 Assert-NoReparsePointComponents ([IO.Path]::GetFullPath($AuthorizedRoot))
@@ -184,6 +197,7 @@ if (Test-WslDistributionExists $DistroName) {
     Assert-WslDistributionOwnership $DistroName $ExpectedPath
     Write-Host "发行版已存在且 ownership 验证通过：$DistroName"
     if ($Bootstrap) { Invoke-Bootstrap }
+    elseif ($SkipBootstrap) { Write-Host '已按 -SkipBootstrap 跳过 bootstrap' }
     return
 }
 
@@ -196,3 +210,4 @@ if ($LASTEXITCODE -ne 0) { throw "WSL import 失败：$DistroName" }
 Assert-WslDistributionOwnership $DistroName $ExpectedPath
 Write-Host "发行版创建完成：$DistroName"
 if ($Bootstrap) { Invoke-Bootstrap }
+elseif ($SkipBootstrap) { Write-Host '已按 -SkipBootstrap 跳过 bootstrap' }

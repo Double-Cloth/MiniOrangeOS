@@ -646,9 +646,65 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertRegex(content, r"(?m)^\s*if\s+\(\(\s*EUID\s*!=\s*0\s*\)\)")
         self.assertRegex(
             content,
-            r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path)",
+            r"(?m)^\s*mv\s+--\s+[^\r\n]*(?:\.partial|partial_path|package_lock_partial)",
         )
         self.assertNotIn("NOPASSWD", content)
+
+    def test_bootstrap_gates_identity_user_and_environment_before_mutation(
+        self,
+    ) -> None:
+        content = self._without_comments(
+            self._read_required("environment/bootstrap-inside.sh")
+        )
+        for token in (
+            "/etc/os-release",
+            "VERSION_ID",
+            "WSL_DISTRO_NAME",
+            "MINIOS_CONTAINER",
+            "MINIOS_ENV_ROOT",
+            "/opt/miniorangeos-dev",
+            "runuser",
+            "lstat",
+            "--write-package-lock",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, content)
+        gate_positions = [
+            content.find("validate_isolation_identity"),
+            content.find("resolve_target_user"),
+            content.find("validate_environment_root"),
+        ]
+        apt_position = content.find("apt-get update")
+        self.assertTrue(all(position >= 0 for position in gate_positions))
+        self.assertGreater(apt_position, max(gate_positions))
+        root_phase = self._function_body(
+            content, "run_system_phase", powershell=False
+        )
+        self.assertNotRegex(
+            root_phase,
+            r"(?m)^\s*(?:install|chown|chmod|mktemp|mv)\b[^\r\n]*"
+            r"(?:environment_root|state_directory|lock_path)",
+            "root 主流程不得在目标用户路径执行写入或权限变更",
+        )
+
+    def test_wsl_scripts_use_single_segment_test_names_and_skip_bootstrap(
+        self,
+    ) -> None:
+        expected_pattern = (
+            "^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$"
+        )
+        for relative_path in WSL_SCRIPTS:
+            with self.subTest(path=relative_path):
+                content = self._read_required(relative_path)
+                self.assertIn(expected_pattern, content)
+                self.assertIn("Assert-WslDistributionOwnership", content)
+        create = self._read_required("environment/wsl/create.ps1")
+        self.assertIn("$SkipBootstrap", create)
+        self.assertRegex(
+            create,
+            r"(?is)if\s*\(\s*\$Bootstrap\s+-and\s+\$SkipBootstrap\s*\)"
+            r"\s*\{[^}]*\bthrow\b",
+        )
 
     def test_containerfile_pins_ubuntu_digest_and_project_labels(self) -> None:
         content = self._read_required("environment/Containerfile")

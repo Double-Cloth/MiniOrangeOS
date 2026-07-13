@@ -70,10 +70,44 @@ function Invoke-WithFakeLxss {
     function wsl.exe {
         param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
         [IO.File]::AppendAllText($env:FAKE_WSL_LOG, (($Arguments -join ' ') + "`n"))
+        if ($env:FAKE_WSL_JSON_LOG) {
+            [IO.File]::AppendAllText($env:FAKE_WSL_JSON_LOG, ((ConvertTo-Json -Compress -InputObject @($Arguments)) + "`n"))
+        }
         if ($Arguments.Count -ge 2 -and $Arguments[0] -ceq '--list') {
             Write-Output $env:FAKE_WSL_LIST
         }
+        if ($Arguments.Count -ge 3 -and $Arguments[0] -ceq '--export') {
+            $Partial = $Arguments[2]
+            switch ($env:FAKE_WSL_EXPORT_MODE) {
+                'success' {
+                    [IO.File]::WriteAllText($Partial, 'fake-backup', [Text.Encoding]::UTF8)
+                }
+                'failure' {
+                    [IO.File]::WriteAllText($Partial, 'incomplete', [Text.Encoding]::UTF8)
+                    $global:LASTEXITCODE = 7
+                    return
+                }
+                'empty' {
+                    [IO.File]::WriteAllBytes($Partial, [byte[]]@())
+                }
+                'junction' {
+                    [void][IO.Directory]::CreateDirectory($env:FAKE_WSL_JUNCTION_TARGET)
+                    [void](New-Item -ItemType Junction -Path $Partial -Target $env:FAKE_WSL_JUNCTION_TARGET)
+                }
+                'move-fail' {
+                    [IO.File]::WriteAllText($Partial, 'fake-backup', [Text.Encoding]::UTF8)
+                    [void][IO.Directory]::CreateDirectory($Partial.Substring(0, $Partial.Length - '.partial'.Length))
+                }
+            }
+        }
         $global:LASTEXITCODE = 0
+    }
+    function Get-FileHash {
+        param([string]$LiteralPath, [string]$Algorithm)
+        if ($env:FAKE_FILE_HASH) {
+            return [pscustomobject]@{ Hash = $env:FAKE_FILE_HASH }
+        }
+        return Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm
     }
 
     & $ScriptPath @Arguments
@@ -98,13 +132,41 @@ $Exports = Join-Path $AuthorizedRoot 'exports'
 [void][IO.Directory]::CreateDirectory($Exports)
 $FakeWsl = Join-Path $TemporaryRoot 'fake-wsl.cmd'
 $FakeDownload = Join-Path $TemporaryRoot 'fake-download.cmd'
+$FakeWslArguments = Join-Path $TemporaryRoot 'fake-wsl-arguments.exe'
 $FakeLog = Join-Path $TemporaryRoot 'wsl.log'
 $DownloadLog = Join-Path $TemporaryRoot 'download.log'
 [IO.File]::WriteAllText(
     $FakeWsl,
-    "@echo off`r`necho %*>>`"%FAKE_WSL_LOG%`"`r`nif `"%1`"==`"--list`" echo %FAKE_WSL_LIST%`r`nexit /b 0`r`n",
+    "@echo off`r`necho %* >> `"%FAKE_WSL_LOG%`"`r`nif `"%1`"==`"--list`" echo %FAKE_WSL_LIST%`r`nexit /b 0`r`n",
     [Text.Encoding]::ASCII
 )
+$FakeArgumentSource = @'
+using System;
+using System.IO;
+using System.Text;
+
+public static class FakeWslArguments
+{
+    public static int Main(string[] args)
+    {
+        string log = Environment.GetEnvironmentVariable("FAKE_WSL_JSON_LOG");
+        using (StreamWriter writer = File.AppendText(log))
+        {
+            writer.WriteLine("CALL");
+            foreach (string argument in args)
+            {
+                writer.WriteLine("ARG=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(argument)));
+            }
+        }
+        if (args.Length > 0 && args[0] == "--list")
+        {
+            Console.WriteLine(Environment.GetEnvironmentVariable("FAKE_WSL_LIST"));
+        }
+        return 0;
+    }
+}
+'@
+Add-Type -TypeDefinition $FakeArgumentSource -Language CSharp -OutputAssembly $FakeWslArguments -OutputType ConsoleApplication -ErrorAction Stop
 [IO.File]::WriteAllText(
     $FakeDownload,
     "@echo off`r`necho %*>>`"%FAKE_DOWNLOAD_LOG%`"`r`n>`"%2`" echo corrupt-rootfs`r`nexit /b 0`r`n",
@@ -273,6 +335,127 @@ try {
         Assert-True ((Read-FakeLog $FakeLog) -notmatch '--import') '已有发行版仍触发 import'
     }
 
+    Invoke-Test '四个 WSL 入口拒绝非单路径段测试名称' {
+        $InvalidNames = @(
+            'MiniOrangeOS-Dev-Test-',
+            'MiniOrangeOS-Dev-Test-.',
+            'MiniOrangeOS-Dev-Test-..',
+            'MiniOrangeOS-Dev-Test-a/b',
+            'MiniOrangeOS-Dev-Test-a\b',
+            'MiniOrangeOS-Dev-Test-a:b',
+            'MiniOrangeOS-Dev-Test-a b',
+            'MiniOrangeOS-Dev-Test-测试'
+        )
+        foreach ($InvalidName in $InvalidNames) {
+            foreach ($ScriptPath in @($CreateScript, $EnterScript, $BackupScript, $DestroyScript)) {
+                Reset-FakeLog $FakeLog
+                $Arguments = @{
+                    DistroName = $InvalidName
+                    AuthorizedRoot = $AuthorizedRoot
+                    WslExecutable = $FakeWsl
+                }
+                if ($ScriptPath -ceq $CreateScript) { $Arguments.SkipBootstrap = $true }
+                $Thrown = $false
+                try { & $ScriptPath @Arguments } catch { $Thrown = $true }
+                Assert-True $Thrown "非法名称未拒绝：$InvalidName / $ScriptPath"
+                $Log = Read-FakeLog $FakeLog
+                Assert-True ($Log -notmatch '--import|--export|--terminate|--unregister|(?m)^-d ') "非法名称触发危险后端：$InvalidName"
+            }
+        }
+    }
+
+    Invoke-Test '所有入口拒绝缺失的 Lxss BasePath 末端' {
+        $MissingName = 'MiniOrangeOS-Dev-Test-MissingBase'
+        $MissingPath = Join-Path (Join-Path $AuthorizedRoot 'drills') $MissingName
+        $env:FAKE_WSL_LIST = $MissingName
+        foreach ($ScriptPath in @($CreateScript, $EnterScript, $BackupScript, $DestroyScript)) {
+            Reset-FakeLog $FakeLog
+            $Arguments = @{
+                DistroName = $MissingName
+                AuthorizedRoot = $AuthorizedRoot
+                WslExecutable = $FakeWsl
+            }
+            if ($ScriptPath -ceq $CreateScript) { $Arguments.SkipBootstrap = $true }
+            if ($ScriptPath -ceq $BackupScript) { $Arguments.ExportPath = Join-Path $Exports 'missing-base.tar' }
+            $Thrown = $false
+            try { Invoke-WithFakeLxss $ScriptPath $Arguments $MissingName $MissingPath } catch { $Thrown = $true }
+            Assert-True $Thrown "缺失 BasePath 未拒绝：$ScriptPath"
+            $Log = Read-FakeLog $FakeLog
+            Assert-True ($Log -notmatch '--import|--export|--terminate|--unregister|(?m)^-d ') "缺失 BasePath 触发危险后端：$ScriptPath"
+        }
+        $env:FAKE_WSL_LIST = $DistroName
+    }
+
+    Invoke-Test '所有入口拒绝授权根外 BasePath 且不调用危险后端' {
+        $ExternalName = 'MiniOrangeOS-Dev-Test-ExternalBase'
+        $ExternalExpected = Join-Path (Join-Path $AuthorizedRoot 'drills') $ExternalName
+        [void][IO.Directory]::CreateDirectory($ExternalExpected)
+        $ExternalBase = Join-Path $TemporaryRoot 'external-registered-base'
+        [void][IO.Directory]::CreateDirectory($ExternalBase)
+        $env:FAKE_WSL_LIST = $ExternalName
+        foreach ($ScriptPath in @($CreateScript, $EnterScript, $BackupScript, $DestroyScript)) {
+            Reset-FakeLog $FakeLog
+            $Arguments = @{
+                DistroName = $ExternalName
+                AuthorizedRoot = $AuthorizedRoot
+                WslExecutable = $FakeWsl
+            }
+            if ($ScriptPath -ceq $CreateScript) { $Arguments.SkipBootstrap = $true }
+            if ($ScriptPath -ceq $BackupScript) { $Arguments.ExportPath = Join-Path $Exports 'external-base.tar' }
+            $Thrown = $false
+            try { Invoke-WithFakeLxss $ScriptPath $Arguments $ExternalName $ExternalBase } catch { $Thrown = $true }
+            Assert-True $Thrown "授权根外 BasePath 未拒绝：$ScriptPath"
+            Assert-True ((Read-FakeLog $FakeLog) -notmatch '--import|--export|--terminate|--unregister|(?m)^-d ') "授权根外 BasePath 触发危险后端：$ScriptPath"
+        }
+        $env:FAKE_WSL_LIST = $DistroName
+    }
+
+    Invoke-Test 'create fake 下载、import 和两阶段 bootstrap 参数精确' {
+        Reset-FakeLog $FakeLog
+        Reset-FakeLog $DownloadLog
+        $CreateName = 'MiniOrangeOS-Dev-Test-CreateImport'
+        $CreatePath = Join-Path (Join-Path $AuthorizedRoot 'drills') $CreateName
+        $env:FAKE_WSL_LIST = 'Other-Distro'
+        $env:FAKE_FILE_HASH = '9b2f7730dc68227dd04a9f3e5eab86ad85caf556b8606ad94f1f29ff5c4fd3f5'
+        $Arguments = @{
+            DistroName = $CreateName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWsl
+            DownloadExecutable = $FakeDownload
+            Bootstrap = $true
+        }
+        try {
+            Invoke-WithFakeLxss $CreateScript $Arguments $CreateName $CreatePath
+        }
+        finally {
+            Remove-Item Env:FAKE_FILE_HASH -ErrorAction SilentlyContinue
+        }
+        $Log = Read-FakeLog $FakeLog
+        Assert-True ($Log -match "--import\s+$([regex]::Escape($CreateName))") ("verified 下载后未 import 精确名称：$Log")
+        Assert-True ($Log -match "-d $CreateName -u root -- bash .+ --system-only --target-user minios") ("缺少 root system-only bootstrap：$Log")
+        Assert-True ($Log -match "-d $CreateName -u minios -- bash .+ --toolchain-only --target-user minios") ("缺少普通用户 toolchain-only bootstrap：$Log")
+    }
+
+    Invoke-Test 'create SkipBootstrap 可绑定且与 Bootstrap 冲突' {
+        Reset-FakeLog $FakeLog
+        $env:FAKE_WSL_LIST = $DistroName
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWsl
+            Bootstrap = $true
+            SkipBootstrap = $true
+        }
+        $Thrown = $false
+        try { Invoke-WithFakeLxss $CreateScript $Arguments $DistroName $InstallPath } catch { $Thrown = $true }
+        Assert-True $Thrown 'Bootstrap/SkipBootstrap 冲突未拒绝'
+        Assert-True ((Read-FakeLog $FakeLog) -eq '') '冲突参数仍调用 WSL'
+
+        $Arguments.Remove('Bootstrap')
+        Invoke-WithFakeLxss $CreateScript $Arguments $DistroName $InstallPath
+        Assert-True ((Read-FakeLog $FakeLog) -notmatch 'system-only|toolchain-only') 'SkipBootstrap 仍执行 bootstrap'
+    }
+
     Invoke-Test 'backup 已有目标时不 export 或覆盖' {
         Reset-FakeLog $FakeLog
         $env:FAKE_WSL_LIST = $DistroName
@@ -297,6 +480,61 @@ try {
         Assert-True ([IO.File]::ReadAllText($ExistingExport) -eq 'keep') '已有目标被覆盖'
     }
 
+    Invoke-Test 'backup 校验 export partial、失败清理和移动竞态策略' {
+        $env:FAKE_WSL_LIST = $DistroName
+        $env:FAKE_WSL_JUNCTION_TARGET = Join-Path $TemporaryRoot 'backup-junction-target'
+        foreach ($Mode in @('success', 'failure', 'empty', 'junction', 'move-fail')) {
+            Reset-FakeLog $FakeLog
+            $env:FAKE_WSL_EXPORT_MODE = $Mode
+            $Export = Join-Path $Exports ("backup-$Mode.tar")
+            $Arguments = @{
+                DistroName = $DistroName
+                AuthorizedRoot = $AuthorizedRoot
+                WslExecutable = 'wsl.exe'
+                ExportPath = $Export
+            }
+            $Thrown = $false
+            try {
+                Invoke-WithFakeLxss $BackupScript $Arguments $DistroName $InstallPath
+            }
+            catch {
+                $Thrown = $true
+            }
+            if ($Mode -ceq 'success') {
+                Assert-True (-not $Thrown) '合法非空 partial 应完成备份'
+                Assert-True ((Test-Path -LiteralPath $Export -PathType Leaf) -and (Get-Item -LiteralPath $Export).Length -gt 0) '成功备份产物无效'
+            }
+            else {
+                Assert-True $Thrown "异常 export 模式应失败：$Mode"
+                Assert-True (-not (Test-Path -LiteralPath ($Export + '.partial'))) "异常后遗留 partial：$Mode"
+            }
+            if ($Mode -ceq 'move-fail') {
+                Assert-True (Test-Path -LiteralPath $Export -PathType Container) '移动竞态创建的未知目标应保留'
+            }
+            if (Test-Path -LiteralPath $Export -PathType Leaf) { Remove-Item -LiteralPath $Export -Force }
+            if (Test-Path -LiteralPath $Export -PathType Container) { Remove-Item -LiteralPath $Export -Force }
+        }
+
+        Reset-FakeLog $FakeLog
+        $PreexistingExport = Join-Path $Exports 'preexisting-partial.tar'
+        $PreexistingPartial = $PreexistingExport + '.partial'
+        [IO.File]::WriteAllText($PreexistingPartial, 'unknown', [Text.Encoding]::UTF8)
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = 'wsl.exe'
+            ExportPath = $PreexistingExport
+        }
+        $Thrown = $false
+        try { Invoke-WithFakeLxss $BackupScript $Arguments $DistroName $InstallPath } catch { $Thrown = $true }
+        Assert-True $Thrown '预存 partial 应拒绝'
+        Assert-True ([IO.File]::ReadAllText($PreexistingPartial) -eq 'unknown') '预存 partial 被改写'
+        Assert-True ((Read-FakeLog $FakeLog) -notmatch '--terminate|--export') '预存 partial 仍触发后端'
+        Remove-Item -LiteralPath $PreexistingPartial -Force
+        Remove-Item Env:FAKE_WSL_EXPORT_MODE -ErrorAction SilentlyContinue
+        Remove-Item Env:FAKE_WSL_JUNCTION_TARGET -ErrorAction SilentlyContinue
+    }
+
     Invoke-Test 'enter 只接受列表中的精确名称' {
         Reset-FakeLog $FakeLog
         $env:FAKE_WSL_LIST = $DistroName.ToLowerInvariant()
@@ -312,8 +550,44 @@ try {
 
         Reset-FakeLog $FakeLog
         $env:FAKE_WSL_LIST = $DistroName
-        & $EnterScript -DistroName $DistroName -AuthorizedRoot $AuthorizedRoot -WslExecutable $FakeWsl -Command 'true'
+        $EnterArgs = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWsl
+            Command = 'true'
+        }
+        Invoke-WithFakeLxss $EnterScript $EnterArgs $DistroName $InstallPath
         Assert-True ((Read-FakeLog $FakeLog) -match "-d $([regex]::Escape($DistroName))") '精确名称未进入 fake 发行版'
+    }
+
+    Invoke-Test 'enter 复杂命令参数逐项保持不变' {
+        $ArgumentsLog = Join-Path $TemporaryRoot 'wsl-arguments.log'
+        $env:FAKE_WSL_JSON_LOG = $ArgumentsLog
+        $env:FAKE_WSL_LIST = $DistroName
+        $ComplexCommand = @(
+            'bash',
+            '-lc',
+            'printf-%s-$HOME; echo a b',
+            '--',
+            'semi;colon',
+            'space value'
+        )
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWslArguments
+            Command = $ComplexCommand
+        }
+        Invoke-WithFakeLxss $EnterScript $Arguments $DistroName $InstallPath
+        $Lines = [IO.File]::ReadAllLines($ArgumentsLog)
+        $LastCall = [Array]::LastIndexOf($Lines, 'CALL')
+        Assert-True ($LastCall -ge 0) ("未记录 enter 调用：" + ($Lines -join '|'))
+        $ActualArguments = @($Lines[($LastCall + 1)..($Lines.Length - 1)] | ForEach-Object {
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
+        })
+        $ExpectedArguments = @('-d', $DistroName, '--') + $ComplexCommand
+        Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("复杂参数发生变化：" + ($ActualArguments -join '|'))
+        Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
     }
 
     Invoke-Test '真实 MiniOrangeOS-Dev 名称和 BasePath 只读验证' {
@@ -344,16 +618,238 @@ try {
             $SystemOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u minios -- bash $BootstrapPath --system-only 2>&1)
             $SystemStatus = $LASTEXITCODE
             Assert-True ($SystemStatus -ne 0) '普通用户执行 system-only 应失败'
-            Assert-True (($SystemOutput -join "`n") -match 'root') 'system-only 失败缺少 root 诊断'
+            Assert-True (($SystemOutput -join "`n") -match 'FAIL') 'system-only 失败缺少诊断'
 
             $ToolchainOutput = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $BootstrapPath --toolchain-only 2>&1)
             $ToolchainStatus = $LASTEXITCODE
             Assert-True ($ToolchainStatus -ne 0) 'root 执行 toolchain-only 应失败'
-            Assert-True (($ToolchainOutput -join "`n") -match '普通用户') 'toolchain-only 失败缺少普通用户诊断'
+            Assert-True (($ToolchainOutput -join "`n") -match 'FAIL') 'toolchain-only 失败缺少诊断'
         }
         finally {
             $ErrorActionPreference = $PreviousErrorAction
         }
+    }
+
+    Invoke-Test 'bootstrap fake 后端覆盖身份、降权状态写入与幂等' {
+        $HarnessPath = Join-Path $TemporaryRoot 'bootstrap-fake-test.sh'
+        $Harness = @'
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_script='/mnt/d/DC/program-projects/OTHER/MiniOrangeOS/environment/bootstrap-inside.sh'
+for token in MINIOS_WSL_CONF_PATH --write-package-lock validate_isolation_identity validate_environment_root run_as_target; do
+    grep -Fq -- "$token" "$source_script" || {
+        printf 'RED missing bootstrap safety token: %s\n' "$token" >&2
+        exit 99
+    }
+done
+
+root="/tmp/minios-bootstrap-test-$$"
+cleanup() {
+    case "$root" in /tmp/minios-bootstrap-test-*) rm -rf -- "$root" ;; *) exit 97 ;; esac
+}
+trap cleanup EXIT
+mkdir -p -- "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home/minios" "$root/logs"
+chmod 0755 "$root" "$root/repo" "$root/repo/environment" "$root/repo/tools" "$root/fake" "$root/home" "$root/logs"
+cp -- "$source_script" "$root/repo/environment/bootstrap-inside.sh"
+chmod 0755 "$root/repo/environment/bootstrap-inside.sh"
+target_uid="$(/usr/bin/id -u minios)"
+chown -R "minios:$target_uid" "$root/home/minios" "$root/logs"
+
+cat >"$root/good-os-release" <<'EOF'
+ID=ubuntu
+VERSION_ID="24.04"
+EOF
+cat >"$root/bad-os-release" <<'EOF'
+ID=debian
+VERSION_ID="12"
+EOF
+chmod 0644 "$root/good-os-release" "$root/bad-os-release"
+
+cat >"$root/fake/getent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == passwd && "$2" == minios ]]; then
+    printf 'minios:x:%s:%s::%s:/bin/bash\n' "$FAKE_TARGET_UID" "$FAKE_TARGET_UID" "$FAKE_TARGET_HOME"
+elif [[ "$1" == passwd && "$2" == evil ]]; then
+    printf 'evil:x:0:0::%s:/bin/bash\n' "$FAKE_TARGET_HOME"
+else
+    exec /usr/bin/getent "$@"
+fi
+EOF
+cat >"$root/fake/apt-get" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apt-get' >>"$FAKE_APT_LOG"
+printf ' <%s>' "$@" >>"$FAKE_APT_LOG"
+printf '\n' >>"$FAKE_APT_LOG"
+EOF
+cat >"$root/fake/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+package="${*: -1}"
+printf '%s=1.fake\n' "$package"
+EOF
+cat >"$root/fake/runuser" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'runuser' >>"$FAKE_RUNUSER_LOG"
+printf ' <%q>' "$@" >>"$FAKE_RUNUSER_LOG"
+printf '\n' >>"$FAKE_RUNUSER_LOG"
+exec /usr/sbin/runuser "$@"
+EOF
+cat >"$root/fake/sudo" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat >"$root/repo/tools/build_toolchain.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'uid=%s\nroot=%s\nargs=%s\n' "$(id -u)" "$MINIOS_ENV_ROOT" "$*" >>"$FAKE_TOOL_LOG"
+EOF
+chmod 0755 "$root/fake/"* "$root/repo/tools/build_toolchain.sh"
+
+apt_log="$root/apt.log"
+runuser_log="$root/runuser.log"
+tool_log="$root/logs/tool.log"
+: >"$apt_log"
+: >"$runuser_log"
+: >"$tool_log"
+chmod 0666 "$apt_log" "$runuser_log" "$tool_log"
+
+export PATH="$root/fake:/usr/sbin:/usr/bin:/sbin:/bin"
+export FAKE_TARGET_UID="$target_uid"
+export FAKE_TARGET_HOME="$root/home/minios"
+export FAKE_APT_LOG="$apt_log"
+export FAKE_RUNUSER_LOG="$runuser_log"
+export FAKE_TOOL_LOG="$tool_log"
+export MINIOS_BOOTSTRAP_TEST_MODE=1
+script="$root/repo/environment/bootstrap-inside.sh"
+good_os="$root/good-os-release"
+wsl_conf="$root/wsl.conf"
+
+apt_lines() { wc -l <"$apt_log"; }
+expect_gate_failure() {
+    local description="$1"
+    shift
+    local before
+    before="$(apt_lines)"
+    rm -f -- "$wsl_conf"
+    if "$@"; then
+        printf 'expected gate failure: %s\n' "$description" >&2
+        return 1
+    fi
+    [[ "$(apt_lines)" == "$before" ]] || { printf 'apt reached: %s\n' "$description" >&2; return 1; }
+    [[ ! -e "$wsl_conf" ]] || { printf 'wsl.conf written: %s\n' "$description" >&2; return 1; }
+}
+
+common=(
+    env
+    "PATH=$PATH"
+    "FAKE_TARGET_UID=$FAKE_TARGET_UID"
+    "FAKE_TARGET_HOME=$FAKE_TARGET_HOME"
+    "FAKE_APT_LOG=$FAKE_APT_LOG"
+    "FAKE_RUNUSER_LOG=$FAKE_RUNUSER_LOG"
+    "FAKE_TOOL_LOG=$FAKE_TOOL_LOG"
+    MINIOS_BOOTSTRAP_TEST_MODE=1
+    "MINIOS_WSL_CONF_PATH=$wsl_conf"
+)
+
+expect_gate_failure wrong-os "${common[@]}" MINIOS_OS_RELEASE_FILE="$root/bad-os-release" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only
+expect_gate_failure missing-identity "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME= MINIOS_CONTAINER= "$script" --system-only
+expect_gate_failure wrong-distro "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=Ubuntu "$script" --system-only
+expect_gate_failure root-target "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only --target-user root
+expect_gate_failure uid0-alias "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev "$script" --system-only --target-user evil
+expect_gate_failure wsl-conf-traversal "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev MINIOS_WSL_CONF_PATH="$root/logs/../protected-wsl-conf" "$script" --system-only
+
+protected="$root/protected"
+mkdir -p -- "$protected"
+printf 'protected\n' >"$protected/sentinel"
+chmod 0600 "$protected/sentinel"
+protected_before="$(stat -c '%u|%a|%s' "$protected/sentinel")|$(cat "$protected/sentinel")"
+ln -s -- "$protected" "$root/home/minios/link"
+expect_gate_failure symlink-env "${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev MINIOS_ENV_ROOT="$root/home/minios/link/env" "$script" --system-only
+protected_after="$(stat -c '%u|%a|%s' "$protected/sentinel")|$(cat "$protected/sentinel")"
+[[ "$protected_before" == "$protected_after" ]] || { printf 'protected target changed\n' >&2; exit 1; }
+
+environment_root="$root/home/minios/custom env"
+positive=(
+    "${common[@]}"
+    "MINIOS_OS_RELEASE_FILE=$good_os"
+    WSL_DISTRO_NAME=MiniOrangeOS-Dev
+    "MINIOS_ENV_ROOT=$environment_root"
+)
+"${positive[@]}" "$script" --system-only
+lock="$environment_root/state/apt-packages.lock"
+[[ -s "$lock" && ! -L "$lock" ]] || { printf 'package lock missing\n' >&2; exit 1; }
+[[ "$(stat -c %u "$lock")" == "$target_uid" ]] || { printf 'package lock owner mismatch\n' >&2; exit 1; }
+approved_packages=(build-essential bison flex libgmp-dev libmpfr-dev libmpc-dev texinfo nasm qemu-system-x86 qemu-utils gdb python3 python3-venv ca-certificates curl xz-utils sudo)
+[[ "$(wc -l <"$lock")" == "${#approved_packages[@]}" ]] || { printf 'package lock line count mismatch\n' >&2; exit 1; }
+for package in "${approved_packages[@]}"; do
+    grep -Fqx -- "$package=1.fake" "$lock"
+done
+[[ -z "$(find "$environment_root/state" -maxdepth 1 -name 'apt-packages.lock.partial.*' -print -quit)" ]]
+lock_before="$(sha256sum "$lock")"
+"${positive[@]}" "$script" --system-only
+[[ "$(sha256sum "$lock")" == "$lock_before" ]] || { printf 'idempotent lock mismatch\n' >&2; exit 1; }
+[[ "$(apt_lines)" == 4 ]] || { printf 'approved apt phases missing\n' >&2; exit 1; }
+printf 'checkpoint=lock-idempotent\n'
+grep -Fq -- '<install>' "$apt_log"
+grep -Fq -- '<build-essential>' "$apt_log"
+grep -Fq -- '<MINIOS_ENV_ROOT=' "$runuser_log"
+grep -Fq -- '--write-package-lock' "$runuser_log"
+grep -Fq -- 'default=minios' "$wsl_conf"
+printf 'checkpoint=system-evidence\n'
+
+/usr/sbin/runuser -u minios -- env \
+    "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
+    "FAKE_TOOL_LOG=$tool_log" MINIOS_BOOTSTRAP_TEST_MODE=1 \
+    "MINIOS_OS_RELEASE_FILE=$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "MINIOS_ENV_ROOT=$environment_root" \
+    "$script" --toolchain-only --target-user minios
+grep -Fq -- "root=$environment_root" "$tool_log"
+grep -Fq -- "uid=$target_uid" "$tool_log"
+printf 'checkpoint=toolchain-env\n'
+
+before_hint="$(apt_lines)"
+hint_output="$(/usr/sbin/runuser -u minios -- env \
+    "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
+    MINIOS_BOOTSTRAP_TEST_MODE=1 "MINIOS_OS_RELEASE_FILE=$good_os" \
+    WSL_DISTRO_NAME=MiniOrangeOS-Dev "MINIOS_ENV_ROOT=$environment_root" \
+    "$script" --target-user minios 2>&1 || true)"
+[[ "$hint_output" == *'wsl.exe -d MiniOrangeOS-Dev -u root'* ]] || { printf 'hint output missing command: %s\n' "$hint_output" >&2; exit 1; }
+[[ "$hint_output" == *"MINIOS_ENV_ROOT="* ]] || { printf 'hint output missing root: %s\n' "$hint_output" >&2; exit 1; }
+[[ "$(apt_lines)" == "$before_hint" ]]
+printf 'checkpoint=sudo-hint\n'
+
+container_root="$root/container-root"
+mkdir -p -- "$container_root"
+chown "minios:$target_uid" "$container_root"
+container_before="$(test -e "$wsl_conf" && sha256sum "$wsl_conf")"
+"${common[@]}" MINIOS_OS_RELEASE_FILE="$good_os" MINIOS_CONTAINER=1 \
+    MINIOS_ENV_ROOT="$container_root" "$script" --system-only
+container_after="$(test -e "$wsl_conf" && sha256sum "$wsl_conf")"
+[[ "$container_before" == "$container_after" ]] || { printf 'container changed wsl.conf\n' >&2; exit 1; }
+[[ -s "$container_root/state/apt-packages.lock" ]]
+printf 'checkpoint=container\n'
+
+printf 'bootstrap_fake_result=PASS\n'
+'@
+        [IO.File]::WriteAllText($HarnessPath, $Harness, [Text.UTF8Encoding]::new($false))
+        $HarnessFullPath = [IO.Path]::GetFullPath($HarnessPath)
+        $HarnessDrive = $HarnessFullPath.Substring(0, 1).ToLowerInvariant()
+        $HarnessWslPath = "/mnt/$HarnessDrive/" + $HarnessFullPath.Substring(3).Replace('\', '/')
+        $PreviousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $Output = @(& wsl.exe -d MiniOrangeOS-Dev -u root -- bash $HarnessWslPath 2>&1)
+            $Status = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $PreviousErrorAction
+        }
+        Assert-True ($Status -eq 0) ("bootstrap fake harness 失败：" + ($Output -join "`n"))
+        Assert-True (($Output -join "`n") -match 'bootstrap_fake_result=PASS') 'bootstrap fake harness 缺少 PASS'
     }
 }
 finally {
