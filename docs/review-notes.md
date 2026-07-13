@@ -25,3 +25,7 @@
 - 可恢复容器生命周期需要同时绑定锁、intent、state、镜像 ID 与标签，单靠镜像名称不足以证明 ownership。
 - rootless Podman 的 runroot 长度和 overlay subuid 清理只有真实集成会暴露；fake backend 必须模拟这些失败边界。
 - WSL2 验收证明用户态与 Microsoft 内核组合，不等于原生 Linux CI 证据。
+- 可恢复清理不能假设 `--rm`、image 或 builder 始终与 state 同步；必须在每个 mutation 阶段重新枚举并复核 ownership，把“可信且已缺失”与“同名 foreign replacement”明确区分。
+- 固定归档哈希只证明下载来源，不能证明复用的解压树未漂移；可复现缓存还需绑定目录 mode、symlink、文件内容和 hardlink 拓扑，并在执行源码前复核。
+- 安全的实例身份不能来自调用者可覆盖的环境变量；Windows Lxss 注册事实需要落为 Linux 内 root-owned、不可由普通用户改写的最小身份记录。
+- 仅在 pathname 上重复 `stat` 不能封闭 target-owned 目录的 TOCTOU；敏感写入应锚定 nofollow 目录 FD，FD 必须 CLOEXEC，并为不可捕获终止设计严格、可审计的下一次恢复协议。

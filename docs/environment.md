@@ -110,6 +110,12 @@ environment/wsl/destroy.ps1
 environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
 ```
 
+只为既有正式发行版补建或复核可信实例身份时使用：
+
+```powershell
+environment/wsl/create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap
+```
+
 ```bash
 ./environment/with-env.sh i686-elf-gcc --version
 ./environment/verify.sh
@@ -118,7 +124,20 @@ environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
 ./environment/ubuntu/destroy.sh --all
 ```
 
-`destroy.ps1` 默认只 preview，必须同时提供 `-Apply` 和精确确认名。`environment/ubuntu/destroy.sh` 无参数只预览且不删除任何资源；只有 `--all` 才在 state、镜像 ID、标签、intent 与专用 storage 边界全部验证后执行定向删除，不使用全局 prune。
+`create.ps1 -SkipBootstrap` 仍执行精确 Lxss ownership、BasePath、reparse point、WSL2 `Version=2` 和 root-owned 实例身份 provision/validation，但不运行 apt 或工具链。`enter.ps1 -Command '<command>'` 只接受一个命令字符串，并通过 `bash -lc` 保持 Shell 语义；默认无命令时进入交互 Shell。
+
+`destroy.ps1` 默认只 preview，必须同时提供 `-Apply` 和精确确认名。`environment/ubuntu/destroy.sh` 无参数只预览且不删除任何资源；只有 `--all` 才在 state、镜像 ID、标签、intent 与专用 storage 边界全部验证后执行定向删除，不使用全局 prune。其恢复路径会先整体核对项目 stale 容器 ownership，兼容 stop 后 `--rm` 自动删除，并把可信 `ready` 状态下已缺失的 image/builder 视为已清理；foreign label、intent、image ID 或同名替换仍在任何后续 mutation 前拒绝。
+
+## 最终安全加固
+
+T01 全分支独立审查发现并闭环修复 6 个 Important，最终复审未遗留 Critical 或 Important：
+
+1. 容器销毁可枚举并严格验证异常遗留的项目容器，处理 stop 后 auto-remove，并保持失败重试幂等；
+2. 可信 `ready` state 可从 image 或 Docker builder 的外部定向缺失中收敛，仍存在的资源继续执行 ownership 校验；
+3. WSL `enter.ps1 -Command` 实现公开的单字符串 `bash -lc` 语义，同时拒绝含糊多值；
+4. 工具链 source manifest 绑定完整相对路径、类型、rwx mode、symlink target、内容、源码根 mode 与 hardlink 等价组，任何漂移均在 `configure` 前拒绝；
+5. Windows lifecycle 强制现有注册项为 WSL2，并以 `/etc/miniorangeos/instance.identity` 的 root-owned 记录把 Linux 运行实例绑定到精确 Lxss 注册事实；容器入口同时要求 OCI runtime 事实；
+6. package-state writer 以 `openat`/`O_NOFOLLOW`/`O_CLOEXEC`、目录 FD、进程内 `flock` 和同目录原子替换封闭 symlink/TOCTOU/FD 继承风险；严格 residue 协议可从受控临界区 `SIGKILL` 自动恢复，foreign residue fail closed。
 
 ## 环境验证最低输出
 
@@ -148,6 +167,7 @@ result=PASS
 - 正式 prefix：`/home/minios/.local/share/miniorangeos-dev/toolchain`；目标 `i686-elf`，GCC 13.2.0、GNU ld 2.42、libgcc 与 ELF32 freestanding 编译 PASS。
 - 正式 WSL 首次成功 bootstrap 约 6 分 15 秒，紧接第二次约 5 秒并返回 `toolchain_status=up-to-date`。
 - `MiniOrangeOS-Dev-Test-ContainerHost` 在 **Ubuntu 24.04 WSL2** 上使用 **rootless Podman** 4.9.3 完成 create、幂等 create、run 和 destroy；默认 Podman 资源未变化，测试发行版已定向注销。
+- 正式发行版先在缺少可信 identity 时由 `verify.sh` 按预期返回 FAIL，随后仅通过 `create.ps1 ... -SkipBootstrap` 完成 identity-only 迁移；迁移后 `verify.sh` PASS，apt package lock、工具链 marker 与 dpkg 状态均未变化。
 - 运行内核为 Microsoft WSL2，不代表已覆盖**原生 Linux 内核**；该差异由后续 **Linux CI** 跟踪，见 `docs/decisions/0002-wsl-only-t01-container-host.md`。
 
 ## 删除验收

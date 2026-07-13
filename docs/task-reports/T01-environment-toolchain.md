@@ -19,6 +19,27 @@
 
 安装 prefix 为 `/home/minios/.local/share/miniorangeos-dev/toolchain`；marker 指纹为 `07a384a549e114bdd2e990d042c9ac143fc1e9a0dbc60190e4acbd4be4c4cea5`。实测 GCC 13.2.0、GNU ld 2.42、`i686-elf` dumpmachine、prefix 内 libgcc 与 ELF32 i386 freestanding 编译均 PASS。固定来源详见 `docs/provenance.md`。
 
+最终 WSL 身份加固合入后，正式发行版因尚无可信 identity，`verify.sh` 先按预期返回 FAIL。随后从 Windows 权威工作树执行唯一受审迁移入口：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\environment\wsl\create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap
+```
+
+迁移只在精确 Lxss 名称、BasePath、非 reparse 目录和 `Version=2` 校验后 provision/validate identity；没有运行 apt 或工具链。迁移后 `verify.sh` PASS，`/etc/miniorangeos/instance.identity` 为 `root:root`、mode `0644`、170 bytes。`apt-packages.lock` SHA-256 仍为 `baddb44eda2d5c4adece0db1e71f4555d43c3c42a941010783676019ca117539`，`state/toolchain.env` SHA-256 仍为 `2196f0f32d8d58a66ad64b0b12cfd8c4c4f52ffaa7e8515954ad7da66693b1d9`，`/var/lib/dpkg/status` mtime 仍为 `1783943414`，证明迁移未触发 apt/dpkg 或工具链重建。报告不记录 Lxss registration GUID。
+
+## 最终全分支审查
+
+独立审查最初提出 6 个 Important，全部完成修复和复审：
+
+- stale/运行中项目容器、stop 后 auto-remove 与 `ready` image/builder 漂移均可安全收敛，foreign replacement fail closed；
+- `enter.ps1 -Command` 以单字符串 `bash -lc` 执行并保留参数边界；
+- source manifest v2 绑定完整树、源码根 mode 与 hardlink 等价组，漂移在 `configure` 前拒绝；
+- lifecycle 强制 Lxss `Version=2`，WSL 使用 root-owned identity，Podman/Docker 使用真实 OCI runtime 事实；
+- package-state 由 `openat`/`O_NOFOLLOW`/`O_CLOEXEC` helper 锚定写入，锁不泄漏给 apt/dpkg 子树；
+- handled signal 与真实 `SIGKILL` residue 均有恢复回归，未知、foreign、writable 或 hardlink residue 在 apt 前拒绝。
+
+各最终复审均为 Approved，Critical 0、Important 0。`destroy.ps1` 默认 preview、`-Apply` 加精确确认名才注销的语义未改变。
+
 ## 备份与 WSL 清理证据
 
 正式发行版备份：
@@ -51,4 +72,4 @@
 
 ## 结论
 
-固定来源、正式 WSL 构建与幂等、备份、空发行版定向销毁、rootless Podman create/run/destroy 和无全局污染均有真实证据。当前状态为 **T01 验收通过，待合并**；合并、merge SHA 与分支清理由 Task 9 完成后回填。
+固定来源、正式 WSL 构建与幂等、identity-only 迁移、备份、空发行版定向销毁、rootless Podman create/run/destroy、最终安全审查闭环和无全局污染均有真实证据。当前状态为 **T01 验收通过，待合并**；合并、merge SHA 与分支清理由 Task 9 完成后回填。

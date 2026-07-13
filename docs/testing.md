@@ -55,6 +55,16 @@ python3 -m unittest discover -s tests/host -v
 ./environment/ubuntu/run.sh ./environment/verify.sh
 ```
 
+## T01 最终回归证据
+
+2026-07-14 在 Windows 权威工作树对应的正式 `MiniOrangeOS-Dev` WSL2 中执行：
+
+- `python3 -m unittest discover -s tests/host -v`：122/122 PASS；
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\host\test_wsl_lifecycle.ps1`：29/29 PASS；
+- `./environment/verify.sh`：PASS，GCC 13.2.0、GNU ld 2.42、ELF32 freestanding compile、Windows/Linux 全局污染检查均通过。
+
+身份加固合入后、identity-only 迁移前，正式发行版 `verify.sh` 按预期 FAIL；执行 `create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\ApplicationData\MiniOrangeOS -SkipBootstrap` 后恢复 PASS。该入口仍 provision/validate root-owned identity，但不运行 apt 或工具链；回归同时覆盖缺失/伪造 identity 拒绝，以及正式 identity 与精确 Lxss 注册事实绑定。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
