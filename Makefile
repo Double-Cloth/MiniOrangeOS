@@ -6,18 +6,46 @@ NASM ?= nasm
 PYTHON ?= python3
 BUILD_DIR ?= build
 
+# GNU Make 会在目标图展开时拆分含空白的路径。必须在展开任何路径和执行
+# 任何配方之前明确拒绝，避免半构建或清理错误位置。
+ifneq ($(words $(CURDIR)),1)
+$(error CURDIR 含空格路径不支持)
+endif
+ifneq ($(strip $(CURDIR)),$(CURDIR))
+$(error CURDIR 含空格路径不支持)
+endif
+ifneq ($(words $(BUILD_DIR)),1)
+$(error BUILD_DIR 含空格路径不支持)
+endif
+ifneq ($(strip $(BUILD_DIR)),$(BUILD_DIR))
+$(error BUILD_DIR 含空格路径不支持)
+endif
+ifneq ($(words $(CROSS_COMPILE)),1)
+$(error CROSS_COMPILE 含空格路径不支持)
+endif
+ifneq ($(strip $(CROSS_COMPILE)),$(CROSS_COMPILE))
+$(error CROSS_COMPILE 含空格路径不支持)
+endif
+ifneq ($(words $(NASM)),1)
+$(error NASM 含空格路径不支持)
+endif
+ifneq ($(strip $(NASM)),$(NASM))
+$(error NASM 含空格路径不支持)
+endif
+ifneq ($(words $(PYTHON)),1)
+$(error PYTHON 含空格路径不支持)
+endif
+ifneq ($(strip $(PYTHON)),$(PYTHON))
+$(error PYTHON 含空格路径不支持)
+endif
+
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
 OBJCOPY := $(CROSS_COMPILE)objcopy
 NM := $(CROSS_COMPILE)nm
 
-ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+ROOT_DIR := $(CURDIR)
 BUILD_ABS := $(abspath $(BUILD_DIR))
-
-# 构建和 clean 都只允许操作仓库内部的非根目录。
-ifeq ($(filter $(ROOT_DIR)/%,$(BUILD_ABS)),)
-$(error BUILD_DIR 必须是仓库内部的非根目录：$(BUILD_DIR))
-endif
 
 BOOT_BUILD_DIR := $(BUILD_ABS)/boot
 STAGE2_BUILD_DIR := $(BOOT_BUILD_DIR)/stage2
@@ -75,67 +103,52 @@ ALL_ARTIFACTS := \
 	$(KERNEL_MAP) \
 	$(KERNEL_SYM)
 
-BUILD_DIRECTORIES := \
-	$(BOOT_BUILD_DIR) \
-	$(STAGE2_BUILD_DIR) \
-	$(KERNEL_BUILD_DIR) \
-	$(KERNEL_ARCH_BUILD_DIR) \
-	$(KERNEL_CORE_BUILD_DIR)
+.PHONY: all image clean distclean prepare-build-dir
 
-.PHONY: all image clean validate-build-dir
+all: $(ALL_ARTIFACTS) | prepare-build-dir
 
-all: $(ALL_ARTIFACTS) | validate-build-dir
+image: $(IMAGE) | prepare-build-dir
 
-image: $(IMAGE) | validate-build-dir
+prepare-build-dir:
+	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
 
-validate-build-dir:
-	@root="$$(realpath -e -- "$(ROOT_DIR)")"; \
-	target="$$(realpath -m -- "$(BUILD_ABS)")"; \
-	case "$$target" in \
-		"$$root"/*) ;; \
-		*) printf '%s\n' "BUILD_DIR 解析后必须位于仓库内部：$(BUILD_DIR)" >&2; exit 2 ;; \
-	esac
-
-$(BUILD_DIRECTORIES): | validate-build-dir
-	mkdir -p -- "$@"
-
-$(STAGE1_BIN): boot/stage1/boot.asm | $(BOOT_BUILD_DIR)
+$(STAGE1_BIN): boot/stage1/boot.asm | prepare-build-dir
 	$(NASM) -f bin -o "$@" "$<"
 
-$(STAGE2_OBJ): boot/stage2/entry.asm | $(STAGE2_BUILD_DIR)
+$(STAGE2_OBJ): boot/stage2/entry.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(STAGE2_DEP)" -MT "$@" -o "$@" "$<"
 
-$(STAGE2_ELF) $(STAGE2_MAP) &: $(STAGE2_OBJ) boot/stage2/linker.ld | $(BOOT_BUILD_DIR)
+$(STAGE2_ELF) $(STAGE2_MAP) &: $(STAGE2_OBJ) boot/stage2/linker.ld | prepare-build-dir
 	$(LD) -m elf_i386 -nostdlib -T boot/stage2/linker.ld -Map "$(STAGE2_MAP)" -o "$(STAGE2_ELF)" "$(STAGE2_OBJ)"
 
-$(STAGE2_BIN): $(STAGE2_ELF) | $(BOOT_BUILD_DIR)
+$(STAGE2_BIN): $(STAGE2_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
 
-$(STAGE2_SYM): $(STAGE2_ELF) | $(BOOT_BUILD_DIR)
+$(STAGE2_SYM): $(STAGE2_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
-$(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm | $(KERNEL_ARCH_BUILD_DIR)
+$(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(KERNEL_ENTRY_DEP)" -MT "$@" -o "$@" "$<"
 
-$(KERNEL_CORE_OBJ): kernel/core/kernel.c | $(KERNEL_CORE_BUILD_DIR)
+$(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ) kernel/linker.ld | $(KERNEL_BUILD_DIR)
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ) kernel/linker.ld | prepare-build-dir
 	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ)
 
-$(KERNEL_BIN): $(KERNEL_ELF) | $(KERNEL_BUILD_DIR)
+$(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
 
-$(KERNEL_SYM): $(KERNEL_ELF) | $(KERNEL_BUILD_DIR)
+$(KERNEL_SYM): $(KERNEL_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
-$(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | $(BUILD_ABS)
+$(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir $(BUILD_DIR) --output $(BUILD_DIR)/miniorangeos.img
 
-$(BUILD_ABS): | validate-build-dir
-	mkdir -p -- "$@"
+clean:
+	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target clean
 
-clean: validate-build-dir
-	rm -rf -- "$(BUILD_ABS)"
+distclean:
+	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
 -include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_CORE_DEP)
