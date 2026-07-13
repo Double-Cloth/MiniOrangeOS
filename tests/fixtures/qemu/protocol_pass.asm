@@ -47,6 +47,9 @@ start:
     out dx, al
     jmp .next
 .done:
+    mov dx, 0x00f4
+    mov al, 0x10
+    out dx, al
     cli
 .halt:
     hlt

@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+from qemu_paths import BoundBuild, BoundFile, BoundLog, PathBoundaryError
+
 
 PASS_LINE = b"[TEST] all PASS"
 SUITE_BEGIN = re.compile(rb"^\[TEST\] suite=([A-Za-z0-9_.-]+) begin$")
@@ -149,46 +151,9 @@ def _safe_text(value: str, name: str) -> str:
     return value
 
 
-def _atomic_log(path: Path, content: bytes) -> None:
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    directory_fd = os.open(
-        parent,
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    temporary = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory_fd,
-        )
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-        os.fsync(directory_fd)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            os.unlink(temporary, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
-        os.close(directory_fd)
+def _atomic_log(log: BoundLog, content: bytes) -> None:
+    temporary = f".{log.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    log.write_atomic(content, temporary)
 
 
 def _test_hook(stage: str) -> None:
@@ -325,11 +290,12 @@ def _command(qemu: str, image: str) -> list[str]:
     ]
 
 
-def _run(arguments: argparse.Namespace) -> int:
+def _run_bound(
+    arguments: argparse.Namespace, image: BoundFile, log: BoundLog
+) -> int:
     timeout = _positive_integer(arguments.timeout, "timeout")
     maximum = _positive_integer(arguments.max_log_bytes, "max-log-bytes")
-    command = _command(arguments.qemu, arguments.image)
-    log_path = Path(_safe_text(arguments.log, "日志路径"))
+    command = _command(arguments.qemu, image.proc_path)
     capture = BoundedTail(maximum)
     parser = ProtocolParser()
     interrupted = 0
@@ -354,6 +320,7 @@ def _run(arguments: argparse.Namespace) -> int:
             stderr=subprocess.PIPE,
             start_new_session=True,
             bufsize=0,
+            pass_fds=(image.descriptor,),
         )
         _test_hook("after-spawn")
         selector = selectors.DefaultSelector()
@@ -411,7 +378,7 @@ def _run(arguments: argparse.Namespace) -> int:
             except BaseException as error:
                 hook_error = hook_error or error
         parser.finish()
-        _atomic_log(log_path, capture.bytes())
+        _atomic_log(log, capture.bytes())
         for signum, handler in previous.items():
             signal.signal(signum, handler)
 
@@ -437,6 +404,14 @@ def _run(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run(arguments: argparse.Namespace) -> int:
+    repo = os.path.abspath(_safe_text(arguments.repo, "repo"))
+    with BoundBuild.open(repo, arguments.build_dir) as build:
+        with build.open_file(arguments.image, "镜像") as image:
+            with build.bind_log(arguments.log) as log:
+                return _run_bound(arguments, image, log)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qemu", default="qemu-system-i386")
@@ -444,13 +419,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--log", required=True)
     parser.add_argument("--timeout", default="10")
     parser.add_argument("--max-log-bytes", default="1048576")
+    parser.add_argument("--repo", default=".")
+    parser.add_argument("--build-dir", default="build")
     return parser
 
 
 def main() -> int:
     try:
         return _run(_parser().parse_args())
-    except (RunnerError, OSError, subprocess.SubprocessError) as error:
+    except (RunnerError, PathBoundaryError, OSError, subprocess.SubprocessError) as error:
         print(f"QEMU 测试错误：{error}", file=sys.stderr)
         return 2
 

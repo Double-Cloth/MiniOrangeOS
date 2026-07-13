@@ -164,19 +164,19 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 image: $(IMAGE) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
-	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)"
+	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 run-curses: $(IMAGE) | prepare-build-dir
-	@$(PYTHON) tools/qemu_run.py --mode curses --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)"
+	@$(PYTHON) tools/qemu_run.py --mode curses --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 debug: $(IMAGE) | prepare-build-dir
-	@$(PYTHON) tools/qemu_run.py --mode debug --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)"
+	@$(PYTHON) tools/qemu_run.py --mode debug --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 gdb: $(KERNEL_ELF) | prepare-build-dir
-	@$(PYTHON) tools/qemu_run.py --mode gdb --gdb "$(GDB)" --kernel "$(KERNEL_ELF)" --gdb-endpoint "$(GDB_ENDPOINT)"
+	@$(PYTHON) tools/qemu_run.py --mode gdb --gdb "$(GDB)" --kernel "$(KERNEL_ELF)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
-	@$(PYTHON) tools/qemu_test.py --qemu "$(QEMU)" --image "$(QEMU_TEST_FIXTURE)" --log "$(QEMU_SERIAL_LOG)" --timeout "$(QEMU_TIMEOUT)" --max-log-bytes "$(QEMU_LOG_MAX_BYTES)"
+	@$(PYTHON) tools/qemu_test.py --qemu "$(QEMU)" --image "$(QEMU_TEST_FIXTURE)" --log "$(QEMU_SERIAL_LOG)" --timeout "$(QEMU_TIMEOUT)" --max-log-bytes "$(QEMU_LOG_MAX_BYTES)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"

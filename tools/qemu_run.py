@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
-from pathlib import Path
+
+from qemu_paths import BoundBuild, PathBoundaryError
 
 
 ENDPOINT_PATTERN = re.compile(r"tcp:127\.0\.0\.1:([1-9][0-9]{0,4})\Z")
@@ -27,21 +29,13 @@ def _endpoint(value: str) -> tuple[str, int]:
     return value, port
 
 
-def _regular_file(value: str | None, option: str) -> Path:
+def _required(value: str | None, option: str) -> str:
     if value is None:
         raise RunError(f"{option} 是当前模式的必需参数")
-    path = Path(value)
-    try:
-        status = path.stat()
-    except OSError as error:
-        raise RunError(f"{option} 不可访问：{error}") from error
-    if not path.is_file() or path.is_symlink() or status.st_size <= 0:
-        raise RunError(f"{option} 必须是非空且非符号链接的普通文件")
-    return path
+    return value
 
 
-def _qemu_command(options: argparse.Namespace, endpoint: str) -> list[str]:
-    image = _regular_file(options.image, "--image")
+def _qemu_command(options: argparse.Namespace, endpoint: str, image: str) -> list[str]:
     command = [
         options.qemu,
         "-drive",
@@ -62,8 +56,7 @@ def _qemu_command(options: argparse.Namespace, endpoint: str) -> list[str]:
     return command
 
 
-def _gdb_command(options: argparse.Namespace, port: int) -> list[str]:
-    kernel = _regular_file(options.kernel, "--kernel")
+def _gdb_command(options: argparse.Namespace, port: int, kernel: str) -> list[str]:
     return [
         options.gdb,
         str(kernel),
@@ -80,6 +73,8 @@ def _arguments(arguments: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--image")
     parser.add_argument("--kernel")
     parser.add_argument("--gdb-endpoint", default="tcp:127.0.0.1:1234")
+    parser.add_argument("--repo", default=".")
+    parser.add_argument("--build-dir", default="build")
     return parser.parse_args(arguments)
 
 
@@ -87,13 +82,20 @@ def main(arguments: list[str] | None = None) -> int:
     options = _arguments(arguments)
     try:
         endpoint, port = _endpoint(options.gdb_endpoint)
-        command = (
-            _gdb_command(options, port)
-            if options.mode == "gdb"
-            else _qemu_command(options, endpoint)
-        )
-        return subprocess.run(command, check=False).returncode
-    except (RunError, OSError) as error:
+        repo = os.path.abspath(options.repo)
+        with BoundBuild.open(repo, options.build_dir) as build:
+            if options.mode == "gdb":
+                with build.open_file(_required(options.kernel, "--kernel"), "Kernel") as kernel:
+                    command = _gdb_command(options, port, kernel.owner_path)
+                    return subprocess.run(
+                        command, check=False, pass_fds=(kernel.descriptor,)
+                    ).returncode
+            with build.open_file(_required(options.image, "--image"), "镜像") as image:
+                command = _qemu_command(options, endpoint, image.owner_path)
+                return subprocess.run(
+                    command, check=False, pass_fds=(image.descriptor,)
+                ).returncode
+    except (RunError, PathBoundaryError, OSError) as error:
         print(f"qemu_run.py: error: {error}", file=sys.stderr)
         return 2
 
