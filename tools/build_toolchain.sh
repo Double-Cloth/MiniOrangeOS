@@ -229,12 +229,12 @@ def file_digest(file_object) -> str:
     return digest.hexdigest()
 
 
-def finish(entries: dict[str, tuple[str, int, str]]) -> None:
+def finish(entries: dict[str, tuple[str, int, str, str]]) -> None:
     digest = hashlib.sha256()
     for relative_path in sorted(entries):
-        entry_type, mode, payload = entries[relative_path]
+        entry_type, mode, payload, link_group = entries[relative_path]
         line = json.dumps(
-            [relative_path, entry_type, mode, payload],
+            [relative_path, entry_type, mode, payload, link_group],
             ensure_ascii=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -243,10 +243,14 @@ def finish(entries: dict[str, tuple[str, int, str]]) -> None:
     print(digest.hexdigest())
 
 
-def archive_entries() -> dict[str, tuple[str, int, str]]:
-    entries: dict[str, tuple[str, int, str]] = {}
+def archive_entries() -> dict[str, tuple[str, int, str, str]]:
+    entries: dict[str, tuple[str, int, str, str]] = {
+        ".": ("directory", 0o755, "", "")
+    }
+    regular_files: dict[str, tuple[int, str]] = {}
     hardlinks: dict[str, str] = {}
     prefix = expected_name + "/"
+    root_seen = False
     with tarfile.open(source_path, "r:*") as archive:
         for member in archive:
             name = member.name.rstrip("/")
@@ -261,6 +265,13 @@ def archive_entries() -> dict[str, tuple[str, int, str]]:
                         f"unsafe archive member (top-level entry is not a directory): "
                         f"{member.name!r}"
                     )
+                if root_seen:
+                    raise ValueError(
+                        f"unsafe archive member (duplicate top-level directory): "
+                        f"{member.name!r}"
+                    )
+                root_seen = True
+                entries["."] = ("directory", member.mode & 0o755, "", "")
                 continue
             if not normalized.startswith(prefix):
                 raise ValueError(
@@ -274,17 +285,22 @@ def archive_entries() -> dict[str, tuple[str, int, str]]:
                     f"{member.name!r}"
                 )
             if member.isdir():
-                entries[relative_path] = ("directory", member.mode & 0o755, "")
+                entries[relative_path] = (
+                    "directory",
+                    member.mode & 0o755,
+                    "",
+                    "",
+                )
             elif member.isreg():
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     raise ValueError(f"cannot read archive entry: {member.name!r}")
                 with extracted:
-                    entries[relative_path] = (
-                        "file",
+                    regular_files[relative_path] = (
                         member.mode & 0o755,
                         file_digest(extracted),
                     )
+                entries[relative_path] = ("pending-file", 0, "", "")
             elif member.issym():
                 target = member.linkname
                 resolved = posixpath.normpath(
@@ -295,7 +311,12 @@ def archive_entries() -> dict[str, tuple[str, int, str]]:
                         f"unsafe archive member (symlink target escapes root): "
                         f"{member.name!r}"
                     )
-                entries[relative_path] = ("symlink", 0o777, member.linkname)
+                entries[relative_path] = (
+                    "symlink",
+                    0o777,
+                    member.linkname,
+                    "",
+                )
             elif member.islnk():
                 target = posixpath.normpath(member.linkname)
                 if not target.startswith(prefix):
@@ -303,40 +324,60 @@ def archive_entries() -> dict[str, tuple[str, int, str]]:
                         f"unsafe archive member (hardlink target escapes root): "
                         f"{member.name!r}"
                     )
-                entries[relative_path] = ("hardlink", 0, "")
+                entries[relative_path] = ("pending-hardlink", 0, "", "")
                 hardlinks[relative_path] = target[len(prefix) :]
             else:
                 raise ValueError(
                     f"unsafe archive member (unsupported type): {member.name!r}"
                 )
 
-    resolving: set[str] = set()
+    resolved_hardlinks: dict[str, str] = {}
 
-    def resolve_hardlink(relative_path: str) -> tuple[str, int, str]:
-        entry = entries.get(relative_path)
-        if entry is None:
-            raise ValueError(f"missing hardlink target: {relative_path!r}")
-        if entry[0] != "hardlink":
-            if entry[0] != "file":
-                raise ValueError(f"hardlink target is not a regular file: {relative_path!r}")
-            return entry
-        if relative_path in resolving:
-            raise ValueError(f"hardlink cycle: {relative_path!r}")
-        resolving.add(relative_path)
-        resolved = resolve_hardlink(hardlinks[relative_path])
-        resolving.remove(relative_path)
-        entries[relative_path] = resolved
-        return resolved
+    def resolve_regular(relative_path: str) -> str:
+        trail: list[str] = []
+        seen: set[str] = set()
+        current = relative_path
+        while current not in regular_files:
+            if current in resolved_hardlinks:
+                current = resolved_hardlinks[current]
+                break
+            if current in seen:
+                raise ValueError(f"hardlink cycle: {current!r}")
+            seen.add(current)
+            trail.append(current)
+            if current not in hardlinks:
+                raise ValueError(f"missing hardlink target: {current!r}")
+            current = hardlinks[current]
+        for hardlink in trail:
+            resolved_hardlinks[hardlink] = current
+        return current
 
-    for relative_path in hardlinks:
-        resolve_hardlink(relative_path)
+    groups: dict[str, list[str]] = {}
+    for relative_path in sorted(regular_files.keys() | hardlinks.keys()):
+        regular_path = resolve_regular(relative_path)
+        groups.setdefault(regular_path, []).append(relative_path)
+    for regular_path, members in groups.items():
+        mode, digest = regular_files[regular_path]
+        members.sort()
+        anchor = members[0] if len(members) > 1 else ""
+        link_group = f"{anchor}|{len(members)}"
+        for relative_path in members:
+            entries[relative_path] = ("file", mode, digest, link_group)
     return entries
 
 
-def tree_entries() -> dict[str, tuple[str, int, str]]:
-    entries: dict[str, tuple[str, int, str]] = {}
+def tree_entries() -> dict[str, tuple[str, int, str, str]]:
+    entries: dict[str, tuple[str, int, str, str]] = {}
+    regular_files: dict[str, tuple[int, str, tuple[int, int], int]] = {}
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     root_fd = os.open(source_path, directory_flags)
+    root_metadata = os.fstat(root_fd)
+    entries["."] = (
+        "directory",
+        stat.S_IMODE(root_metadata.st_mode) & 0o777,
+        "",
+        "",
+    )
 
     def visit(directory_fd: int, parent: str) -> None:
         with os.scandir(directory_fd) as iterator:
@@ -354,6 +395,7 @@ def tree_entries() -> dict[str, tuple[str, int, str]]:
                         "directory",
                         stat.S_IMODE(child_metadata.st_mode) & 0o777,
                         "",
+                        "",
                     )
                     visit(child_fd, relative_path)
                 finally:
@@ -370,16 +412,18 @@ def tree_entries() -> dict[str, tuple[str, int, str]]:
                         digest = file_digest(file_object)
                 finally:
                     os.close(file_fd)
-                entries[relative_path] = (
-                    "file",
+                regular_files[relative_path] = (
                     stat.S_IMODE(file_metadata.st_mode) & 0o777,
                     digest,
+                    (file_metadata.st_dev, file_metadata.st_ino),
+                    file_metadata.st_nlink,
                 )
             elif stat.S_ISLNK(metadata.st_mode):
                 entries[relative_path] = (
                     "symlink",
                     0o777,
                     os.readlink(name, dir_fd=directory_fd),
+                    "",
                 )
             else:
                 raise ValueError(f"unsupported source entry: {relative_path!r}")
@@ -388,6 +432,20 @@ def tree_entries() -> dict[str, tuple[str, int, str]]:
         visit(root_fd, "")
     finally:
         os.close(root_fd)
+    inode_groups: dict[tuple[int, int], list[str]] = {}
+    for relative_path, (_, _, inode, _) in regular_files.items():
+        inode_groups.setdefault(inode, []).append(relative_path)
+    for members in inode_groups.values():
+        members.sort()
+        anchor = members[0] if len(members) > 1 else ""
+        for relative_path in members:
+            mode, digest, _, link_count = regular_files[relative_path]
+            entries[relative_path] = (
+                "file",
+                mode,
+                digest,
+                f"{anchor}|{link_count}",
+            )
     return entries
 
 
@@ -426,7 +484,7 @@ source_stamp_matches() {
     grep -Fqx -- "version=$version" "$stamp" || return 1
     grep -Fqx -- "archive_sha256=$archive_sha256" "$stamp" || return 1
     grep -Fqx -- "expected_top_level=$expected_name" "$stamp" || return 1
-    grep -Fqx -- "source_manifest_version=1" "$stamp" || return 1
+    grep -Fqx -- "source_manifest_version=2" "$stamp" || return 1
     grep -Fqx -- "source_manifest_sha256=$source_manifest_sha256" "$stamp" || return 1
 }
 
@@ -442,11 +500,16 @@ legacy_source_stamp_matches() {
         return 1
     fi
     if line_count="$(wc -l <"$stamp")"; then :; else return $?; fi
-    [[ "$line_count" == "4" ]] || return 1
     grep -Fqx -- "component=$component" "$stamp" || return 1
     grep -Fqx -- "version=$version" "$stamp" || return 1
     grep -Fqx -- "archive_sha256=$archive_sha256" "$stamp" || return 1
     grep -Fqx -- "expected_top_level=$expected_name" "$stamp" || return 1
+    if [[ "$line_count" == "4" ]]; then
+        return 0
+    fi
+    [[ "$line_count" == "6" ]] || return 1
+    grep -Fqx -- "source_manifest_version=1" "$stamp" || return 1
+    grep -Eq -- '^source_manifest_sha256=[0-9a-f]{64}$' "$stamp" || return 1
 }
 
 write_source_stamp() {
@@ -467,7 +530,7 @@ write_source_stamp() {
         "version=$version" \
         "archive_sha256=$archive_sha256" \
         "expected_top_level=$expected_name" \
-        "source_manifest_version=1" \
+        "source_manifest_version=2" \
         "source_manifest_sha256=$source_manifest_sha256" >"$partial_stamp"; then
         :
     else

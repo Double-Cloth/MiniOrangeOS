@@ -35,6 +35,7 @@ class ToolchainProvenanceTests(unittest.TestCase):
         configure.chmod(0o755)
         payload = source / "nested" / "payload.txt"
         payload.write_text("trusted payload\n", encoding="utf-8", newline="\n")
+        shutil.copy2(payload, source / "nested" / "payload-copy.txt")
         helper = source / "bin" / "helper.sh"
         helper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
         helper.chmod(0o755)
@@ -66,6 +67,7 @@ class ToolchainProvenanceTests(unittest.TestCase):
                 / "sources/binutils-1.0/.minios-source.env"
             )
             stamp_text = stamp.read_text(encoding="utf-8")
+            self.assertIn("source_manifest_version=2\n", stamp_text)
             self.assertRegex(
                 stamp_text,
                 r"(?m)^source_manifest_sha256=[0-9a-f]{64}$",
@@ -166,14 +168,100 @@ class ToolchainProvenanceTests(unittest.TestCase):
             )
             self.assertFalse((temporary_root / "escaped-source").exists())
 
+    def test_hardlink_chain_has_stable_topology(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, log, env = self.fixture._write_toolchain_fixture(
+                temporary_root
+            )
+            archive = temporary_root / "hardlink-chain.tar.xz"
+            configure_data = (
+                b"#!/bin/sh\nset -eu\n"
+                b"printf 'configure component=binutils cwd=%s args=%s\\n' "
+                b'"$PWD" "$*" >> "$FAKE_TOOLCHAIN_LOG"\n'
+                b"printf '%s\\n' binutils > .minios-component\n"
+            )
+            payload_data = b"trusted payload\n"
+            with tarfile.open(archive, "w:xz") as tar:
+                for name in ("binutils-1.0", "binutils-1.0/nested"):
+                    directory = tarfile.TarInfo(name)
+                    directory.type = tarfile.DIRTYPE
+                    directory.mode = 0o755
+                    tar.addfile(directory)
+                configure = tarfile.TarInfo("binutils-1.0/configure")
+                configure.mode = 0o755
+                configure.size = len(configure_data)
+                tar.addfile(configure, io.BytesIO(configure_data))
+                payload = tarfile.TarInfo("binutils-1.0/nested/payload.txt")
+                payload.mode = 0o644
+                payload.size = len(payload_data)
+                tar.addfile(payload, io.BytesIO(payload_data))
+                chain_b = tarfile.TarInfo("binutils-1.0/nested/chain-b")
+                chain_b.type = tarfile.LNKTYPE
+                chain_b.linkname = "binutils-1.0/nested/payload.txt"
+                tar.addfile(chain_b)
+                chain_a = tarfile.TarInfo("binutils-1.0/nested/chain-a")
+                chain_a.type = tarfile.LNKTYPE
+                chain_a.linkname = "binutils-1.0/nested/chain-b"
+                tar.addfile(chain_a)
+            self.fixture._replace_fixture_archive(
+                fixture_root, "binutils", archive
+            )
+
+            first = self.fixture._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, first.returncode, first.stderr)
+            log_before = log.read_bytes()
+            second = self.fixture._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertIn("toolchain_status=up-to-date", second.stdout)
+            self.assertEqual(log_before, log.read_bytes())
+
+    def test_hardlink_cycle_is_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, _, env = self.fixture._write_toolchain_fixture(
+                temporary_root
+            )
+            archive = temporary_root / "hardlink-cycle.tar.xz"
+            with tarfile.open(archive, "w:xz") as tar:
+                root = tarfile.TarInfo("binutils-1.0")
+                root.type = tarfile.DIRTYPE
+                root.mode = 0o755
+                tar.addfile(root)
+                for name, target in (
+                    ("cycle-a", "cycle-b"),
+                    ("cycle-b", "cycle-a"),
+                ):
+                    member = tarfile.TarInfo(f"binutils-1.0/{name}")
+                    member.type = tarfile.LNKTYPE
+                    member.linkname = f"binutils-1.0/{target}"
+                    tar.addfile(member)
+            self.fixture._replace_fixture_archive(
+                fixture_root, "binutils", archive
+            )
+
+            result = self.fixture._run_fixture_toolchain(fixture_root, env=env)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn(
+                "hardlink cycle",
+                (result.stdout + result.stderr).lower(),
+            )
+            self.assertFalse(
+                (Path(env["MINIOS_ENV_ROOT"]) / "sources/binutils-1.0").exists()
+            )
+
     def test_force_rejects_every_source_tree_drift_before_configure(self) -> None:
         mutations = (
             "configure-content",
             "ordinary-content",
             "executable-mode",
             "symlink-target",
+            "hardlink-to-copy",
+            "copy-to-hardlink",
+            "hardlink-repoint",
             "added-entry",
             "deleted-entry",
+            "source-root-mode",
         )
         for mutation in mutations:
             with (
@@ -212,12 +300,26 @@ class ToolchainProvenanceTests(unittest.TestCase):
                     link = source / "nested/payload-link"
                     link.unlink()
                     link.symlink_to("../configure")
+                elif mutation == "hardlink-to-copy":
+                    hardlink = source / "nested/payload-hardlink.txt"
+                    hardlink.unlink()
+                    shutil.copy2(source / "nested/payload.txt", hardlink)
+                elif mutation == "copy-to-hardlink":
+                    copy = source / "nested/payload-copy.txt"
+                    copy.unlink()
+                    os.link(source / "nested/payload.txt", copy)
+                elif mutation == "hardlink-repoint":
+                    hardlink = source / "nested/payload-hardlink.txt"
+                    hardlink.unlink()
+                    os.link(source / "nested/payload-copy.txt", hardlink)
                 elif mutation == "added-entry":
                     (source / "nested/added.txt").write_text(
                         "added\n", encoding="utf-8", newline="\n"
                     )
                 elif mutation == "deleted-entry":
                     (source / "nested/payload.txt").unlink()
+                elif mutation == "source-root-mode":
+                    source.chmod(0o700)
                 else:  # pragma: no cover - 保持测试表完整性
                     self.fail(f"未知 mutation：{mutation}")
 
