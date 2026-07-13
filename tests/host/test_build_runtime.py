@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 try:
@@ -248,20 +248,82 @@ class BuildRuntimeTests(unittest.TestCase):
                     ).hexdigest()
         return snapshot
 
+    def _lstat_snapshot(
+        self, root: Path
+    ) -> dict[str, tuple[str, int, int, int, str]]:
+        snapshot: dict[str, tuple[str, int, int, int, str]] = {}
+
+        def visit(directory: Path) -> None:
+            with os.scandir(directory) as entries:
+                for entry in sorted(entries, key=lambda item: item.name):
+                    path = Path(entry.path)
+                    status = entry.stat(follow_symlinks=False)
+                    relative = path.relative_to(root).as_posix()
+                    mode = stat.S_IMODE(status.st_mode)
+                    if stat.S_ISLNK(status.st_mode):
+                        snapshot[relative] = (
+                            "symlink",
+                            mode,
+                            status.st_size,
+                            status.st_mtime_ns,
+                            os.readlink(path),
+                        )
+                    elif stat.S_ISREG(status.st_mode):
+                        digest = hashlib.sha256()
+                        with path.open("rb") as stream:
+                            while chunk := stream.read(1024 * 1024):
+                                digest.update(chunk)
+                        snapshot[relative] = (
+                            "file",
+                            mode,
+                            status.st_size,
+                            status.st_mtime_ns,
+                            digest.hexdigest(),
+                        )
+                    elif stat.S_ISDIR(status.st_mode):
+                        snapshot[relative] = (
+                            "directory",
+                            mode,
+                            status.st_size,
+                            status.st_mtime_ns,
+                            "",
+                        )
+                        visit(path)
+                    else:
+                        snapshot[relative] = (
+                            "other",
+                            mode,
+                            status.st_size,
+                            status.st_mtime_ns,
+                            "",
+                        )
+
+        visit(root)
+        return snapshot
+
     def _assert_clear_space_rejection(
         self,
         result: subprocess.CompletedProcess[str],
-        forbidden_paths: tuple[Path, ...],
-        log_paths: tuple[Path, ...] = (),
+        snapshot_root: Path,
+        before: dict[str, tuple[str, int, int, int, str]],
     ) -> None:
         self.assertNotEqual(0, result.returncode)
+        output = result.stdout + result.stderr
         self.assertRegex(
-            result.stdout + result.stderr,
+            output,
             r"(?is)(?:空格.*不支持|不支持.*空格|path.*space.*not supported|space.*path.*not supported)",
             "含空格路径失败时没有给出明确的 parse-time 拒绝信息",
         )
-        for path in (*forbidden_paths, *log_paths):
-            self.assertFalse(os.path.lexists(path), f"拒绝后产生了副作用：{path}")
+        self.assertLessEqual(
+            len(output.encode("utf-8")),
+            4096,
+            "含空格路径拒绝产生了异常庞大的 Make 诊断",
+        )
+        self.assertEqual(
+            before,
+            self._lstat_snapshot(snapshot_root),
+            "含空格路径拒绝前后工作区 lstat 快照发生变化",
+        )
 
     def _image_command(
         self, workspace: Path, build_dir: Path, output: Path, layout: Path | None = None
@@ -309,12 +371,17 @@ class BuildRuntimeTests(unittest.TestCase):
         command: list[str],
         hook_variable: str,
         hook_name: str,
-        mutate: object,
+        mutate: Callable[[], None],
     ) -> subprocess.CompletedProcess[str]:
-        control = workspace / f"hook-{hook_variable.lower()}-{hook_name.replace(':', '-')}"
-        control.mkdir()
+        control = Path(
+            tempfile.mkdtemp(
+                prefix=f"hook-{hook_variable.lower()}-{hook_name.replace(':', '-')}-",
+                dir=workspace,
+            )
+        )
         ready = control / "ready"
         proceed = control / "continue"
+        hook_log = control / "hook.log"
         env = os.environ.copy()
         env.update(
             {
@@ -322,6 +389,7 @@ class BuildRuntimeTests(unittest.TestCase):
                 hook_variable: hook_name,
                 "MINIOS_TEST_HOOK_READY": str(ready),
                 "MINIOS_TEST_HOOK_CONTINUE": str(proceed),
+                "MINIOS_TEST_HOOK_LOG": str(hook_log),
             }
         )
         process = subprocess.Popen(
@@ -345,7 +413,6 @@ class BuildRuntimeTests(unittest.TestCase):
                 f"stdout={stdout!r}; stderr={stderr!r}"
             )
         try:
-            assert callable(mutate)
             mutate()
             proceed.write_text("continue\n", encoding="utf-8")
             stdout, stderr = process.communicate(timeout=30)
@@ -353,6 +420,12 @@ class BuildRuntimeTests(unittest.TestCase):
             process.kill()
             process.communicate()
             raise
+        self.assertTrue(hook_log.is_file(), f"测试 hook 没有记录阶段：{hook_name}")
+        self.assertEqual(
+            [hook_name],
+            hook_log.read_text(encoding="utf-8").splitlines(),
+            f"测试 hook 阶段或调用次数错误：{hook_name}",
+        )
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     def test_public_targets_build_expected_artifacts(self) -> None:
@@ -661,92 +734,94 @@ class BuildRuntimeTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertEqual("foreign\n", sentinel.read_text(encoding="utf-8"))
 
-    def test_build_guard_rejects_validation_to_removal_replacement(self) -> None:
-        with self._workspace() as workspace:
-            guard = workspace / "tools/build_dir_guard.py"
-            self.assertTrue(guard.is_file(), "缺少构建根清理 guard")
-            build_dir = workspace / "race-build"
-            result = self._make(workspace, "all", f"BUILD_DIR={build_dir}")
-            self._assert_success(result)
-            self.assertTrue((build_dir / BUILD_MARKER).is_file())
-            default_ready = workspace / "guard-hook-must-stay-disabled"
-            default_env = os.environ.copy()
-            default_env.update(
-                {
-                    "MINIOS_BUILD_GUARD_TEST_HOOK": "before-remove",
-                    "MINIOS_TEST_HOOK_READY": str(default_ready),
-                    "MINIOS_TEST_HOOK_CONTINUE": str(workspace / "never-created"),
-                }
-            )
-            result = self._run(
-                workspace,
-                "python3",
-                "tools/build_dir_guard.py",
-                "clean",
-                "--root",
-                str(workspace),
-                "--build-dir",
-                str(build_dir),
-                env=default_env,
-            )
-            self._assert_success(result)
-            self.assertFalse(default_ready.exists(), "未启用测试模式时 guard 仍执行 hook")
-            result = self._make(workspace, "all", f"BUILD_DIR={build_dir}")
-            self._assert_success(result)
-            self.assertTrue((build_dir / BUILD_MARKER).is_file())
-            original = workspace / "race-build-owned"
-            foreign = workspace.parent / "foreign-race-clean"
-            foreign.mkdir()
-            foreign_sentinel = foreign / "sentinel.txt"
-            foreign_sentinel.write_text("foreign\n", encoding="utf-8")
+    def test_public_cleanup_targets_bind_validated_directory_identity(self) -> None:
+        for target in ("clean", "distclean"):
+            with self.subTest(target=target):
+                with self._workspace() as workspace:
+                    build_dir = workspace / "race-build"
+                    variables = (f"BUILD_DIR={build_dir}",)
+                    command = [
+                        "bash",
+                        "environment/with-env.sh",
+                        "make",
+                        target,
+                        *variables,
+                    ]
+                    hook_name = f"cleanup-after-validation-before-remove:{target}"
 
-            command = [
-                "bash",
-                "environment/with-env.sh",
-                "python3",
-                "tools/build_dir_guard.py",
-                "clean",
-                "--root",
-                str(workspace),
-                "--build-dir",
-                str(build_dir),
-            ]
+                    result = self._make(workspace, "all", *variables)
+                    self._assert_success(result)
+                    self.assertTrue((build_dir / BUILD_MARKER).is_file())
+                    result = self._run_hooked_process(
+                        workspace,
+                        command,
+                        "MINIOS_CLEAN_TEST_HOOK",
+                        hook_name,
+                        lambda: None,
+                    )
+                    self._assert_success(result)
+                    self.assertFalse(build_dir.exists())
 
-            def replace_build_root() -> None:
-                build_dir.rename(original)
-                build_dir.symlink_to(foreign, target_is_directory=True)
+                    result = self._make(workspace, "all", *variables)
+                    self._assert_success(result)
+                    valid_probe = workspace / "race-build-valid-probe"
+                    build_dir.rename(valid_probe)
+                    result = self._make(workspace, "all", *variables)
+                    self._assert_success(result)
+                    probe_current = workspace / "race-build-probe-current"
+                    build_dir.rename(probe_current)
+                    valid_probe.rename(build_dir)
+                    result = self._make(workspace, target, *variables)
+                    self._assert_success(result)
+                    self.assertFalse(build_dir.exists())
+                    probe_current.rename(build_dir)
 
-            result = self._run_hooked_process(
-                workspace,
-                command,
-                "MINIOS_BUILD_GUARD_TEST_HOOK",
-                "before-remove",
-                replace_build_root,
-            )
-            self.assertNotEqual(0, result.returncode)
-            self.assertEqual("foreign\n", foreign_sentinel.read_text(encoding="utf-8"))
-            self.assertTrue((original / BUILD_MARKER).is_file())
-            self.assertTrue(build_dir.is_symlink())
+                    replacement = workspace / "race-build-replacement"
+                    build_dir.rename(replacement)
+                    replacement_before = self._lstat_snapshot(replacement)
+                    result = self._make(workspace, "all", *variables)
+                    self._assert_success(result)
+                    original = workspace / "race-build-original"
+                    source_before = self._source_snapshot(workspace)
+
+                    def replace_with_valid_owned_directory() -> None:
+                        build_dir.rename(original)
+                        replacement.rename(build_dir)
+
+                    result = self._run_hooked_process(
+                        workspace,
+                        command,
+                        "MINIOS_CLEAN_TEST_HOOK",
+                        hook_name,
+                        replace_with_valid_owned_directory,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(
+                        replacement_before, self._lstat_snapshot(build_dir)
+                    )
+                    self.assertTrue((build_dir / BUILD_MARKER).is_file())
+                    self.assertTrue((original / BUILD_MARKER).is_file())
+                    self.assertEqual(source_before, self._source_snapshot(workspace))
 
     def test_repository_space_path_is_supported_or_cleanly_rejected(self) -> None:
         with self._workspace(name="workspace with space") as workspace:
+            snapshot_root = workspace.parent
+            before = self._lstat_snapshot(snapshot_root)
             result = self._make(workspace, "-j4", "image")
             if result.returncode == 0:
                 self.assertTrue((workspace / "build" / IMAGE_NAME).is_file())
             else:
                 self._assert_clear_space_rejection(
                     result,
-                    (
-                        workspace / "build",
-                        workspace.parent / "workspace",
-                        workspace.parent / "with",
-                        workspace.parent / "space",
-                    ),
+                    snapshot_root,
+                    before,
                 )
 
     def test_build_dir_space_path_is_supported_or_cleanly_rejected(self) -> None:
         with self._workspace() as workspace:
             build_dir = workspace / "out tree"
+            snapshot_root = workspace.parent
+            before = self._lstat_snapshot(snapshot_root)
             result = self._make(
                 workspace, "-j4", "image", f"BUILD_DIR={build_dir}"
             )
@@ -755,12 +830,8 @@ class BuildRuntimeTests(unittest.TestCase):
             else:
                 self._assert_clear_space_rejection(
                     result,
-                    (
-                        workspace / "build",
-                        workspace / "out",
-                        workspace / "tree",
-                        build_dir,
-                    ),
+                    snapshot_root,
+                    before,
                 )
 
     def test_tool_space_paths_are_supported_or_cleanly_rejected(self) -> None:
@@ -789,6 +860,8 @@ class BuildRuntimeTests(unittest.TestCase):
                     self._resolve_tool(workspace, real_name),
                     log,
                 )
+            snapshot_root = workspace.parent
+            before = self._lstat_snapshot(snapshot_root)
             result = self._make(
                 workspace,
                 "-j4",
@@ -804,8 +877,8 @@ class BuildRuntimeTests(unittest.TestCase):
             else:
                 self._assert_clear_space_rejection(
                     result,
-                    (workspace / "build", workspace / "tool", workspace / "wrapper"),
-                    tuple(log_paths),
+                    snapshot_root,
+                    before,
                 )
 
     def test_image_tool_rejects_invalid_inputs_without_clobbering_output(self) -> None:
@@ -1090,7 +1163,9 @@ class BuildRuntimeTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "MINIOS_IMAGE_TEST_HOOK": "artifact-before-open:stage1",
+                    "MINIOS_IMAGE_TEST_HOOK": (
+                        "artifact-after-validation-before-open:stage1"
+                    ),
                     "MINIOS_TEST_HOOK_READY": str(ready),
                     "MINIOS_TEST_HOOK_CONTINUE": str(workspace / "never-created"),
                 }
@@ -1124,36 +1199,61 @@ class BuildRuntimeTests(unittest.TestCase):
             layout["components"] = [layout["components"][0]]
             layout_path = workspace / "artifact-race-layout.json"
             layout_path.write_text(json.dumps(layout), encoding="utf-8")
+            hook_name = "artifact-after-validation-before-open:stage1"
+            noop_output = workspace / "artifact-hook-noop.img"
+            result = self._run_hooked_process(
+                workspace,
+                self._image_command(workspace, build_dir, noop_output, layout_path),
+                "MINIOS_IMAGE_TEST_HOOK",
+                hook_name,
+                lambda: None,
+            )
+            self._assert_success(result)
+            self.assertEqual(
+                (build_dir / "boot/stage1.bin").read_bytes(),
+                noop_output.read_bytes()[:512],
+            )
+
             output = workspace / "artifact-race.img"
             marker = b"preserve-artifact-race"
             output.write_bytes(marker)
-            external = workspace.parent / "external-race-boot"
-            shutil.copytree(build_dir / "boot", external)
-            external_stage1 = external / "stage1.bin"
-            external_stage1.write_bytes(b"E" * 512)
-            external_hash = hashlib.sha256(external_stage1.read_bytes()).hexdigest()
+            replacement_boot = build_dir / "boot-replacement"
+            shutil.copytree(build_dir / "boot", replacement_boot)
+            replacement_stage1 = replacement_boot / "stage1.bin"
+            replacement_stage1.write_bytes(b"E" * 512)
+            replacement_hash = hashlib.sha256(
+                replacement_stage1.read_bytes()
+            ).hexdigest()
             original_boot = build_dir / "boot-owned"
 
             def replace_boot_directory() -> None:
                 (build_dir / "boot").rename(original_boot)
-                (build_dir / "boot").symlink_to(external, target_is_directory=True)
+                replacement_boot.rename(build_dir / "boot")
 
             result = self._run_hooked_process(
                 workspace,
                 self._image_command(workspace, build_dir, output, layout_path),
                 "MINIOS_IMAGE_TEST_HOOK",
-                "artifact-before-open:stage1",
+                hook_name,
                 replace_boot_directory,
             )
             self.assertNotEqual(0, result.returncode)
             self.assertEqual(marker, output.read_bytes())
             self.assertEqual(
-                external_hash, hashlib.sha256(external_stage1.read_bytes()).hexdigest()
+                replacement_hash,
+                hashlib.sha256(
+                    (build_dir / "boot/stage1.bin").read_bytes()
+                ).hexdigest(),
             )
+            self.assertTrue((build_dir / "boot").is_dir())
+            self.assertTrue(original_boot.is_dir())
             self.assertEqual([], [p for p in output.parent.iterdir() if ".tmp-" in p.name])
 
     def test_image_output_parent_replacement_races_are_rejected(self) -> None:
-        for hook_name in ("output-parent-before-open", "output-before-commit"):
+        for hook_name in (
+            "output-parent-after-validation-before-open",
+            "output-after-validation-before-commit",
+        ):
             with self.subTest(hook=hook_name):
                 with self._workspace() as workspace:
                     result = self._make(workspace, "-j4", "all")
@@ -1174,12 +1274,32 @@ class BuildRuntimeTests(unittest.TestCase):
                         f"race-{hook_name}",
                         "boot/stage1.bin",
                     )
+                    noop_parent = workspace / "noop-output"
+                    noop_parent.mkdir()
+                    noop_output = noop_parent / IMAGE_NAME
+                    result = self._run_hooked_process(
+                        workspace,
+                        self._image_command(
+                            workspace,
+                            self._build_dir(workspace),
+                            noop_output,
+                            layout_path,
+                        ),
+                        "MINIOS_IMAGE_TEST_HOOK",
+                        hook_name,
+                        lambda: None,
+                    )
+                    self._assert_success(result)
+                    self.assertEqual(2 * 1024 * 1024, noop_output.stat().st_size)
+
+                    replacement_parent = workspace / "race-output-replacement"
+                    replacement_parent.mkdir()
+                    replacement_output = replacement_parent / IMAGE_NAME
+                    replacement_output.write_bytes(foreign_marker)
 
                     def replace_output_parent() -> None:
                         output_parent.rename(original_parent)
-                        output_parent.symlink_to(
-                            foreign_parent, target_is_directory=True
-                        )
+                        replacement_parent.rename(output_parent)
 
                     result = self._run_hooked_process(
                         workspace,
@@ -1197,12 +1317,19 @@ class BuildRuntimeTests(unittest.TestCase):
                     self.assertEqual(
                         marker, (original_parent / IMAGE_NAME).read_bytes()
                     )
+                    self.assertEqual(
+                        foreign_marker, (output_parent / IMAGE_NAME).read_bytes()
+                    )
                     self.assertEqual(foreign_marker, foreign_output.read_bytes())
                     self.assertEqual(
                         [],
                         [
                             path
-                            for parent in (original_parent, foreign_parent)
+                            for parent in (
+                                original_parent,
+                                output_parent,
+                                foreign_parent,
+                            )
                             for path in parent.iterdir()
                             if ".tmp-" in path.name
                         ],

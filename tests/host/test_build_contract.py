@@ -14,7 +14,6 @@ REQUIRED_BUILD_FILES = (
     "Makefile",
     "config/image-layout.json",
     "tools/make_image.py",
-    "tools/build_dir_guard.py",
     "boot/stage1/boot.asm",
     "boot/stage2/entry.asm",
     "boot/stage2/linker.ld",
