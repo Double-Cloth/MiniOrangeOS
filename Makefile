@@ -11,6 +11,7 @@ QEMU_TIMEOUT ?= 10
 QEMU_LOG_MAX_BYTES ?= 1048576
 GDB_ENDPOINT ?= tcp:127.0.0.1:1234
 KERNEL_TEST_BREAKPOINT ?= 0
+KERNEL_TEST_PAGE_FAULT ?= 0
 
 # GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
 # 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
@@ -99,6 +100,14 @@ ifneq ($(value KERNEL_TEST_BREAKPOINT),1)
 $(error KERNEL_TEST_BREAKPOINT 只允许 0 或 1)
 endif
 endif
+ifneq ($(call unsafe_make_value,KERNEL_TEST_PAGE_FAULT),)
+$(error KERNEL_TEST_PAGE_FAULT 含危险字符)
+endif
+ifneq ($(value KERNEL_TEST_PAGE_FAULT),0)
+ifneq ($(value KERNEL_TEST_PAGE_FAULT),1)
+$(error KERNEL_TEST_PAGE_FAULT 只允许 0 或 1)
+endif
+endif
 
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
@@ -164,6 +173,10 @@ KERNEL_VMM_OBJ := $(KERNEL_MM_BUILD_DIR)/vmm.o
 KERNEL_VMM_DEP := $(KERNEL_MM_BUILD_DIR)/vmm.d
 KERNEL_HEAP_OBJ := $(KERNEL_MM_BUILD_DIR)/heap.o
 KERNEL_HEAP_DEP := $(KERNEL_MM_BUILD_DIR)/heap.d
+KERNEL_ADDRESS_SPACE_OBJ := $(KERNEL_MM_BUILD_DIR)/address_space.o
+KERNEL_ADDRESS_SPACE_DEP := $(KERNEL_MM_BUILD_DIR)/address_space.d
+KERNEL_USERCOPY_OBJ := $(KERNEL_MM_BUILD_DIR)/usercopy.o
+KERNEL_USERCOPY_DEP := $(KERNEL_MM_BUILD_DIR)/usercopy.d
 KERNEL_C_OBJECTS := \
 	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_IDT_OBJ) \
@@ -179,7 +192,9 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_KEYBOARD_OBJ) \
 	$(KERNEL_PMM_OBJ) \
 	$(KERNEL_VMM_OBJ) \
-	$(KERNEL_HEAP_OBJ)
+	$(KERNEL_HEAP_OBJ) \
+	$(KERNEL_ADDRESS_SPACE_OBJ) \
+	$(KERNEL_USERCOPY_OBJ)
 KERNEL_C_DEPS := \
 	$(KERNEL_GDT_DEP) \
 	$(KERNEL_IDT_DEP) \
@@ -195,7 +210,9 @@ KERNEL_C_DEPS := \
 	$(KERNEL_KEYBOARD_DEP) \
 	$(KERNEL_PMM_DEP) \
 	$(KERNEL_VMM_DEP) \
-	$(KERNEL_HEAP_DEP)
+	$(KERNEL_HEAP_DEP) \
+	$(KERNEL_ADDRESS_SPACE_DEP) \
+	$(KERNEL_USERCOPY_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -208,6 +225,7 @@ QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 KERNEL_CFLAGS := \
 	-I "$(ROOT_DIR)/kernel/include" \
 	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
+	-DMINIOS_TEST_PAGE_FAULT=$(KERNEL_TEST_PAGE_FAULT) \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \
@@ -339,6 +357,12 @@ $(KERNEL_VMM_OBJ): kernel/mm/vmm.c | prepare-build-dir
 
 $(KERNEL_HEAP_OBJ): kernel/mm/heap.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_HEAP_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_ADDRESS_SPACE_OBJ): kernel/mm/address_space.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_ADDRESS_SPACE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_USERCOPY_OBJ): kernel/mm/usercopy.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_USERCOPY_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
 	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS)

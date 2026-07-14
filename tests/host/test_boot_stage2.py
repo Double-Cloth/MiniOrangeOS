@@ -38,6 +38,8 @@ KERNEL_BOOT_INFO_HEADER = ROOT / "kernel/include/minios/boot_info.h"
 KERNEL_PMM_SOURCE = ROOT / "kernel/mm/pmm.c"
 KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
 KERNEL_HEAP_SOURCE = ROOT / "kernel/mm/heap.c"
+KERNEL_ADDRESS_SPACE_SOURCE = ROOT / "kernel/mm/address_space.c"
+KERNEL_USERCOPY_SOURCE = ROOT / "kernel/mm/usercopy.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -496,6 +498,25 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("bool kfree", source)
         self.assertIn("vmm_map", source)
 
+    def test_kernel_declares_user_memory_safety_contract(self) -> None:
+        self.assertTrue(KERNEL_USERCOPY_SOURCE.is_file(), "缺少 usercopy 实现")
+        self.assertTrue(KERNEL_ADDRESS_SPACE_SOURCE.is_file(), "缺少用户地址空间实现")
+        address_space = KERNEL_ADDRESS_SPACE_SOURCE.read_text(encoding="utf-8")
+        usercopy = KERNEL_USERCOPY_SOURCE.read_text(encoding="utf-8")
+        exception = KERNEL_EXCEPTION_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("vmm_address_space_create", address_space)
+        self.assertIn("vmm_address_space_destroy", address_space)
+        self.assertIn("vmm_address_space_map", address_space)
+        self.assertIn("KERNEL_PDE_INDEX", address_space)
+        self.assertIn("validate_user_range", usercopy)
+        self.assertIn("copy_from_user", usercopy)
+        self.assertIn("copy_to_user", usercopy)
+        self.assertIn("copy_user_string", usercopy)
+        self.assertIn("MINIOS_EFAULT", usercopy)
+        self.assertIn("read_cr2", exception)
+        self.assertIn("PAGE_FAULT_USER", exception)
+        self.assertIn("user_page_fault_handler", exception)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -773,7 +794,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertEqual(
-            kernel_lines[12:],
+            kernel_lines[12:14],
+            [
+                "[KERN] user memory ready",
+                "[KERN] user memory self-test PASS",
+            ],
+        )
+        self.assertEqual(
+            kernel_lines[14:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
@@ -907,32 +935,94 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             r"(?m)^\[PANIC\] exception vector=3 error=0 eip=0x[0-9a-f]{8}\r?$",
         )
 
-    def test_breakpoint_build_toggle_fails_closed(self) -> None:
+    def test_real_kernel_page_fault_reports_cr2_and_context(self) -> None:
+        test_build = Path(self.temporary_directory.name) / "page-fault-build"
+        test_build_relative = test_build.relative_to(ROOT)
+        build = subprocess.run(
+            [
+                "bash",
+                "environment/with-env.sh",
+                "make",
+                f"BUILD_DIR={test_build_relative.as_posix()}",
+                "KERNEL_TEST_PAGE_FAULT=1",
+                "-j4",
+                "image",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+
+        log = test_build / "test-logs/page-fault.log"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/qemu_test.py",
+                "--qemu",
+                QEMU,
+                "--image",
+                str(test_build / "miniorangeos.img"),
+                "--log",
+                str(log),
+                "--timeout",
+                "2",
+                "--max-log-bytes",
+                "262144",
+                "--repo",
+                str(ROOT),
+                "--build-dir",
+                test_build_relative.as_posix(),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QEMU 超时", result.stderr)
+        output = log.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("[KERN] idt ready", output)
+        self.assertRegex(
+            output,
+            r"(?m)^\[PANIC\] kernel page fault address=0x00400000 "
+            r"error=0 eip=0x[0-9a-f]{8}\r?$",
+        )
+
+    def test_fault_build_toggles_fail_closed(self) -> None:
         build_relative = (
             Path(self.temporary_directory.name).relative_to(ROOT) / "invalid"
         )
         marker = Path(self.temporary_directory.name) / "must-not-exist"
-        for value in ("2", f"$(shell touch {marker.as_posix()})"):
-            with self.subTest(value=value):
-                result = subprocess.run(
-                    [
-                        "bash",
-                        "environment/with-env.sh",
-                        "make",
-                        f"BUILD_DIR={build_relative.as_posix()}",
-                        f"KERNEL_TEST_BREAKPOINT={value}",
-                        "image",
-                    ],
-                    cwd=ROOT,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=15,
-                    check=False,
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(marker.exists(), "非法测试开关不得执行 Make 函数")
+        for variable in ("KERNEL_TEST_BREAKPOINT", "KERNEL_TEST_PAGE_FAULT"):
+            for value in ("2", f"$(shell touch {marker.as_posix()})"):
+                with self.subTest(variable=variable, value=value):
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "environment/with-env.sh",
+                            "make",
+                            f"BUILD_DIR={build_relative.as_posix()}",
+                            f"{variable}={value}",
+                            "image",
+                        ],
+                        cwd=ROOT,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=15,
+                        check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(marker.exists(), "非法测试开关不得执行 Make 函数")
 
     def test_corrupted_kernel_elf_is_rejected_before_entry(self) -> None:
         layout = json.loads((ROOT / "config/image-layout.json").read_text(encoding="utf-8"))

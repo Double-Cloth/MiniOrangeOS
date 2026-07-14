@@ -255,6 +255,12 @@ bool vmm_query(uint32_t virtual_address, uint32_t *physical_address, uint32_t *f
     }
     if (flags != NULL) {
         *flags = entry & (PAGE_WRITABLE | PAGE_USER);
+        if ((page_directory[directory_index] & PAGE_WRITABLE) == 0U) {
+            *flags &= ~PAGE_WRITABLE;
+        }
+        if ((page_directory[directory_index] & PAGE_USER) == 0U) {
+            *flags &= ~PAGE_USER;
+        }
     }
     return true;
 }
