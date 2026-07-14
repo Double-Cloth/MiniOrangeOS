@@ -1,5 +1,6 @@
 #include <minios/arch/x86/irq.h>
 #include <minios/arch/x86/trap_frame.h>
+#include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
 #include <minios/panic.h>
@@ -22,6 +23,8 @@ void irq_dispatch(const struct trap_frame *frame)
     irq = frame->vector - HARDWARE_IRQ_BASE;
     if (irq == 0U) {
         pit_handle_irq();
+    } else if (irq == 1U) {
+        keyboard_handle_irq();
     }
     pic_send_eoi((uint8_t)irq);
 }

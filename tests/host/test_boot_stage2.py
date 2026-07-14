@@ -6,10 +6,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -31,6 +33,7 @@ KERNEL_IRQ_ASSEMBLY = ROOT / "kernel/arch/x86/irqs.asm"
 KERNEL_IRQ_SOURCE = ROOT / "kernel/arch/x86/irq.c"
 KERNEL_PIC_SOURCE = ROOT / "kernel/drivers/pic.c"
 KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
+KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -445,6 +448,15 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("1193182", pit)
         self.assertIn("[KERN] pit tick=%u", pit)
 
+    def test_kernel_declares_ps2_keyboard_contract(self) -> None:
+        self.assertTrue(KERNEL_KEYBOARD_SOURCE.is_file(), "缺少 PS/2 键盘驱动")
+        source = KERNEL_KEYBOARD_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("0x0060", source)
+        self.assertIn("0x0064", source)
+        self.assertIn("KEYBOARD_BUFFER_SIZE", source)
+        self.assertIn("keyboard_try_read", source)
+        self.assertIn("PS2_POLL_LIMIT", source)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -702,11 +714,75 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] idt ready",
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
+                "[KERN] keyboard ready",
                 "[KERN] interrupts enabled",
                 "[KERN] pit tick=5",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
+
+    def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:
+        log = self.build_directory / "test-logs/keyboard-input.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        drive = f"file={self.image},format=raw,if=ide,index=0,media=disk"
+        process = subprocess.Popen(
+            [
+                QEMU,
+                "-machine",
+                "pc,accel=tcg",
+                "-m",
+                "32M",
+                "-drive",
+                drive,
+                "-boot",
+                "c",
+                "-display",
+                "none",
+                "-monitor",
+                "stdio",
+                "-serial",
+                f"file:{log}",
+                "-no-reboot",
+                "-no-shutdown",
+            ],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+                if "[KERN] keyboard ready" in output:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("QEMU 未到达 keyboard ready")
+
+            assert process.stdin is not None
+            process.stdin.write(b"sendkey a\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                output = log.read_text(encoding="utf-8", errors="replace")
+                if "[KERN] keyboard input=a" in output:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"IRQ1 未交付 ASCII：\n{output}")
+        finally:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3)
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stderr is not None:
+                process.stderr.close()
 
     def test_real_breakpoint_exception_reaches_panic(self) -> None:
         test_build = Path(self.temporary_directory.name) / "breakpoint-build"

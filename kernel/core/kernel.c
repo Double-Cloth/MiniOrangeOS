@@ -2,6 +2,7 @@
 #include <minios/arch/x86/idt.h>
 #include <minios/arch/x86/irq.h>
 #include <minios/console.h>
+#include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
 
@@ -23,6 +24,9 @@ void kernel_main(void)
     pit_init(100U);
     pic_unmask(0U);
     console_printf("[KERN] pit ready hz=100\n");
+    keyboard_init();
+    pic_unmask(1U);
+    console_printf("[KERN] keyboard ready\n");
     irq_enable();
     console_printf("[KERN] interrupts enabled\n");
     for (;;) {

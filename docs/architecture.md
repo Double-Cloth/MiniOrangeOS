@@ -144,3 +144,5 @@ P2 最小控制台同时写 COM1 与 VGA text mode。格式化接口只承诺 `%
 P2 IDT 包含 256 个槽位，前 32 项安装 DPL 0 的 32-bit interrupt gate。异常汇编入口把 CPU 自动错误码和软件补零统一为 `vector/error_code`，再用 `pushad` 形成固定 trap frame；Ring 0 异常输出 vector、error code 和 EIP 后 panic。进入 Ring 3 后，异常分发器必须根据 `CS.RPL` 区分用户异常与内核异常，前者终止当前进程，不能沿用 P2 的全局 panic 策略。
 
 8259 PIC 将 master/slave 分别重映射到 `0x20/0x28`，初始化后默认屏蔽全部 IRQ，只在对应驱动就绪后逐项放开。IRQ0-15 使用与异常一致的 trap frame，驱动处理完成后向 slave（如适用）和 master 发送 EOI。PIT channel 0 使用 mode 3、100 Hz；tick 为 32-bit 单调计数，当前第 5 tick 输出一次启动里程碑，后续由调度器消费而不逐 tick 写日志。
+
+PS/2 初始化使用有界状态轮询，依次禁用端口、清空输出、关闭控制器 IRQ、执行控制器/第一端口自检、启用第一端口和 set-1 translation，并在键盘 `F4` ACK 后才放开 IRQ1。IRQ1 维护 Shift/Caps Lock/extended/break 状态，将 ASCII 写入 64-byte 单生产者/单消费者环形缓冲；缓冲满时丢弃新输入，不在用户输入路径 panic。`keyboard_try_read` 是后续控制台和 fd 0 的非阻塞底层接口。

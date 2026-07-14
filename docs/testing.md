@@ -131,6 +131,8 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 
 同日完成 PIC/PIT 验证：正式镜像将 PIC 重映射到 `0x20/0x28`，安装 16 个 IRQ 门，只放开 IRQ0，并在开启中断后由真实 PIT 依次输出 `[KERN] interrupts enabled` 与 `[KERN] pit tick=5`。启动专项 18/18 PASS，全量宿主测试 212/212 PASS。Kernel ELF 为 13,880 bytes，SHA-256 为 `8a5603dcc5e5728b4e4e8a640276408646dff31ed629f6b0ffc78ac26e53280c`；镜像为 67,108,864 bytes，SHA-256 为 `360e68b8c255ba794a08c4fa5e0afb82b5317717db91babdf9d23c84df81c31c`。
 
+P2 最终键盘验收在正式 `MiniOrangeOS-Dev` 中完成：PS/2 控制器和第一端口自检、set-1 translation、`F4/FA` 扫描启用、IRQ1、Shift/Caps/extended/break 状态与 64-byte 环形缓冲源码合同 PASS；独立真实 QEMU 通过 HMP `sendkey a` 注入按键，串口观察到 `[KERN] keyboard input=a`。环境自检 PASS，启动专项 20/20 PASS，全量宿主测试 214/214 PASS；干净默认构建再次通过。Kernel ELF 为 19,076 bytes，SHA-256 为 `e441273b3035d73940620ab3de666694818437d4f0e20fe5adef6c3f2d151548`；镜像为 67,108,864 bytes，SHA-256 为 `8b5d2726cc6ee0275bc62af4b5f435b5bf2b1b106e88af174b2add58474596ee`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
