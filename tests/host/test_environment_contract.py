@@ -702,6 +702,33 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                 ):
                     self.assertIn(token, content)
 
+    def test_verify_accepts_only_kernel_owned_pid_one_runtime_facts(self) -> None:
+        content = self._without_comments(self._read_required("environment/verify.sh"))
+        process_owner = self._function_body(
+            content, "trusted_runtime_process_owner", powershell=False
+        )
+        process_fact = self._function_body(
+            content, "runtime_process_fact_is_trusted", powershell=False
+        )
+        container_gate = self._function_body(
+            content, "verify_container_runtime_identity", powershell=False
+        )
+        self.assertIn("stat -f -c %T", process_owner)
+        self.assertIn("'proc'", process_owner)
+        self.assertRegex(process_owner, r"stat\s+-c\s+'%F\|%u\|%a'.*?/proc/1")
+        self.assertIn("stat -f -c %T", process_fact)
+        self.assertIn("runtime_fact_is_trusted", process_fact)
+        self.assertIn('process_owner="$(trusted_runtime_process_owner)"', container_gate)
+        self.assertIn(
+            'runtime_process_fact_is_trusted /proc/1/cgroup "$process_owner"',
+            container_gate,
+        )
+        self.assertIn(
+            'runtime_process_fact_is_trusted /proc/1/mountinfo "$process_owner"',
+            container_gate,
+        )
+        self.assertIn("runtime_fact_is_trusted /.dockerenv", container_gate)
+
     def test_verify_invokes_runtime_and_instance_identity_checks(self) -> None:
         content = self._without_comments(self._read_required("environment/verify.sh"))
         isolation_gate = content[
