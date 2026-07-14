@@ -21,7 +21,7 @@
 | P1 启动链 | 完成 | `d8fab7b` 合并；环境 PASS、启动专项 11/11、完整宿主 205/205、真实 QEMU 到达 `[KERN] boot info valid` |
 | P2 内核基础与中断 | 完成 | `6a307e8` 合并；分页、控制台/panic、GDT/IDT、异常、PIC/PIT、PS/2 键盘；环境 PASS、启动专项 20/20、全量宿主 214/214、真实按键注入 PASS |
 | P3 内存管理 | 完成 | `54d7cf3` 合并；E820 PMM、正式 VMM、first-fit heap、用户页目录、usercopy/page fault；环境 PASS、启动专项 25/25、全量宿主 219/219、真实 kernel #PF/断点/按键回归 PASS |
-| P4 进程与系统调用 | 进行中 | Ring 3 GDT/TSS、静态 PCB、16 KiB 内核栈和 PIT 时间片抢占已通过三线程轨迹、无 yield 忙等抢占、启动专项 27/27、全量宿主 221/221；Ring 3、用户故障终止与 `int 0x80` 待完成 |
+| P4 进程与系统调用 | 进行中 | Ring 3 GDT/TSS、静态 PCB、16 KiB 内核栈、PIT 时间片抢占和用户页目录 CR3 激活/恢复已通过真实 QEMU；启动专项 27/27、全量宿主 221/221；Ring 3、用户故障终止与 `int 0x80` 待完成 |
 | P5 ELF 用户态与 Shell | 未开始 | 用户 ELF 加载、crt0、最小 libc、init、Shell、基础用户程序 |
 | P6 磁盘与 MiniFS | 未开始 | ATA、block、mkfs、MiniFS、VFS、fd、文件命令、持久化 |
 | P7 CI、文档和答辩版本 | 未开始 | `make test` 收敛、Linux CI、文档校准、演示脚本、release checklist |

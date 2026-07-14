@@ -1,6 +1,7 @@
 #include <minios/mm/address_space.h>
 #include <minios/mm/pmm.h>
 #include <minios/mm/vmm.h>
+#include <minios/arch/x86/irq.h>
 #include <minios/panic.h>
 
 #include <stdbool.h>
@@ -13,7 +14,6 @@
 #define KERNEL_BASE 0xC0000000U
 #define KERNEL_PDE_INDEX 768U
 #define RECURSIVE_PDE_INDEX 1023U
-#define CURRENT_PAGE_DIRECTORY 0xFFFFF000U
 #define ADDRESS_SPACE_DIRECTORY_WINDOW 0xD0800000U
 #define ADDRESS_SPACE_TABLE_WINDOW 0xD0801000U
 #define ADDRESS_SPACE_WINDOW_PDE (ADDRESS_SPACE_DIRECTORY_WINDOW >> 22U)
@@ -21,8 +21,10 @@
 #define PAGE_WRITABLE VMM_WRITABLE
 #define PAGE_USER VMM_USER
 #define ADDRESS_SPACE_TEST_VIRTUAL 0x00400000U
+#define ADDRESS_SPACE_TEST_VALUE 0xA55A13C7U
 
 static bool address_space_window_busy;
+static uint32_t address_space_window_irq_flags;
 
 static bool valid_space(const struct vmm_address_space *space)
 {
@@ -32,16 +34,23 @@ static bool valid_space(const struct vmm_address_space *space)
 
 static bool acquire_window(void)
 {
+    uint32_t flags = irq_save_disable();
+
     if (address_space_window_busy) {
+        irq_restore(flags);
         return false;
     }
     address_space_window_busy = true;
+    address_space_window_irq_flags = flags;
     return true;
 }
 
 static void release_window(void)
 {
+    uint32_t flags = address_space_window_irq_flags;
+
     address_space_window_busy = false;
+    irq_restore(flags);
 }
 
 static bool map_window(uint32_t virtual_address, uint32_t physical_address)
@@ -68,16 +77,27 @@ static void zero_page(volatile uint32_t *page)
     }
 }
 
+static void refresh_active_translation(
+    const struct vmm_address_space *space)
+{
+    if (vmm_current_page_directory() == space->page_directory_physical &&
+        !vmm_activate_page_directory(space->page_directory_physical)) {
+        panic("address-space TLB refresh failed");
+    }
+}
+
 bool vmm_address_space_create(struct vmm_address_space *space)
 {
     volatile uint32_t *directory =
         (volatile uint32_t *)(uintptr_t)ADDRESS_SPACE_DIRECTORY_WINDOW;
-    volatile uint32_t *current =
-        (volatile uint32_t *)(uintptr_t)CURRENT_PAGE_DIRECTORY;
+    volatile const uint32_t *kernel_directory =
+        (volatile const uint32_t *)(uintptr_t)ADDRESS_SPACE_TABLE_WINDOW;
+    uint32_t kernel_physical = vmm_kernel_page_directory();
     uint32_t physical;
     uint32_t index;
 
     if (space == NULL || space->page_directory_physical != 0U ||
+        kernel_physical == 0U ||
         !acquire_window()) {
         return false;
     }
@@ -93,14 +113,23 @@ bool vmm_address_space_create(struct vmm_address_space *space)
         release_window();
         return false;
     }
+    if (!map_window(ADDRESS_SPACE_TABLE_WINDOW, kernel_physical)) {
+        unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW, physical);
+        if (!pmm_free(physical)) {
+            panic("address-space directory rollback failed");
+        }
+        release_window();
+        return false;
+    }
     zero_page(directory);
     for (index = KERNEL_PDE_INDEX; index < RECURSIVE_PDE_INDEX; ++index) {
         if (index != ADDRESS_SPACE_WINDOW_PDE) {
-            directory[index] = current[index];
+            directory[index] = kernel_directory[index];
         }
     }
     directory[RECURSIVE_PDE_INDEX] =
         physical | PAGE_PRESENT | PAGE_WRITABLE;
+    unmap_window(ADDRESS_SPACE_TABLE_WINDOW, kernel_physical);
     unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW, physical);
     space->page_directory_physical = physical;
     release_window();
@@ -178,6 +207,63 @@ bool vmm_address_space_map(struct vmm_address_space *space,
     unmap_window(ADDRESS_SPACE_TABLE_WINDOW, table_physical);
     unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
                  space->page_directory_physical);
+    refresh_active_translation(space);
+    release_window();
+    return true;
+}
+
+bool vmm_address_space_protect(struct vmm_address_space *space,
+                               uint32_t virtual_address,
+                               uint32_t flags)
+{
+    volatile uint32_t *directory =
+        (volatile uint32_t *)(uintptr_t)ADDRESS_SPACE_DIRECTORY_WINDOW;
+    volatile uint32_t *table =
+        (volatile uint32_t *)(uintptr_t)ADDRESS_SPACE_TABLE_WINDOW;
+    uint32_t directory_index;
+    uint32_t table_index;
+    uint32_t table_physical;
+    uint32_t entry;
+
+    if (!valid_space(space) || virtual_address >= KERNEL_BASE ||
+        (virtual_address & (PAGE_SIZE - 1U)) != 0U ||
+        (flags & ~VMM_WRITABLE) != 0U || !acquire_window()) {
+        return false;
+    }
+    if (!map_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                    space->page_directory_physical)) {
+        release_window();
+        return false;
+    }
+    directory_index = virtual_address >> 22U;
+    table_index = (virtual_address >> 12U) & 0x3FFU;
+    if ((directory[directory_index] & PAGE_PRESENT) == 0U) {
+        unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                     space->page_directory_physical);
+        release_window();
+        return false;
+    }
+    table_physical = directory[directory_index] & PAGE_MASK;
+    if (!map_window(ADDRESS_SPACE_TABLE_WINDOW, table_physical)) {
+        unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                     space->page_directory_physical);
+        release_window();
+        return false;
+    }
+    entry = table[table_index];
+    if ((entry & PAGE_PRESENT) == 0U) {
+        unmap_window(ADDRESS_SPACE_TABLE_WINDOW, table_physical);
+        unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                     space->page_directory_physical);
+        release_window();
+        return false;
+    }
+    table[table_index] = (entry & PAGE_MASK) | PAGE_PRESENT | PAGE_USER |
+        (flags & PAGE_WRITABLE);
+    unmap_window(ADDRESS_SPACE_TABLE_WINDOW, table_physical);
+    unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                 space->page_directory_physical);
+    refresh_active_translation(space);
     release_window();
     return true;
 }
@@ -248,6 +334,7 @@ bool vmm_address_space_unmap(struct vmm_address_space *space,
     }
     unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
                  space->page_directory_physical);
+    refresh_active_translation(space);
     release_window();
     return true;
 }
@@ -313,6 +400,45 @@ bool vmm_address_space_query(const struct vmm_address_space *space,
     return (entry & PAGE_PRESENT) != 0U;
 }
 
+bool vmm_address_space_activate(struct vmm_address_space *space)
+{
+    volatile uint32_t *directory =
+        (volatile uint32_t *)(uintptr_t)ADDRESS_SPACE_DIRECTORY_WINDOW;
+    volatile const uint32_t *kernel_directory =
+        (volatile const uint32_t *)(uintptr_t)ADDRESS_SPACE_TABLE_WINDOW;
+    uint32_t kernel_physical = vmm_kernel_page_directory();
+    uint32_t index;
+
+    if (!valid_space(space) || kernel_physical == 0U || !acquire_window()) {
+        return false;
+    }
+    if (!map_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                    space->page_directory_physical)) {
+        release_window();
+        return false;
+    }
+    if (!map_window(ADDRESS_SPACE_TABLE_WINDOW, kernel_physical)) {
+        unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                     space->page_directory_physical);
+        release_window();
+        return false;
+    }
+    for (index = KERNEL_PDE_INDEX; index < RECURSIVE_PDE_INDEX; ++index) {
+        if (index != ADDRESS_SPACE_WINDOW_PDE) {
+            directory[index] = kernel_directory[index];
+        }
+    }
+    unmap_window(ADDRESS_SPACE_TABLE_WINDOW, kernel_physical);
+    unmap_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
+                 space->page_directory_physical);
+    if (!vmm_activate_page_directory(space->page_directory_physical)) {
+        release_window();
+        return false;
+    }
+    release_window();
+    return true;
+}
+
 bool vmm_address_space_destroy(struct vmm_address_space *space)
 {
     volatile uint32_t *directory =
@@ -322,6 +448,10 @@ bool vmm_address_space_destroy(struct vmm_address_space *space)
     uint32_t directory_index;
 
     if (!valid_space(space) || !acquire_window()) {
+        return false;
+    }
+    if (vmm_current_page_directory() == space->page_directory_physical) {
+        release_window();
         return false;
     }
     if (!map_window(ADDRESS_SPACE_DIRECTORY_WINDOW,
@@ -376,8 +506,14 @@ bool vmm_address_space_self_test(void)
     uint32_t queried = 0U;
     uint32_t flags = 0U;
     uint32_t unmapped = 0U;
+    uint32_t kernel_physical = vmm_kernel_page_directory();
+    volatile uint32_t *test_page =
+        (volatile uint32_t *)(uintptr_t)ADDRESS_SPACE_TEST_VIRTUAL;
+    bool active_checks;
 
-    if (!vmm_address_space_create(&space)) {
+    if (kernel_physical == 0U ||
+        vmm_current_page_directory() != kernel_physical ||
+        !vmm_address_space_create(&space)) {
         return false;
     }
     first = pmm_alloc();
@@ -395,7 +531,30 @@ bool vmm_address_space_self_test(void)
                                  &queried, &flags) ||
         queried != first + 17U ||
         flags != (VMM_USER | VMM_WRITABLE) ||
+        !vmm_address_space_protect(&space, ADDRESS_SPACE_TEST_VIRTUAL, 0U) ||
+        !vmm_address_space_query(&space, ADDRESS_SPACE_TEST_VIRTUAL,
+                                 NULL, &flags) ||
+        flags != VMM_USER ||
+        !vmm_address_space_protect(&space, ADDRESS_SPACE_TEST_VIRTUAL,
+                                   VMM_WRITABLE) ||
+        vmm_address_space_protect(&space, KERNEL_BASE, VMM_WRITABLE) ||
         vmm_address_space_map(&space, KERNEL_BASE, first, VMM_WRITABLE) ||
+        !vmm_address_space_activate(&space)) {
+        return false;
+    }
+    queried = 0U;
+    flags = 0U;
+    active_checks =
+        vmm_current_page_directory() == space.page_directory_physical &&
+        vmm_query(ADDRESS_SPACE_TEST_VIRTUAL + 17U, &queried, &flags) &&
+        queried == first + 17U &&
+        flags == (VMM_USER | VMM_WRITABLE);
+    test_page[0] = ADDRESS_SPACE_TEST_VALUE;
+    active_checks = active_checks &&
+        test_page[0] == ADDRESS_SPACE_TEST_VALUE &&
+        !vmm_address_space_destroy(&space);
+    if (!vmm_activate_kernel_address_space() ||
+        vmm_current_page_directory() != kernel_physical || !active_checks ||
         !vmm_address_space_unmap(&space, ADDRESS_SPACE_TEST_VIRTUAL,
                                  &unmapped) ||
         unmapped != first || !pmm_free(first) ||
