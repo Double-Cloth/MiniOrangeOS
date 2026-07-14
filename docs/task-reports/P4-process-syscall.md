@@ -16,8 +16,9 @@
 - `12d1393`：`feat(proc): complete basic process lifecycle`
 - `a9c2059`：`fix(mm): serialize heap operations against preemption`
 - `8f6c678`：`test(proc): preempt three runnable threads`
+- `89fbcee`：`docs(p4): record completed process stage`
 
-合并提交：待完成。
+合并提交：`29a2c7d`：`merge: complete P4 process and syscall`。
 
 ## 修改文件
 
