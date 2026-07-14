@@ -126,6 +126,11 @@ KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
 KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
 KERNEL_MM_BUILD_DIR := $(KERNEL_BUILD_DIR)/mm
 KERNEL_PROC_BUILD_DIR := $(KERNEL_BUILD_DIR)/proc
+USER_BUILD_DIR := $(BUILD_ABS)/user
+USER_BIN_BUILD_DIR := $(USER_BUILD_DIR)/bin
+USER_CRT_BUILD_DIR := $(USER_BUILD_DIR)/crt
+USER_LIBC_BUILD_DIR := $(USER_BUILD_DIR)/libc
+USER_PROGRAMS_BUILD_DIR := $(USER_BUILD_DIR)/programs
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -186,6 +191,12 @@ KERNEL_USERCOPY_OBJ := $(KERNEL_MM_BUILD_DIR)/usercopy.o
 KERNEL_USERCOPY_DEP := $(KERNEL_MM_BUILD_DIR)/usercopy.d
 KERNEL_SCHEDULER_OBJ := $(KERNEL_PROC_BUILD_DIR)/scheduler.o
 KERNEL_SCHEDULER_DEP := $(KERNEL_PROC_BUILD_DIR)/scheduler.d
+KERNEL_ELF_LOADER_OBJ := $(KERNEL_PROC_BUILD_DIR)/elf.o
+KERNEL_ELF_LOADER_DEP := $(KERNEL_PROC_BUILD_DIR)/elf.d
+KERNEL_PROGRAM_REGISTRY_OBJ := $(KERNEL_PROC_BUILD_DIR)/program_registry.o
+KERNEL_PROGRAM_REGISTRY_DEP := $(KERNEL_PROC_BUILD_DIR)/program_registry.d
+KERNEL_EMBEDDED_PROGRAMS_OBJ := $(KERNEL_PROC_BUILD_DIR)/embedded_programs.o
+KERNEL_EMBEDDED_PROGRAMS_DEP := $(KERNEL_PROC_BUILD_DIR)/embedded_programs.d
 KERNEL_C_OBJECTS := \
 	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_IDT_OBJ) \
@@ -205,7 +216,9 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_HEAP_OBJ) \
 	$(KERNEL_ADDRESS_SPACE_OBJ) \
 	$(KERNEL_USERCOPY_OBJ) \
-	$(KERNEL_SCHEDULER_OBJ)
+	$(KERNEL_SCHEDULER_OBJ) \
+	$(KERNEL_ELF_LOADER_OBJ) \
+	$(KERNEL_PROGRAM_REGISTRY_OBJ)
 KERNEL_C_DEPS := \
 	$(KERNEL_GDT_DEP) \
 	$(KERNEL_IDT_DEP) \
@@ -225,20 +238,82 @@ KERNEL_C_DEPS := \
 	$(KERNEL_HEAP_DEP) \
 	$(KERNEL_ADDRESS_SPACE_DEP) \
 	$(KERNEL_USERCOPY_DEP) \
-	$(KERNEL_SCHEDULER_DEP)
+	$(KERNEL_SCHEDULER_DEP) \
+	$(KERNEL_ELF_LOADER_DEP) \
+	$(KERNEL_PROGRAM_REGISTRY_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
 KERNEL_SYM := $(KERNEL_BUILD_DIR)/kernel.sym
+
+USER_START_OBJ := $(USER_CRT_BUILD_DIR)/start.o
+USER_START_DEP := $(USER_CRT_BUILD_DIR)/start.d
+USER_SYSCALL_OBJ := $(USER_LIBC_BUILD_DIR)/syscall.o
+USER_SYSCALL_DEP := $(USER_LIBC_BUILD_DIR)/syscall.d
+USER_STRING_OBJ := $(USER_LIBC_BUILD_DIR)/string.o
+USER_STRING_DEP := $(USER_LIBC_BUILD_DIR)/string.d
+USER_INIT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/init.o
+USER_INIT_DEP := $(USER_PROGRAMS_BUILD_DIR)/init.d
+USER_INIT_ELF := $(USER_BIN_BUILD_DIR)/init.elf
+USER_INIT_MAP := $(USER_BIN_BUILD_DIR)/init.map
+USER_INIT_SYM := $(USER_BIN_BUILD_DIR)/init.sym
+USER_ECHO_OBJ := $(USER_PROGRAMS_BUILD_DIR)/echo.o
+USER_ECHO_DEP := $(USER_PROGRAMS_BUILD_DIR)/echo.d
+USER_ECHO_ELF := $(USER_BIN_BUILD_DIR)/echo.elf
+USER_ECHO_MAP := $(USER_BIN_BUILD_DIR)/echo.map
+USER_ECHO_SYM := $(USER_BIN_BUILD_DIR)/echo.sym
+USER_SH_OBJ := $(USER_PROGRAMS_BUILD_DIR)/sh.o
+USER_SH_DEP := $(USER_PROGRAMS_BUILD_DIR)/sh.d
+USER_SH_ELF := $(USER_BIN_BUILD_DIR)/sh.elf
+USER_SH_MAP := $(USER_BIN_BUILD_DIR)/sh.map
+USER_SH_SYM := $(USER_BIN_BUILD_DIR)/sh.sym
+USER_PS_OBJ := $(USER_PROGRAMS_BUILD_DIR)/ps.o
+USER_PS_DEP := $(USER_PROGRAMS_BUILD_DIR)/ps.d
+USER_PS_ELF := $(USER_BIN_BUILD_DIR)/ps.elf
+USER_PS_MAP := $(USER_BIN_BUILD_DIR)/ps.map
+USER_PS_SYM := $(USER_BIN_BUILD_DIR)/ps.sym
+USER_MEMTEST_OBJ := $(USER_PROGRAMS_BUILD_DIR)/memtest.o
+USER_MEMTEST_DEP := $(USER_PROGRAMS_BUILD_DIR)/memtest.d
+USER_MEMTEST_ELF := $(USER_BIN_BUILD_DIR)/memtest.elf
+USER_MEMTEST_MAP := $(USER_BIN_BUILD_DIR)/memtest.map
+USER_MEMTEST_SYM := $(USER_BIN_BUILD_DIR)/memtest.sym
+USER_FAULT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/fault.o
+USER_FAULT_DEP := $(USER_PROGRAMS_BUILD_DIR)/fault.d
+USER_FAULT_ELF := $(USER_BIN_BUILD_DIR)/fault.elf
+USER_FAULT_MAP := $(USER_BIN_BUILD_DIR)/fault.map
+USER_FAULT_SYM := $(USER_BIN_BUILD_DIR)/fault.sym
 
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 
 KERNEL_CFLAGS := \
+	-I "$(ROOT_DIR)/include" \
 	-I "$(ROOT_DIR)/kernel/include" \
 	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
 	-DMINIOS_TEST_PAGE_FAULT=$(KERNEL_TEST_PAGE_FAULT) \
+	-std=c11 \
+	-ffreestanding \
+	-fno-builtin \
+	-fno-stack-protector \
+	-fno-pic \
+	-fno-pie \
+	-m32 \
+	-mno-mmx \
+	-mno-sse \
+	-mno-sse2 \
+	-Wall \
+	-Wextra \
+	-Wpedantic \
+	-Wshadow \
+	-Wconversion \
+	-Wmissing-prototypes \
+	-Wstrict-prototypes \
+	-Werror
+
+USER_CFLAGS := \
+	-I "$(ROOT_DIR)/include" \
+	-I "$(ROOT_DIR)/user/include" \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \
@@ -267,13 +342,33 @@ ALL_ARTIFACTS := \
 	$(KERNEL_ELF) \
 	$(KERNEL_BIN) \
 	$(KERNEL_MAP) \
-	$(KERNEL_SYM)
+	$(KERNEL_SYM) \
+	$(USER_INIT_ELF) \
+	$(USER_INIT_MAP) \
+	$(USER_INIT_SYM) \
+	$(USER_ECHO_ELF) \
+	$(USER_ECHO_MAP) \
+	$(USER_ECHO_SYM) \
+	$(USER_SH_ELF) \
+	$(USER_SH_MAP) \
+	$(USER_SH_SYM) \
+	$(USER_PS_ELF) \
+	$(USER_PS_MAP) \
+	$(USER_PS_SYM) \
+	$(USER_MEMTEST_ELF) \
+	$(USER_MEMTEST_MAP) \
+	$(USER_MEMTEST_SYM) \
+	$(USER_FAULT_ELF) \
+	$(USER_FAULT_MAP) \
+	$(USER_FAULT_SYM)
 
-.PHONY: all image clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
+.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
+
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -389,13 +484,85 @@ $(KERNEL_USERCOPY_OBJ): kernel/mm/usercopy.c | prepare-build-dir
 $(KERNEL_SCHEDULER_OBJ): kernel/proc/scheduler.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SCHEDULER_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS)
+$(KERNEL_ELF_LOADER_OBJ): kernel/proc/elf.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_ELF_LOADER_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PROGRAM_REGISTRY_OBJ): kernel/proc/program_registry.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PROGRAM_REGISTRY_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) | prepare-build-dir
+	$(NASM) -I "$(USER_BIN_BUILD_DIR)/" -f elf32 -MD "$(KERNEL_EMBEDDED_PROGRAMS_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_EMBEDDED_PROGRAMS_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_EMBEDDED_PROGRAMS_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
 
 $(KERNEL_SYM): $(KERNEL_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_START_OBJ): user/crt/start.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(USER_START_DEP)" -MT "$@" -o "$@" "$<"
+
+$(USER_SYSCALL_OBJ): user/libc/syscall.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SYSCALL_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_STRING_OBJ): user/libc/string.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_STRING_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_INIT_OBJ): user/programs/init.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_INIT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ)
+
+$(USER_INIT_SYM): $(USER_INIT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_ECHO_OBJ): user/programs/echo.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_ECHO_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_ECHO_ELF) $(USER_ECHO_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_ECHO_MAP)" -o "$(USER_ECHO_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ)
+
+$(USER_ECHO_SYM): $(USER_ECHO_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_SH_OBJ): user/programs/sh.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SH_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_SH_ELF) $(USER_SH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_SH_MAP)" -o "$(USER_SH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ)
+
+$(USER_SH_SYM): $(USER_SH_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_PS_OBJ): user/programs/ps.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_PS_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_PS_ELF) $(USER_PS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_PS_MAP)" -o "$(USER_PS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ)
+
+$(USER_PS_SYM): $(USER_PS_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_MEMTEST_OBJ): user/programs/memtest.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_MEMTEST_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MEMTEST_MAP)" -o "$(USER_MEMTEST_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ)
+
+$(USER_MEMTEST_SYM): $(USER_MEMTEST_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_FAULT_OBJ): user/programs/fault.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_FAULT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_FAULT_MAP)" -o "$(USER_FAULT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ)
+
+$(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
@@ -411,4 +578,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP)

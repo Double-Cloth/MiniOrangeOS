@@ -165,6 +165,8 @@ Heap 抢占安全增量同日在 `MiniOrangeOS-Dev` 中完成验证：`kmalloc/k
 
 P4 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environment/verify.sh` PASS，`make clean` 后 `make -j4 image` PASS，启动专项 28/28 PASS，全量宿主回归 222/222 PASS（393.027 秒）。正式产品依次到达三线程无-yield 抢占、基础进程生命周期、Ring 3 syscall 和用户 #PF 隔离 PASS；独立 kernel #PF panic、`int3` 与 HMP 键盘注入继续通过。最终 `kernel.elf` 为 47,600 bytes，SHA-256 为 `30be9c52a4a1d0bfa14a42b836bb236407946b352887aec722c7743be96a2aa4`；`miniorangeos.img` 为 67,108,864 bytes，SHA-256 为 `515022f94036467060ccd2734e1d041ba95ad0292111aa94c4c061965bf079c7`。完整证据见 `docs/task-reports/P4-process-syscall.md`。
 
+P5 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environment/verify.sh` PASS，`make clean` 后 `make -j4 image` PASS，启动专项 28/28 PASS，全量宿主回归 225/225 PASS（463.969 秒）。正式产品从只读注册表加载真实静态 ELF32 init/sh/基础命令；Shell 脚本实际解析并执行 echo、ps、memtest，init 另行核对 fault 的 `-EFAULT` 后继续运行，既有 kernel #PF、`int3` 与 HMP 键盘注入回归继续通过。最终 `kernel.elf` 为 113,984 bytes，SHA-256 为 `19a3a72d575ba65a4d2a65143ddf42f6de3cd5f7fc49191a31037441faf97dd0`；`miniorangeos.img` 为 67,108,864 bytes，SHA-256 为 `aa63d1cacdfa00ecfb3d023113d34e7b345e9ca0409ecb6d4c4bf779d8d1be06`。完整证据见 `docs/task-reports/P5-user-shell.md`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

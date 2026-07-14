@@ -21,6 +21,23 @@ REQUIRED_BUILD_FILES = (
     "kernel/arch/x86/entry.asm",
     "kernel/core/kernel.c",
     "kernel/linker.ld",
+    "include/minios/abi/syscall.h",
+    "include/minios/abi/errno.h",
+    "user/crt/start.asm",
+    "user/libc/syscall.c",
+    "user/libc/string.c",
+    "user/programs/init.c",
+    "user/programs/echo.c",
+    "user/programs/sh.c",
+    "user/programs/ps.c",
+    "user/programs/memtest.c",
+    "user/programs/fault.c",
+    "user/linker.ld",
+    "kernel/include/minios/proc/elf.h",
+    "kernel/include/minios/proc/program_registry.h",
+    "kernel/proc/elf.c",
+    "kernel/proc/program_registry.c",
+    "kernel/proc/embedded_programs.asm",
 )
 
 GENERATED_SUFFIXES = {
@@ -69,7 +86,7 @@ class BuildContractTests(unittest.TestCase):
 
     def test_source_tree_contains_no_generated_artifacts(self) -> None:
         generated: list[str] = []
-        for directory in ("boot", "kernel", "config", "tools"):
+        for directory in ("boot", "kernel", "user", "config", "tools"):
             root = ROOT / directory
             if not root.exists():
                 continue
@@ -77,6 +94,60 @@ class BuildContractTests(unittest.TestCase):
                 if path.is_file() and path.suffix in GENERATED_SUFFIXES:
                     generated.append(path.relative_to(ROOT).as_posix())
         self.assertEqual([], generated, f"源码树出现构建产物：{generated}")
+
+    def test_user_build_declares_static_elf_and_shared_abi(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        kernel_syscall = (ROOT / "kernel/include/minios/syscall.h").read_text(
+            encoding="utf-8"
+        )
+        user_syscall = (ROOT / "user/libc/syscall.c").read_text(encoding="utf-8")
+        self.assertIn("USER_INIT_ELF", makefile)
+        self.assertIn("USER_ECHO_ELF", makefile)
+        self.assertIn("USER_SH_ELF", makefile)
+        self.assertIn("USER_PS_ELF", makefile)
+        self.assertIn("USER_MEMTEST_ELF", makefile)
+        self.assertIn("USER_FAULT_ELF", makefile)
+        self.assertIn("user/linker.ld", makefile)
+        self.assertIn("-ffreestanding", makefile)
+        self.assertIn("-nostdlib", makefile)
+        self.assertIn("<minios/abi/syscall.h>", kernel_syscall)
+        self.assertIn("<minios/abi/syscall.h>", user_syscall)
+
+    def test_kernel_declares_strict_embedded_elf_loader(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        loader = (ROOT / "kernel/proc/elf.c").read_text(encoding="utf-8")
+        registry = (ROOT / "kernel/proc/program_registry.c").read_text(
+            encoding="utf-8"
+        )
+        embedded = (ROOT / "kernel/proc/embedded_programs.asm").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("USER_INIT_ELF", makefile)
+        self.assertIn("KERNEL_EMBEDDED_PROGRAMS_OBJ", makefile)
+        self.assertIn("INCBIN", embedded)
+        self.assertIn("/bin/init", registry)
+        self.assertIn("/bin/echo", registry)
+        self.assertIn("/bin/sh", registry)
+        self.assertIn("/bin/ps", registry)
+        self.assertIn("/bin/memtest", registry)
+        self.assertIn("/bin/fault", registry)
+        for contract in (
+            "ELF_TYPE_EXECUTABLE",
+            "ELF_MACHINE_I386",
+            "ELF_PROGRAM_LOAD",
+            "file_size > program->memory_size",
+            "KERNEL_BASE",
+            "vmm_address_space_map",
+            "vmm_address_space_protect",
+            "elf_loader_validation_self_test",
+        ):
+            self.assertIn(contract, loader)
+
+    def test_build_guard_waits_for_nonzero_drvfs_inode(self) -> None:
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("BUILD_IDENTITY_STABILIZE_SECONDS", guard)
+        self.assertIn("status.st_ino != 0", guard)
+        self.assertIn("_stable_created_status", guard)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

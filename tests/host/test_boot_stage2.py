@@ -595,13 +595,18 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("syscall_dispatch", syscall)
         self.assertIn("SYS_getpid", syscall)
         self.assertIn("SYS_write", syscall)
+        self.assertIn("SYS_read", syscall)
         self.assertIn("SYS_yield", syscall)
         self.assertIn("SYS_exit", syscall)
         self.assertIn("SYS_waitpid", syscall)
+        self.assertIn("SYS_spawn", syscall)
         self.assertIn("SYS_sleep", syscall)
         self.assertIn("SYS_getticks", syscall)
+        self.assertIn("SYS_ps", syscall)
         self.assertIn("vmm_address_space_activate", scheduler)
         self.assertIn("user_process_self_test", scheduler)
+        self.assertIn("user_elf_self_test", scheduler)
+        self.assertIn("program_registry_lookup", scheduler)
         self.assertIn("page_fault_set_user_handler", scheduler)
         self.assertIn("user_page_fault_self_test", scheduler)
 
@@ -902,10 +907,18 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] scheduler preemption PASS",
                 "[KERN] process lifecycle self-test PASS",
                 "[KERN] ring3 syscall self-test PASS",
+                "[KERN] ELF user process self-test PASS",
                 "[KERN] user fault isolation PASS",
             ],
         )
         self.assertIn("[USER] ring3 syscall PASS", output)
+        self.assertIn("[USER] elf init PASS", output)
+        self.assertIn("[USER] echo child PASS", output)
+        self.assertIn("[USER] shell command PASS", output)
+        self.assertIn("[USER] shell self-test PASS", output)
+        self.assertIn("[USER] ps PASS", output)
+        self.assertIn("[USER] memtest PASS", output)
+        self.assertIn("[USER] fault isolation PASS", output)
         self.assertNotIn("[PANIC]", output)
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
 

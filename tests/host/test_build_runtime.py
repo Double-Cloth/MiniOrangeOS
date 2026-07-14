@@ -40,12 +40,42 @@ EXPECTED_FINAL_ARTIFACTS = (
     "kernel/kernel.bin",
     "kernel/kernel.map",
     "kernel/kernel.sym",
+    "user/bin/init.elf",
+    "user/bin/init.map",
+    "user/bin/init.sym",
+    "user/bin/echo.elf",
+    "user/bin/echo.map",
+    "user/bin/echo.sym",
+    "user/bin/sh.elf",
+    "user/bin/sh.map",
+    "user/bin/sh.sym",
+    "user/bin/ps.elf",
+    "user/bin/ps.map",
+    "user/bin/ps.sym",
+    "user/bin/memtest.elf",
+    "user/bin/memtest.map",
+    "user/bin/memtest.sym",
+    "user/bin/fault.elf",
+    "user/bin/fault.map",
+    "user/bin/fault.sym",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
     "boot/stage2/entry.d",
     "kernel/arch/x86/entry.d",
     "kernel/core/kernel.d",
+    "kernel/proc/elf.d",
+    "kernel/proc/program_registry.d",
+    "kernel/proc/embedded_programs.d",
+    "user/crt/start.d",
+    "user/libc/syscall.d",
+    "user/libc/string.d",
+    "user/programs/init.d",
+    "user/programs/echo.d",
+    "user/programs/sh.d",
+    "user/programs/ps.d",
+    "user/programs/memtest.d",
+    "user/programs/fault.d",
 )
 KERNEL_C_FLAGS = {
     "-std=c11",
@@ -200,7 +230,11 @@ class BuildRuntimeTests(unittest.TestCase):
         suffixes = {".o", ".d", ".elf", ".bin", ".map", ".sym", ".img"}
         return [
             path.relative_to(workspace).as_posix()
-            for source_root in (workspace / "boot", workspace / "kernel")
+            for source_root in (
+                workspace / "boot",
+                workspace / "kernel",
+                workspace / "user",
+            )
             for path in source_root.rglob("*")
             if path.is_file() and path.suffix in suffixes
         ]
@@ -491,13 +525,25 @@ class BuildRuntimeTests(unittest.TestCase):
             self.assertEqual([], missing_depfiles, f"缺少依赖文件：{missing_depfiles}")
             self.assertEqual(512, (build_dir / "boot/stage1.bin").stat().st_size)
 
-            for relative in ("boot/stage2.elf", "kernel/kernel.elf"):
+            for relative in (
+                "boot/stage2.elf",
+                "kernel/kernel.elf",
+                "user/bin/init.elf",
+            ):
                 self._assert_elf32_i386(workspace, build_dir / relative)
             for relative in ("boot/stage2.bin", "kernel/kernel.bin"):
                 self.assertGreater((build_dir / relative).stat().st_size, 0)
-            for relative in ("boot/stage2.map", "kernel/kernel.map"):
+            for relative in (
+                "boot/stage2.map",
+                "kernel/kernel.map",
+                "user/bin/init.map",
+            ):
                 self.assertGreater((build_dir / relative).stat().st_size, 0)
-            for relative in ("boot/stage2.sym", "kernel/kernel.sym"):
+            for relative in (
+                "boot/stage2.sym",
+                "kernel/kernel.sym",
+                "user/bin/init.sym",
+            ):
                 self._assert_sorted_symbols(build_dir / relative)
             self.assertEqual([], self._generated_in_source(workspace))
 
@@ -544,6 +590,7 @@ class BuildRuntimeTests(unittest.TestCase):
             ld_arguments = (logs / "ld.log").read_text(encoding="utf-8").splitlines()
             self.assertTrue(any(argument.endswith("boot/stage2/linker.ld") for argument in ld_arguments))
             self.assertTrue(any(argument.endswith("kernel/linker.ld") for argument in ld_arguments))
+            self.assertTrue(any(argument.endswith("user/linker.ld") for argument in ld_arguments))
             self.assertTrue(any(argument == "-Map" or argument.startswith("-Map=") for argument in ld_arguments))
             self.assertIn("tools/make_image.py", (logs / "python.log").read_text(encoding="utf-8"))
 

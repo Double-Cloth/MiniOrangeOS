@@ -43,10 +43,11 @@
 | 15 | `SYS_sbrk` | `intptr_t increment` | old break |
 | 16 | `SYS_stat` | `const char *path, void *statbuf` | 0 |
 | 17 | `SYS_getticks` | 无 | tick 低 32 位 |
+| 18 | `SYS_ps` | `struct minios_process_info *buf, size_t capacity` | 快照项数 |
 
 后续实现必须让用户态 libc wrapper 与内核表保持同一编号来源，避免手写两份不一致的 enum。
 
-当前 P4 最小实现安装了 vector `0x80`、DPL=3 的 32-bit interrupt gate，入口保存通用寄存器和用户段寄存器，切到 Ring 0 data selector 后把可修改 trap frame 交给 C 分发器。已实现 `SYS_exit`、`SYS_write`、`SYS_waitpid`、`SYS_getpid`、`SYS_yield`、`SYS_sleep`、`SYS_getticks`；`write` 当前只接受 fd 1/2，单次最多 4096 bytes，先验证完整用户范围再按 128-byte 内核缓冲分块输出。`waitpid` 在阻塞前验证可选 status 用户指针，成功后回写 exit code；`sleep` 由 PIT deadline 唤醒。内嵌 Ring 3 自检覆盖正常输出/让出/睡眠/退出，以及未知调用号、非法 fd、跨入内核空间的指针、超长写入和无子进程 wait 错误码。其余表项仍按后续 P5-P6 阶段实现。
+当前 P4 最小实现安装了 vector `0x80`、DPL=3 的 32-bit interrupt gate，入口保存通用寄存器和用户段寄存器，切到 Ring 0 data selector 后把可修改 trap frame 交给 C 分发器。已实现 `SYS_exit`、`SYS_write`、`SYS_read`、`SYS_spawn`、`SYS_waitpid`、`SYS_getpid`、`SYS_yield`、`SYS_sleep`、`SYS_getticks`、`SYS_ps`；`write` 当前只接受 fd 1/2，单次最多 4096 bytes，先验证完整用户范围再按 128-byte 内核缓冲分块输出。`read` 当前只接受 fd 0，预先验证可写用户范围，并在 PS/2 缓冲为空时以开中断 `hlt` 等待输入，返回单个字符供 Shell 行编辑使用。`spawn` 在内核栈上限界拷贝 256-byte path、最多 16 项且单项 64-byte 的 argv，再从 P5 只读注册表查找完整 ELF blob；未知路径、未映射指针、未终止或超限 argv 均在创建地址空间前失败。`ps` 最多返回 16 项固定 ABI 结构，先在关中断区间取得 PCB 快照，再一次性 usercopy，绝不向用户态暴露 PCB/内核指针。`waitpid` 在阻塞前验证可选 status 用户指针，成功后回写 exit code；`sleep` 由 PIT deadline 唤醒。真实 ELF `/bin/init` 自检通过 syscall 启动 `/bin/echo` 与 `/bin/sh` 并等待其状态，覆盖用户父进程创建子页目录、READY 调度、阻塞唤醒和回收。其余表项仍按后续 P5-P6 阶段实现。
 
 ## 安全边界
 
@@ -106,7 +107,7 @@ MAX_ARG_BYTES = 1024
 `SYS_spawn`：
 
 - 拷贝路径和 argv；
-- 通过 VFS 打开 ELF；
+- P5 先从构建期只读 ELF 注册表按路径取 bytes，P6 改为通过 VFS 打开 ELF；
 - 调用用户 ELF 加载器；
 - 建立父子关系；
 - 将子进程放入 READY；

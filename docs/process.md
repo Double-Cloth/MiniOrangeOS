@@ -124,6 +124,8 @@ GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 
 
 ## ELF 用户程序加载
 
+P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin/sh` 与基础程序的完整静态 ELF32 作为只读 blob 链入内核，并以路径查找表提供给 `spawn`。该注册表只负责返回不可变 ELF bytes，不绕过 ELF header/program header 校验，也不改变 `spawn(path, argv)`、父子关系、argc/argv 或 syscall ABI。P6 挂载 MiniFS 后以 VFS 文件读取替换此 blob 来源，ELF loader 和用户进程创建接口保持不变。
+
 只支持静态 ELF32 `ET_EXEC`。加载器必须：
 
 - 验证 ELF Header；
@@ -138,6 +140,14 @@ GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 
 - 创建初始中断帧。
 
 用户程序从 `/bin/init` 开始，`init` 拉起 `/bin/sh`。Shell 负责前台命令 spawn 和 waitpid。
+
+当前 P5 首个增量已经建立静态用户 ELF 构建链，并把 `/bin/init` 的完整 `ET_EXEC` 文件通过只读 `INCBIN` 注册表链入内核。加载器限制为 ELF32 little-endian i386，先完整校验 ELF/program header、文件范围、地址溢出、段重叠、入口所属可执行段和用户/内核边界，再分配并清零用户页、复制跨页内容、合并页级 R/W 权限。初始栈在单页映射内按 `argc, argv[], NULL, strings` 构造，下方一页保持未映射作为保护页。真实 QEMU 自检使用 `argc=2` 启动该 ELF，用户程序同时验证 argv、BSS 清零与 RW 数据页，退出后核对页目录、物理页和内核栈全部回收；另有内核内畸形样本覆盖非 `ET_EXEC`、`filesz > memsz` 与越过 `KERNEL_BASE` 的拒绝路径。
+
+创建入口现已暴露为 `spawn` syscall。注册表包含 `/bin/init` 与 `/bin/echo`，真实 Ring 3 的 init 会 spawn echo、阻塞 waitpid，并核对子进程退出状态；这也验证了从用户父进程上下文创建并激活子页目录。后续 P5 工作将在保持加载器接口不变的前提下继续扩展用户程序集合和 Shell。
+
+注册表随后加入 `/bin/sh`。Shell 使用 128-byte 行缓冲和最多 16 项 argv，就地分割空格/Tab，支持 `help`、`clear`、`cd`、`pwd`、`exit` 内建；非内建命令补全 `/bin/` 路径后执行 spawn/waitpid。交互模式通过 `SYS_read(fd=0)` 做逐字符输入、退格与提示符；启动自检模式解析并执行 `echo [USER] shell command PASS`，因此 QEMU 验收覆盖的是同一条分词、外部命令与等待路径，而非直接伪造 PASS 文本。文件系统尚未实现时，`cd`/`pwd` 仅承认根目录。
+
+诊断程序集合现包含 `/bin/ps`、`/bin/memtest` 与 `/bin/fault`。`ps` 只接收共享 ABI 中的定长进程快照，不暴露内核地址；`memtest` 检查新地址空间 BSS 初值、私有页写入与 PID；`fault` 写入未映射用户地址，由 page-fault 隔离路径转为 `-EFAULT` ZOMBIE。Shell 自检实际执行 ps/memtest，init 则启动 fault 并核对预期异常退出后内核仍继续运行。
 
 ## 用户程序最低集合
 
