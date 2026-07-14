@@ -819,6 +819,38 @@ uint32_t scheduler_current_pid(void)
     return current_process == NULL ? 0U : current_process->pid;
 }
 
+size_t scheduler_process_snapshot(struct minios_process_info *processes,
+                                  size_t capacity)
+{
+    uint32_t flags;
+    size_t source;
+    size_t count = 0U;
+
+    if (processes == NULL && capacity != 0U) {
+        return 0U;
+    }
+    flags = irq_save_disable();
+    for (source = 0U; source < PROCESS_LIMIT && count < capacity; ++source) {
+        const struct process *process = &process_table[source];
+        size_t character;
+
+        if (process->state == PROCESS_UNUSED ||
+            process->state == PROCESS_REAPED) {
+            continue;
+        }
+        processes[count].pid = process->pid;
+        processes[count].parent_pid = process->parent_pid;
+        processes[count].state = (uint32_t)process->state;
+        for (character = 0U; character < MINIOS_PROCESS_NAME_LENGTH;
+             ++character) {
+            processes[count].name[character] = process->name[character];
+        }
+        ++count;
+    }
+    irq_restore(flags);
+    return count;
+}
+
 static void scheduler_test_thread(void *argument)
 {
     uint32_t identifier = (uint32_t)(uintptr_t)argument;

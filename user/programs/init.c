@@ -1,5 +1,6 @@
 #include <minios/user.h>
 #include <minios/string.h>
+#include <minios/abi/errno.h>
 
 static volatile int32_t init_status;
 
@@ -20,6 +21,11 @@ int main(int argc, char **argv) {
         "--self-test",
         NULL
     };
+    static char *const fault_arguments[] = {
+        "/bin/fault",
+        NULL
+    };
+    static const char fault_pass[] = "[USER] fault isolation PASS\n";
     int32_t written;
     int32_t child_status = -1;
     int32_t child_pid;
@@ -42,6 +48,14 @@ int main(int argc, char **argv) {
     if (child_pid < 1 || minios_waitpid(child_pid, &child_status) != child_pid ||
         child_status != 0) {
         return 5;
+    }
+    child_status = 0;
+    child_pid = minios_spawn("/bin/fault", fault_arguments);
+    if (child_pid < 1 || minios_waitpid(child_pid, &child_status) != child_pid ||
+        child_status != -MINIOS_EFAULT ||
+        minios_write(1, fault_pass, sizeof(fault_pass) - 1U) !=
+            (int32_t)(sizeof(fault_pass) - 1U)) {
+        return 6;
     }
     written = minios_write(1, message, sizeof(message) - 1U);
     init_status = written == (int32_t)(sizeof(message) - 1U) ? 0 : 1;

@@ -29,6 +29,9 @@ REQUIRED_BUILD_FILES = (
     "user/programs/init.c",
     "user/programs/echo.c",
     "user/programs/sh.c",
+    "user/programs/ps.c",
+    "user/programs/memtest.c",
+    "user/programs/fault.c",
     "user/linker.ld",
     "kernel/include/minios/proc/elf.h",
     "kernel/include/minios/proc/program_registry.h",
@@ -101,6 +104,9 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("USER_INIT_ELF", makefile)
         self.assertIn("USER_ECHO_ELF", makefile)
         self.assertIn("USER_SH_ELF", makefile)
+        self.assertIn("USER_PS_ELF", makefile)
+        self.assertIn("USER_MEMTEST_ELF", makefile)
+        self.assertIn("USER_FAULT_ELF", makefile)
         self.assertIn("user/linker.ld", makefile)
         self.assertIn("-ffreestanding", makefile)
         self.assertIn("-nostdlib", makefile)
@@ -122,6 +128,9 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("/bin/init", registry)
         self.assertIn("/bin/echo", registry)
         self.assertIn("/bin/sh", registry)
+        self.assertIn("/bin/ps", registry)
+        self.assertIn("/bin/memtest", registry)
+        self.assertIn("/bin/fault", registry)
         for contract in (
             "ELF_TYPE_EXECUTABLE",
             "ELF_MACHINE_I386",

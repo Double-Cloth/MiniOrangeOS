@@ -49,6 +49,15 @@ EXPECTED_FINAL_ARTIFACTS = (
     "user/bin/sh.elf",
     "user/bin/sh.map",
     "user/bin/sh.sym",
+    "user/bin/ps.elf",
+    "user/bin/ps.map",
+    "user/bin/ps.sym",
+    "user/bin/memtest.elf",
+    "user/bin/memtest.map",
+    "user/bin/memtest.sym",
+    "user/bin/fault.elf",
+    "user/bin/fault.map",
+    "user/bin/fault.sym",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
@@ -64,6 +73,9 @@ EXPECTED_DEPFILES = (
     "user/programs/init.d",
     "user/programs/echo.d",
     "user/programs/sh.d",
+    "user/programs/ps.d",
+    "user/programs/memtest.d",
+    "user/programs/fault.d",
 )
 KERNEL_C_FLAGS = {
     "-std=c11",

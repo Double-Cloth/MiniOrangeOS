@@ -1,6 +1,8 @@
 #ifndef MINIOS_PROC_SCHEDULER_H
 #define MINIOS_PROC_SCHEDULER_H
 
+#include <minios/abi/process.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -18,6 +20,8 @@ bool scheduler_sleep_current(uint32_t ticks);
 int32_t scheduler_waitpid(int32_t pid, int32_t *exit_code);
 void scheduler_on_tick(void);
 uint32_t scheduler_current_pid(void);
+size_t scheduler_process_snapshot(struct minios_process_info *processes,
+                                  size_t capacity);
 _Noreturn void scheduler_exit_current(int32_t exit_code);
 bool scheduler_self_test(void);
 bool scheduler_preemption_self_test(void);

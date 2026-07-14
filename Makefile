@@ -267,6 +267,21 @@ USER_SH_DEP := $(USER_PROGRAMS_BUILD_DIR)/sh.d
 USER_SH_ELF := $(USER_BIN_BUILD_DIR)/sh.elf
 USER_SH_MAP := $(USER_BIN_BUILD_DIR)/sh.map
 USER_SH_SYM := $(USER_BIN_BUILD_DIR)/sh.sym
+USER_PS_OBJ := $(USER_PROGRAMS_BUILD_DIR)/ps.o
+USER_PS_DEP := $(USER_PROGRAMS_BUILD_DIR)/ps.d
+USER_PS_ELF := $(USER_BIN_BUILD_DIR)/ps.elf
+USER_PS_MAP := $(USER_BIN_BUILD_DIR)/ps.map
+USER_PS_SYM := $(USER_BIN_BUILD_DIR)/ps.sym
+USER_MEMTEST_OBJ := $(USER_PROGRAMS_BUILD_DIR)/memtest.o
+USER_MEMTEST_DEP := $(USER_PROGRAMS_BUILD_DIR)/memtest.d
+USER_MEMTEST_ELF := $(USER_BIN_BUILD_DIR)/memtest.elf
+USER_MEMTEST_MAP := $(USER_BIN_BUILD_DIR)/memtest.map
+USER_MEMTEST_SYM := $(USER_BIN_BUILD_DIR)/memtest.sym
+USER_FAULT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/fault.o
+USER_FAULT_DEP := $(USER_PROGRAMS_BUILD_DIR)/fault.d
+USER_FAULT_ELF := $(USER_BIN_BUILD_DIR)/fault.elf
+USER_FAULT_MAP := $(USER_BIN_BUILD_DIR)/fault.map
+USER_FAULT_SYM := $(USER_BIN_BUILD_DIR)/fault.sym
 
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
@@ -336,7 +351,16 @@ ALL_ARTIFACTS := \
 	$(USER_ECHO_SYM) \
 	$(USER_SH_ELF) \
 	$(USER_SH_MAP) \
-	$(USER_SH_SYM)
+	$(USER_SH_SYM) \
+	$(USER_PS_ELF) \
+	$(USER_PS_MAP) \
+	$(USER_PS_SYM) \
+	$(USER_MEMTEST_ELF) \
+	$(USER_MEMTEST_MAP) \
+	$(USER_MEMTEST_SYM) \
+	$(USER_FAULT_ELF) \
+	$(USER_FAULT_MAP) \
+	$(USER_FAULT_SYM)
 
 .PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
@@ -344,7 +368,7 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
 
-user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) | prepare-build-dir
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -466,7 +490,7 @@ $(KERNEL_ELF_LOADER_OBJ): kernel/proc/elf.c | prepare-build-dir
 $(KERNEL_PROGRAM_REGISTRY_OBJ): kernel/proc/program_registry.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PROGRAM_REGISTRY_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) | prepare-build-dir
+$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) | prepare-build-dir
 	$(NASM) -I "$(USER_BIN_BUILD_DIR)/" -f elf32 -MD "$(KERNEL_EMBEDDED_PROGRAMS_DEP)" -MT "$@" -o "$@" "$<"
 
 $(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_EMBEDDED_PROGRAMS_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
@@ -514,6 +538,33 @@ $(USER_SH_ELF) $(USER_SH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_ST
 $(USER_SH_SYM): $(USER_SH_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
+$(USER_PS_OBJ): user/programs/ps.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_PS_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_PS_ELF) $(USER_PS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_PS_MAP)" -o "$(USER_PS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ)
+
+$(USER_PS_SYM): $(USER_PS_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_MEMTEST_OBJ): user/programs/memtest.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_MEMTEST_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MEMTEST_MAP)" -o "$(USER_MEMTEST_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ)
+
+$(USER_MEMTEST_SYM): $(USER_MEMTEST_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_FAULT_OBJ): user/programs/fault.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_FAULT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_FAULT_MAP)" -o "$(USER_FAULT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ)
+
+$(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
 
@@ -527,4 +578,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP)

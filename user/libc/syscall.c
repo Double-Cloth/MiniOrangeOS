@@ -111,3 +111,11 @@ int32_t minios_sleep(uint32_t ticks) {
 uint32_t minios_getticks(void) {
     return (uint32_t)syscall0(SYS_getticks);
 }
+
+int32_t minios_ps(struct minios_process_info *processes, size_t capacity) {
+    return syscall2(
+        SYS_ps,
+        (uint32_t)(uintptr_t)processes,
+        (uint32_t)capacity
+    );
+}

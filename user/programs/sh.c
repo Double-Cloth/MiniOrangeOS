@@ -120,8 +120,11 @@ static int run_self_test(void)
 {
     char help_line[] = "help";
     char command_line[] = "echo [USER] shell command PASS";
+    char ps_line[] = "ps";
+    char memtest_line[] = "memtest";
 
     if (run_line(help_line) != 0 || run_line(command_line) != 0 ||
+        run_line(ps_line) != 0 || run_line(memtest_line) != 0 ||
         !write_text("[USER] shell self-test PASS\n")) {
         return 1;
     }

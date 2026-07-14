@@ -9,6 +9,12 @@ extern const uint8_t embedded_echo_start[];
 extern const uint8_t embedded_echo_end[];
 extern const uint8_t embedded_sh_start[];
 extern const uint8_t embedded_sh_end[];
+extern const uint8_t embedded_ps_start[];
+extern const uint8_t embedded_ps_end[];
+extern const uint8_t embedded_memtest_start[];
+extern const uint8_t embedded_memtest_end[];
+extern const uint8_t embedded_fault_start[];
+extern const uint8_t embedded_fault_end[];
 
 struct program_entry {
     const char *path;
@@ -19,7 +25,10 @@ struct program_entry {
 static const struct program_entry programs[] = {
     {"/bin/init", embedded_init_start, embedded_init_end},
     {"/bin/echo", embedded_echo_start, embedded_echo_end},
-    {"/bin/sh", embedded_sh_start, embedded_sh_end}
+    {"/bin/sh", embedded_sh_start, embedded_sh_end},
+    {"/bin/ps", embedded_ps_start, embedded_ps_end},
+    {"/bin/memtest", embedded_memtest_start, embedded_memtest_end},
+    {"/bin/fault", embedded_fault_start, embedded_fault_end}
 };
 
 static bool path_equal(const char *left, const char *right)

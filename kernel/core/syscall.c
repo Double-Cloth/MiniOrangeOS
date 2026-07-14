@@ -161,6 +161,27 @@ static int32_t syscall_spawn(const char *user_path,
     return scheduler_spawn_image(path, image, image_size, arguments);
 }
 
+static int32_t syscall_ps(void *user_processes, size_t capacity)
+{
+    struct minios_process_info processes[MINIOS_PROCESS_LIMIT];
+    size_t count;
+    size_t bytes;
+
+    if (capacity > MINIOS_PROCESS_LIMIT) {
+        return -MINIOS_EINVAL;
+    }
+    bytes = capacity * sizeof(processes[0]);
+    if (!validate_user_range(user_processes, bytes, USER_ACCESS_WRITE)) {
+        return -MINIOS_EFAULT;
+    }
+    count = scheduler_process_snapshot(processes, capacity);
+    bytes = count * sizeof(processes[0]);
+    if (copy_to_user(user_processes, processes, bytes) != 0) {
+        return -MINIOS_EFAULT;
+    }
+    return (int32_t)count;
+}
+
 void syscall_dispatch(struct trap_frame *frame)
 {
     int32_t result;
@@ -224,6 +245,12 @@ void syscall_dispatch(struct trap_frame *frame)
             break;
         case SYS_getticks:
             result = (int32_t)pit_ticks();
+            break;
+        case SYS_ps:
+            result = syscall_ps(
+                (void *)(uintptr_t)frame->ebx,
+                (size_t)frame->ecx
+            );
             break;
         default:
             result = -MINIOS_ENOSYS;
