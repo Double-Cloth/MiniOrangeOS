@@ -9,6 +9,8 @@
 #include <minios/mm/pmm.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
+#include <minios/proc/elf.h>
+#include <minios/proc/program_registry.h>
 #include <minios/proc/scheduler.h>
 
 #include <stdbool.h>
@@ -30,6 +32,8 @@
 #define USER_STACK_TOP 0xC0000000U
 #define USER_PAGE_LOAD_WINDOW 0xD0C00000U
 #define USER_SELF_TEST_YIELD_LIMIT 8U
+#define USER_ARGUMENT_LIMIT 16U
+#define USER_ARGUMENT_LENGTH_LIMIT 256U
 #define USER_FAULT_TEST_ADDRESS 0x0BADF000U
 #define PAGE_FAULT_USER_FLAG 0x04U
 #define USER_PRIVILEGE_LEVEL 3U
@@ -377,6 +381,92 @@ static bool initialize_user_page(uint32_t physical_address,
     return true;
 }
 
+static bool bounded_string_length(const char *value, size_t *length)
+{
+    size_t index;
+
+    if (value == NULL || length == NULL) {
+        return false;
+    }
+    for (index = 0U; index < USER_ARGUMENT_LENGTH_LIMIT; ++index) {
+        if (value[index] == '\0') {
+            *length = index;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool initialize_user_stack(uint32_t physical_address,
+                                  const char *const argv[],
+                                  uint32_t *stack_top)
+{
+    volatile uint8_t *page =
+        (volatile uint8_t *)(uintptr_t)USER_PAGE_LOAD_WINDOW;
+    uint32_t argument_addresses[USER_ARGUMENT_LIMIT];
+    uint32_t unmapped = 0U;
+    size_t argument_lengths[USER_ARGUMENT_LIMIT];
+    size_t argument_count = 0U;
+    size_t string_bytes = 0U;
+    size_t cursor = PAGE_SIZE;
+    size_t index;
+
+    if (argv == NULL || argv[0] == NULL || stack_top == NULL) {
+        return false;
+    }
+    while (argv[argument_count] != NULL) {
+        size_t length;
+
+        if (argument_count >= USER_ARGUMENT_LIMIT ||
+            !bounded_string_length(argv[argument_count], &length) ||
+            length + 1U > PAGE_SIZE - string_bytes) {
+            return false;
+        }
+        argument_lengths[argument_count] = length;
+        string_bytes += length + 1U;
+        ++argument_count;
+    }
+    if (string_bytes + (argument_count + 2U) * sizeof(uint32_t) + 3U >
+        PAGE_SIZE ||
+        !vmm_map(USER_PAGE_LOAD_WINDOW, physical_address, VMM_WRITABLE)) {
+        return false;
+    }
+    for (index = 0U; index < PAGE_SIZE; ++index) {
+        page[index] = 0U;
+    }
+    for (index = argument_count; index > 0U; --index) {
+        size_t argument = index - 1U;
+        size_t length = argument_lengths[argument] + 1U;
+        size_t character;
+
+        cursor -= length;
+        for (character = 0U; character < length; ++character) {
+            page[cursor + character] =
+                (uint8_t)argv[argument][character];
+        }
+        argument_addresses[argument] =
+            USER_STACK_VIRTUAL + (uint32_t)cursor;
+    }
+    cursor &= ~(sizeof(uint32_t) - 1U);
+    cursor -= (argument_count + 2U) * sizeof(uint32_t);
+    {
+        volatile uint32_t *words =
+            (volatile uint32_t *)(uintptr_t)(USER_PAGE_LOAD_WINDOW + cursor);
+
+        words[0] = (uint32_t)argument_count;
+        for (index = 0U; index < argument_count; ++index) {
+            words[index + 1U] = argument_addresses[index];
+        }
+        words[argument_count + 1U] = 0U;
+    }
+    *stack_top = USER_STACK_VIRTUAL + (uint32_t)cursor;
+    if (!vmm_unmap(USER_PAGE_LOAD_WINDOW, &unmapped) ||
+        unmapped != physical_address) {
+        panic("user stack load window invariant failed");
+    }
+    return true;
+}
+
 static void release_physical_page(uint32_t physical_address)
 {
     if (physical_address != 0U && !pmm_free(physical_address)) {
@@ -468,6 +558,96 @@ rollback:
     }
     irq_restore(flags);
     return -1;
+}
+
+static int32_t user_elf_process_create(const char *name,
+                                       const uint8_t *image,
+                                       size_t image_size,
+                                       const char *const argv[])
+{
+    struct vmm_address_space address_space = {0U};
+    struct process *process;
+    void *kernel_stack = NULL;
+    uint32_t stack_physical = 0U;
+    uint32_t stack_top = 0U;
+    uint32_t entry_point = 0U;
+    uint32_t *stack;
+    uint32_t flags;
+    uint32_t pid;
+    int32_t result = -MINIOS_ENOMEM;
+
+    if (name == NULL || name[0] == '\0' || image == NULL ||
+        image_size == 0U || argv == NULL || argv[0] == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    flags = irq_save_disable();
+    process = find_unused_process();
+    if (process == NULL) {
+        irq_restore(flags);
+        return -MINIOS_EAGAIN;
+    }
+    kernel_stack = kmalloc(KERNEL_STACK_SIZE);
+    stack_physical = pmm_alloc();
+    if (kernel_stack == NULL || stack_physical == 0U ||
+        !vmm_address_space_create(&address_space)) {
+        goto rollback;
+    }
+    result = elf_load_image(&address_space, image, image_size, &entry_point);
+    if (result < 0) {
+        goto rollback;
+    }
+    if (!initialize_user_stack(stack_physical, argv, &stack_top)) {
+        result = -MINIOS_EINVAL;
+        goto rollback;
+    }
+    if (!vmm_address_space_map(&address_space, USER_STACK_VIRTUAL,
+                               stack_physical, VMM_WRITABLE)) {
+        result = -MINIOS_ENOMEM;
+        goto rollback;
+    }
+    stack_physical = 0U;
+    if (!allocate_pid(&pid)) {
+        result = -MINIOS_EAGAIN;
+        goto rollback;
+    }
+
+    clear_process(process);
+    process->pid = pid;
+    process->state = PROCESS_NEW;
+    set_process_name(process, name);
+    process->kernel_stack_allocation = kernel_stack;
+    process->kernel_stack_top =
+        (uint32_t)(uintptr_t)kernel_stack + KERNEL_STACK_SIZE;
+    process->user_stack_top = stack_top;
+    process->page_directory = address_space.page_directory_physical;
+    process->parent_pid = current_process->pid;
+    process->time_slice = DEFAULT_TIME_SLICE;
+    process->initial_eflags = EFLAGS_INTERRUPT_ENABLE;
+    process->user_entry = entry_point;
+
+    stack = (uint32_t *)(uintptr_t)process->kernel_stack_top;
+    *--stack = (uint32_t)(uintptr_t)thread_returned;
+    *--stack = (uint32_t)(uintptr_t)user_process_trampoline;
+    *--stack = 0U;
+    *--stack = 0U;
+    *--stack = 0U;
+    *--stack = 0U;
+    process->saved_stack = stack;
+    process->state = PROCESS_READY;
+    irq_restore(flags);
+    return (int32_t)process->pid;
+
+rollback:
+    if (address_space.page_directory_physical != 0U &&
+        !vmm_address_space_destroy(&address_space)) {
+        panic("ELF process address-space rollback failed");
+    }
+    release_physical_page(stack_physical);
+    if (kernel_stack != NULL && !kfree(kernel_stack)) {
+        panic("ELF process kernel-stack rollback failed");
+    }
+    irq_restore(flags);
+    return result;
 }
 
 static bool reap_process(struct process *process)
@@ -872,6 +1052,49 @@ bool user_process_self_test(void)
     return passed && heap_get_stats().allocated_blocks ==
         before.allocated_blocks && heap_get_stats().allocated_bytes ==
         before.allocated_bytes;
+}
+
+bool user_elf_self_test(void)
+{
+    static const char *const arguments[] = {
+        "/bin/init",
+        "--self-test",
+        NULL
+    };
+    struct heap_stats heap_before = heap_get_stats();
+    struct pmm_stats pmm_before = pmm_get_stats();
+    const uint8_t *image = NULL;
+    size_t image_size = 0U;
+    int32_t pid;
+    struct process *process;
+    uint32_t yields = 0U;
+    bool passed;
+
+    if (!program_registry_lookup("/bin/init", &image, &image_size) ||
+        !elf_loader_validation_self_test(image, image_size)) {
+        return false;
+    }
+    pid = user_elf_process_create("init", image, image_size, arguments);
+    process = pid < 1 ? NULL : find_process_by_pid((uint32_t)pid);
+    if (process == NULL) {
+        return false;
+    }
+    while (process->state != PROCESS_ZOMBIE &&
+           yields < USER_SELF_TEST_YIELD_LIMIT) {
+        ++yields;
+        scheduler_yield();
+    }
+    passed = process->state == PROCESS_ZOMBIE && process->exit_code == 0 &&
+        current_process == &process_table[0] &&
+        current_process->state == PROCESS_RUNNING &&
+        vmm_current_page_directory() == vmm_kernel_page_directory();
+    if (!reap_process(process)) {
+        return false;
+    }
+    return passed &&
+        heap_get_stats().allocated_blocks == heap_before.allocated_blocks &&
+        heap_get_stats().allocated_bytes == heap_before.allocated_bytes &&
+        pmm_get_stats().free_pages == pmm_before.free_pages;
 }
 
 bool user_page_fault_self_test(void)

@@ -94,6 +94,10 @@ void kernel_main(const struct boot_info *boot_info)
         panic("Ring 3 syscall self-test failed");
     }
     console_printf("[KERN] ring3 syscall self-test PASS\n");
+    if (!user_elf_self_test()) {
+        panic("ELF user process self-test failed");
+    }
+    console_printf("[KERN] ELF user process self-test PASS\n");
     if (!user_page_fault_self_test()) {
         panic("user page-fault isolation self-test failed");
     }

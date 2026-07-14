@@ -27,6 +27,11 @@ REQUIRED_BUILD_FILES = (
     "user/libc/syscall.c",
     "user/programs/init.c",
     "user/linker.ld",
+    "kernel/include/minios/proc/elf.h",
+    "kernel/include/minios/proc/program_registry.h",
+    "kernel/proc/elf.c",
+    "kernel/proc/program_registry.c",
+    "kernel/proc/embedded_programs.asm",
 )
 
 GENERATED_SUFFIXES = {
@@ -96,6 +101,31 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("-nostdlib", makefile)
         self.assertIn("<minios/abi/syscall.h>", kernel_syscall)
         self.assertIn("<minios/abi/syscall.h>", user_syscall)
+
+    def test_kernel_declares_strict_embedded_elf_loader(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        loader = (ROOT / "kernel/proc/elf.c").read_text(encoding="utf-8")
+        registry = (ROOT / "kernel/proc/program_registry.c").read_text(
+            encoding="utf-8"
+        )
+        embedded = (ROOT / "kernel/proc/embedded_programs.asm").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("USER_INIT_ELF", makefile)
+        self.assertIn("KERNEL_EMBEDDED_PROGRAMS_OBJ", makefile)
+        self.assertIn("INCBIN", embedded)
+        self.assertIn("/bin/init", registry)
+        for contract in (
+            "ELF_TYPE_EXECUTABLE",
+            "ELF_MACHINE_I386",
+            "ELF_PROGRAM_LOAD",
+            "file_size > program->memory_size",
+            "KERNEL_BASE",
+            "vmm_address_space_map",
+            "vmm_address_space_protect",
+            "elf_loader_validation_self_test",
+        ):
+            self.assertIn(contract, loader)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

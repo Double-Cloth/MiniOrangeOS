@@ -19,6 +19,7 @@ bool scheduler_self_test(void);
 bool scheduler_preemption_self_test(void);
 bool scheduler_lifecycle_self_test(void);
 bool user_process_self_test(void);
+bool user_elf_self_test(void);
 bool user_page_fault_self_test(void);
 
 #endif
