@@ -13,6 +13,7 @@
 #include <minios/mm/usercopy.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
+#include <minios/proc/scheduler.h>
 
 #include <stdint.h>
 
@@ -24,6 +25,7 @@ void kernel_main(const struct boot_info *boot_info)
     console_printf("[KERN] console ready hex=%x dec=%u str=%s\n", 0xC0FFEEU, 42U, "ok");
     gdt_init();
     console_printf("[KERN] gdt ready\n");
+    console_printf("[KERN] tss ready\n");
     idt_init();
     console_printf("[KERN] idt ready\n");
 #if MINIOS_TEST_BREAKPOINT == 1
@@ -64,6 +66,12 @@ void kernel_main(const struct boot_info *boot_info)
         panic("user memory self-test failed");
     }
     console_printf("[KERN] user memory self-test PASS\n");
+    scheduler_init();
+    console_printf("[KERN] scheduler ready\n");
+    if (!scheduler_self_test()) {
+        panic("scheduler self-test failed");
+    }
+    console_printf("[KERN] scheduler self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);
@@ -74,6 +82,22 @@ void kernel_main(const struct boot_info *boot_info)
     console_printf("[KERN] keyboard ready\n");
     irq_enable();
     console_printf("[KERN] interrupts enabled\n");
+    if (!scheduler_preemption_self_test()) {
+        panic("scheduler preemption self-test failed");
+    }
+    console_printf("[KERN] scheduler preemption PASS\n");
+    if (!scheduler_lifecycle_self_test()) {
+        panic("process lifecycle self-test failed");
+    }
+    console_printf("[KERN] process lifecycle self-test PASS\n");
+    if (!user_process_self_test()) {
+        panic("Ring 3 syscall self-test failed");
+    }
+    console_printf("[KERN] ring3 syscall self-test PASS\n");
+    if (!user_page_fault_self_test()) {
+        panic("user page-fault isolation self-test failed");
+    }
+    console_printf("[KERN] user fault isolation PASS\n");
     for (;;) {
         __asm__ volatile("hlt");
     }

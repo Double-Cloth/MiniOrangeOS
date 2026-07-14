@@ -32,6 +32,7 @@ extern uint8_t __rodata_start[];
 extern uint8_t __rodata_end[];
 
 static bool vmm_initialized;
+static uint32_t kernel_page_directory_physical;
 
 static void invalidate_page(uint32_t virtual_address)
 {
@@ -136,7 +137,33 @@ void vmm_init(const struct boot_info *boot_info)
     page_directory[0] = 0U;
     enable_write_protect();
     reload_cr3(directory_physical);
+    kernel_page_directory_physical = directory_physical;
     vmm_initialized = true;
+}
+
+uint32_t vmm_kernel_page_directory(void)
+{
+    return vmm_initialized ? kernel_page_directory_physical : 0U;
+}
+
+uint32_t vmm_current_page_directory(void)
+{
+    return vmm_initialized ? (read_cr3() & PAGE_MASK) : 0U;
+}
+
+bool vmm_activate_page_directory(uint32_t physical_address)
+{
+    if (!vmm_initialized || physical_address == 0U ||
+        (physical_address & (PAGE_SIZE - 1U)) != 0U) {
+        return false;
+    }
+    reload_cr3(physical_address);
+    return true;
+}
+
+bool vmm_activate_kernel_address_space(void)
+{
+    return vmm_activate_page_directory(kernel_page_directory_physical);
 }
 
 bool vmm_map(uint32_t virtual_address, uint32_t physical_address, uint32_t flags)

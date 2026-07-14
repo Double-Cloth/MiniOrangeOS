@@ -1,5 +1,7 @@
 BITS 32
 
+%define KERNEL_DATA_SELECTOR 0x10
+
 section .text
 extern exception_dispatch
 global idt_load
@@ -26,13 +28,42 @@ exception_stub_%1:
 %endmacro
 
 ; CPU 已保存 EIP/CS/EFLAGS；宏统一补齐 vector/error_code。
-; pushad 后 ESP 指向与 C struct trap_frame 完全一致的 13 个 dword。
+; pushad 后另存用户段寄存器，C 始终在 Ring 0 data selector 下运行。
 exception_common:
     cld
     pushad
-    push esp
+
+    xor eax, eax
+    mov ax, ds
+    push eax
+    xor eax, eax
+    mov ax, es
+    push eax
+    xor eax, eax
+    mov ax, fs
+    push eax
+    xor eax, eax
+    mov ax, gs
+    push eax
+
+    mov ax, KERNEL_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    lea eax, [esp + 16]
+    push eax
     call exception_dispatch
     add esp, 4
+
+    pop eax
+    mov gs, ax
+    pop eax
+    mov fs, ax
+    pop eax
+    mov es, ax
+    pop eax
+    mov ds, ax
     popad
     add esp, 8
     iretd

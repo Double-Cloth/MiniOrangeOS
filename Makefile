@@ -125,6 +125,7 @@ KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
 KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
 KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
 KERNEL_MM_BUILD_DIR := $(KERNEL_BUILD_DIR)/mm
+KERNEL_PROC_BUILD_DIR := $(KERNEL_BUILD_DIR)/proc
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -145,6 +146,10 @@ KERNEL_EXCEPTION_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exceptions.o
 KERNEL_EXCEPTION_DEP := $(KERNEL_ARCH_BUILD_DIR)/exceptions.d
 KERNEL_IRQ_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irqs.o
 KERNEL_IRQ_DEP := $(KERNEL_ARCH_BUILD_DIR)/irqs.d
+KERNEL_CONTEXT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/context_switch.o
+KERNEL_CONTEXT_DEP := $(KERNEL_ARCH_BUILD_DIR)/context_switch.d
+KERNEL_USER_MODE_OBJ := $(KERNEL_ARCH_BUILD_DIR)/user_mode.o
+KERNEL_USER_MODE_DEP := $(KERNEL_ARCH_BUILD_DIR)/user_mode.d
 KERNEL_IDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/idt.o
 KERNEL_IDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/idt.d
 KERNEL_EXCEPTION_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exception.o
@@ -153,6 +158,8 @@ KERNEL_IRQ_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irq.o
 KERNEL_IRQ_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/irq.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
+KERNEL_SYSCALL_OBJ := $(KERNEL_CORE_BUILD_DIR)/syscall.o
+KERNEL_SYSCALL_DEP := $(KERNEL_CORE_BUILD_DIR)/syscall.d
 KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
 KERNEL_CONSOLE_DEP := $(KERNEL_CORE_BUILD_DIR)/console.d
 KERNEL_PANIC_OBJ := $(KERNEL_CORE_BUILD_DIR)/panic.o
@@ -177,12 +184,15 @@ KERNEL_ADDRESS_SPACE_OBJ := $(KERNEL_MM_BUILD_DIR)/address_space.o
 KERNEL_ADDRESS_SPACE_DEP := $(KERNEL_MM_BUILD_DIR)/address_space.d
 KERNEL_USERCOPY_OBJ := $(KERNEL_MM_BUILD_DIR)/usercopy.o
 KERNEL_USERCOPY_DEP := $(KERNEL_MM_BUILD_DIR)/usercopy.d
+KERNEL_SCHEDULER_OBJ := $(KERNEL_PROC_BUILD_DIR)/scheduler.o
+KERNEL_SCHEDULER_DEP := $(KERNEL_PROC_BUILD_DIR)/scheduler.d
 KERNEL_C_OBJECTS := \
 	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_IDT_OBJ) \
 	$(KERNEL_EXCEPTION_C_OBJ) \
 	$(KERNEL_IRQ_C_OBJ) \
 	$(KERNEL_CORE_OBJ) \
+	$(KERNEL_SYSCALL_OBJ) \
 	$(KERNEL_CONSOLE_OBJ) \
 	$(KERNEL_PANIC_OBJ) \
 	$(KERNEL_SERIAL_OBJ) \
@@ -194,13 +204,15 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_VMM_OBJ) \
 	$(KERNEL_HEAP_OBJ) \
 	$(KERNEL_ADDRESS_SPACE_OBJ) \
-	$(KERNEL_USERCOPY_OBJ)
+	$(KERNEL_USERCOPY_OBJ) \
+	$(KERNEL_SCHEDULER_OBJ)
 KERNEL_C_DEPS := \
 	$(KERNEL_GDT_DEP) \
 	$(KERNEL_IDT_DEP) \
 	$(KERNEL_EXCEPTION_C_DEP) \
 	$(KERNEL_IRQ_C_DEP) \
 	$(KERNEL_CORE_DEP) \
+	$(KERNEL_SYSCALL_DEP) \
 	$(KERNEL_CONSOLE_DEP) \
 	$(KERNEL_PANIC_DEP) \
 	$(KERNEL_SERIAL_DEP) \
@@ -212,7 +224,8 @@ KERNEL_C_DEPS := \
 	$(KERNEL_VMM_DEP) \
 	$(KERNEL_HEAP_DEP) \
 	$(KERNEL_ADDRESS_SPACE_DEP) \
-	$(KERNEL_USERCOPY_DEP)
+	$(KERNEL_USERCOPY_DEP) \
+	$(KERNEL_SCHEDULER_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -316,6 +329,12 @@ $(KERNEL_EXCEPTION_OBJ): kernel/arch/x86/exceptions.asm | prepare-build-dir
 $(KERNEL_IRQ_OBJ): kernel/arch/x86/irqs.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(KERNEL_IRQ_DEP)" -MT "$@" -o "$@" "$<"
 
+$(KERNEL_CONTEXT_OBJ): kernel/arch/x86/context_switch.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_CONTEXT_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_USER_MODE_OBJ): kernel/arch/x86/user_mode.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_USER_MODE_DEP)" -MT "$@" -o "$@" "$<"
+
 $(KERNEL_IDT_OBJ): kernel/arch/x86/idt.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IDT_DEP)" -MT "$@" -c "$<" -o "$@"
 
@@ -327,6 +346,9 @@ $(KERNEL_IRQ_C_OBJ): kernel/arch/x86/irq.c | prepare-build-dir
 
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_SYSCALL_OBJ): kernel/core/syscall.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SYSCALL_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_CONSOLE_OBJ): kernel/core/console.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CONSOLE_DEP)" -MT "$@" -c "$<" -o "$@"
@@ -364,8 +386,11 @@ $(KERNEL_ADDRESS_SPACE_OBJ): kernel/mm/address_space.c | prepare-build-dir
 $(KERNEL_USERCOPY_OBJ): kernel/mm/usercopy.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_USERCOPY_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS)
+$(KERNEL_SCHEDULER_OBJ): kernel/proc/scheduler.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SCHEDULER_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -386,4 +411,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_C_DEPS)

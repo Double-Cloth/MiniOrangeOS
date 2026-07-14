@@ -1,5 +1,7 @@
 BITS 32
 
+%define KERNEL_DATA_SELECTOR 0x10
+
 section .text
 extern irq_dispatch
 
@@ -15,9 +17,38 @@ irq_stub_%1:
 irq_common:
     cld
     pushad
-    push esp
+
+    xor eax, eax
+    mov ax, ds
+    push eax
+    xor eax, eax
+    mov ax, es
+    push eax
+    xor eax, eax
+    mov ax, fs
+    push eax
+    xor eax, eax
+    mov ax, gs
+    push eax
+
+    mov ax, KERNEL_DATA_SELECTOR
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    lea eax, [esp + 16]
+    push eax
     call irq_dispatch
     add esp, 4
+
+    pop eax
+    mov gs, ax
+    pop eax
+    mov fs, ax
+    pop eax
+    mov es, ax
+    pop eax
+    mov ds, ax
     popad
     add esp, 8
     iretd

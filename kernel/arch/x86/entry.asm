@@ -174,6 +174,7 @@ boot_page_table:
     resb PAGE_SIZE
 
 section .boot.stack nobits alloc noexec write align=4096
+global boot_stack_top
 boot_stack_bottom:
     resb PAGE_SIZE * 4
 boot_stack_top:

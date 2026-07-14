@@ -5,6 +5,7 @@ BITS 32
 
 section .text
 global gdt_load
+global tss_load
 
 gdt_load:
     mov eax, [esp + 4]
@@ -18,4 +19,9 @@ gdt_load:
     mov ss, ax
     jmp 0x08:.reload_cs
 .reload_cs:
+    ret
+
+tss_load:
+    mov ax, [esp + 4]
+    ltr ax
     ret

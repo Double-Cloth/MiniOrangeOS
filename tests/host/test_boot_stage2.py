@@ -40,6 +40,10 @@ KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
 KERNEL_HEAP_SOURCE = ROOT / "kernel/mm/heap.c"
 KERNEL_ADDRESS_SPACE_SOURCE = ROOT / "kernel/mm/address_space.c"
 KERNEL_USERCOPY_SOURCE = ROOT / "kernel/mm/usercopy.c"
+KERNEL_SCHEDULER_SOURCE = ROOT / "kernel/proc/scheduler.c"
+KERNEL_CONTEXT_ASSEMBLY = ROOT / "kernel/arch/x86/context_switch.asm"
+KERNEL_USER_MODE_ASSEMBLY = ROOT / "kernel/arch/x86/user_mode.asm"
+KERNEL_SYSCALL_SOURCE = ROOT / "kernel/core/syscall.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -417,6 +421,22 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("lgdt", assembly)
         self.assertIn("jmp 0x08:", assembly)
 
+    def test_kernel_declares_ring3_segments_and_tss_contract(self) -> None:
+        source = KERNEL_GDT_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_GDT_ASSEMBLY.read_text(encoding="utf-8")
+        header = (ROOT / "kernel/include/minios/arch/x86/gdt.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("GDT_ENTRY_COUNT 6U", source)
+        self.assertIn("GDT_USER_CODE_ACCESS 0xFAU", source)
+        self.assertIn("GDT_USER_DATA_ACCESS 0xF2U", source)
+        self.assertIn("GDT_TSS_ACCESS 0x89U", source)
+        self.assertIn("struct task_state_segment", source)
+        self.assertIn("io_map_base", source)
+        self.assertIn("tss_load", source)
+        self.assertIn("ltr", assembly)
+        self.assertIn("gdt_set_kernel_stack", header)
+
     def test_kernel_declares_idt_and_exception_contract(self) -> None:
         required = (
             KERNEL_IDT_SOURCE,
@@ -497,6 +517,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("void *kmalloc", source)
         self.assertIn("bool kfree", source)
         self.assertIn("vmm_map", source)
+        self.assertIn("#include <minios/arch/x86/irq.h>", source)
+        self.assertIn("irq_save_disable", source)
+        self.assertIn("irq_restore", source)
 
     def test_kernel_declares_user_memory_safety_contract(self) -> None:
         self.assertTrue(KERNEL_USERCOPY_SOURCE.is_file(), "缺少 usercopy 实现")
@@ -507,6 +530,12 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("vmm_address_space_create", address_space)
         self.assertIn("vmm_address_space_destroy", address_space)
         self.assertIn("vmm_address_space_map", address_space)
+        self.assertIn("vmm_address_space_protect", address_space)
+        self.assertIn("vmm_address_space_activate", address_space)
+        self.assertIn("vmm_kernel_page_directory", address_space)
+        self.assertIn("vmm_current_page_directory", address_space)
+        self.assertIn("vmm_activate_page_directory", address_space)
+        self.assertIn("irq_save_disable", address_space)
         self.assertIn("KERNEL_PDE_INDEX", address_space)
         self.assertIn("validate_user_range", usercopy)
         self.assertIn("copy_from_user", usercopy)
@@ -516,6 +545,65 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("read_cr2", exception)
         self.assertIn("PAGE_FAULT_USER", exception)
         self.assertIn("user_page_fault_handler", exception)
+
+    def test_kernel_declares_cooperative_thread_scheduler_contract(self) -> None:
+        self.assertTrue(KERNEL_SCHEDULER_SOURCE.is_file(), "缺少调度器实现")
+        self.assertTrue(KERNEL_CONTEXT_ASSEMBLY.is_file(), "缺少上下文切换入口")
+        source = KERNEL_SCHEDULER_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_CONTEXT_ASSEMBLY.read_text(encoding="utf-8")
+        for field in (
+            "pid",
+            "state",
+            "name[32]",
+            "saved_stack",
+            "kernel_stack_top",
+            "page_directory",
+            "exit_code",
+            "parent_pid",
+            "wake_tick",
+            "time_slice",
+            "fd_table",
+        ):
+            self.assertIn(field, source)
+        self.assertIn("PROCESS_READY", source)
+        self.assertIn("PROCESS_RUNNING", source)
+        self.assertIn("PROCESS_ZOMBIE", source)
+        self.assertIn("scheduler_yield", source)
+        self.assertIn("scheduler_on_tick", source)
+        self.assertIn("scheduler_sleep_current", source)
+        self.assertIn("scheduler_waitpid", source)
+        self.assertIn("allocate_pid", source)
+        self.assertIn("scheduler_lifecycle_self_test", source)
+        self.assertIn("scheduler_preemption_self_test", source)
+        self.assertIn("context_switch", source)
+        self.assertIn("push ebp", assembly)
+        self.assertIn("mov esp, edx", assembly)
+
+    def test_kernel_declares_ring3_syscall_contract(self) -> None:
+        self.assertTrue(KERNEL_USER_MODE_ASSEMBLY.is_file(), "缺少 Ring 3 汇编入口")
+        self.assertTrue(KERNEL_SYSCALL_SOURCE.is_file(), "缺少系统调用分发实现")
+        user_mode = KERNEL_USER_MODE_ASSEMBLY.read_text(encoding="utf-8")
+        syscall = KERNEL_SYSCALL_SOURCE.read_text(encoding="utf-8")
+        idt = KERNEL_IDT_SOURCE.read_text(encoding="utf-8")
+        scheduler = KERNEL_SCHEDULER_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("IDT_USER_INTERRUPT_GATE 0xEEU", idt)
+        self.assertIn("syscall_stub", idt)
+        self.assertIn("enter_user_mode", user_mode)
+        self.assertIn("iretd", user_mode)
+        self.assertIn("int 0x80", user_mode)
+        self.assertIn("user_fault_test_start", user_mode)
+        self.assertIn("syscall_dispatch", syscall)
+        self.assertIn("SYS_getpid", syscall)
+        self.assertIn("SYS_write", syscall)
+        self.assertIn("SYS_yield", syscall)
+        self.assertIn("SYS_exit", syscall)
+        self.assertIn("SYS_waitpid", syscall)
+        self.assertIn("SYS_sleep", syscall)
+        self.assertIn("SYS_getticks", syscall)
+        self.assertIn("vmm_address_space_activate", scheduler)
+        self.assertIn("user_process_self_test", scheduler)
+        self.assertIn("page_fault_set_user_handler", scheduler)
+        self.assertIn("user_page_fault_self_test", scheduler)
 
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
@@ -764,29 +852,30 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
         self.assertEqual(
-            kernel_lines[:6],
+            kernel_lines[:7],
             [
                 "[KERN] boot info valid",
                 "[KERN] paging enabled",
                 "[KERN] bss cleared",
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
                 "[KERN] gdt ready",
+                "[KERN] tss ready",
                 "[KERN] idt ready",
             ],
         )
         self.assertRegex(
-            kernel_lines[6],
+            kernel_lines[7],
             r"^\[KERN\] pmm pages total=[1-9][0-9]* free=[1-9][0-9]* reserved=[1-9][0-9]*$",
         )
         self.assertEqual(
-            kernel_lines[7:9],
+            kernel_lines[8:10],
             [
                 "[KERN] pmm self-test PASS",
                 "[KERN] vmm ready identity=off wp=on",
             ],
         )
         self.assertEqual(
-            kernel_lines[9:12],
+            kernel_lines[10:13],
             [
                 "[KERN] vmm self-test PASS",
                 "[KERN] heap ready",
@@ -794,22 +883,30 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertEqual(
-            kernel_lines[12:14],
+            kernel_lines[13:17],
             [
                 "[KERN] user memory ready",
                 "[KERN] user memory self-test PASS",
+                "[KERN] scheduler ready",
+                "[KERN] scheduler self-test PASS",
             ],
         )
         self.assertEqual(
-            kernel_lines[14:],
+            kernel_lines[17:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
                 "[KERN] keyboard ready",
                 "[KERN] interrupts enabled",
                 "[KERN] pit tick=5",
+                "[KERN] scheduler preemption PASS",
+                "[KERN] process lifecycle self-test PASS",
+                "[KERN] ring3 syscall self-test PASS",
+                "[KERN] user fault isolation PASS",
             ],
         )
+        self.assertIn("[USER] ring3 syscall PASS", output)
+        self.assertNotIn("[PANIC]", output)
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
 
     def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:

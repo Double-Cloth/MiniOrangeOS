@@ -46,6 +46,8 @@
 
 后续实现必须让用户态 libc wrapper 与内核表保持同一编号来源，避免手写两份不一致的 enum。
 
+当前 P4 最小实现安装了 vector `0x80`、DPL=3 的 32-bit interrupt gate，入口保存通用寄存器和用户段寄存器，切到 Ring 0 data selector 后把可修改 trap frame 交给 C 分发器。已实现 `SYS_exit`、`SYS_write`、`SYS_waitpid`、`SYS_getpid`、`SYS_yield`、`SYS_sleep`、`SYS_getticks`；`write` 当前只接受 fd 1/2，单次最多 4096 bytes，先验证完整用户范围再按 128-byte 内核缓冲分块输出。`waitpid` 在阻塞前验证可选 status 用户指针，成功后回写 exit code；`sleep` 由 PIT deadline 唤醒。内嵌 Ring 3 自检覆盖正常输出/让出/睡眠/退出，以及未知调用号、非法 fd、跨入内核空间的指针、超长写入和无子进程 wait 错误码。其余表项仍按后续 P5-P6 阶段实现。
+
 ## 安全边界
 
 系统调用入口必须区分两类错误：

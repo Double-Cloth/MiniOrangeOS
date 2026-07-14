@@ -88,3 +88,17 @@ M0 已完成并验证以下能力：
 - 构造非当前用户页目录时需要临时映射其物理页；复制高半 PDE 必须排除临时工作窗口，否则新页目录会保留指向已回收工作页表的悬空引用。
 - usercopy 不能只检查首地址和末地址：每一页的 PDE/PTE 有效 U/S、R/W 权限都必须满足；字符串则逐页验证到 NUL，不能因 `max_len` 之后的未访问页未映射而误拒绝。
 - page fault 的 U/S 错误码位提供故障来源边界；P3 只为用户故障提供可注册接管点，P4 才能在具备当前进程和调度器后实现“只终止当前进程”。
+
+## P4 心得
+
+- TSS descriptor 与普通代码/数据描述符不能共享 4 KiB granularity/32-bit segment flags；TSS 使用 byte granularity、limit=`sizeof(TSS)-1`，并把 I/O bitmap offset 放到 limit 之外以拒绝用户 I/O。
+- `ltr` 只负责装载 TSS selector；每次切换到不同进程前仍必须更新 `esp0`，否则 Ring 3 中断会落到旧进程的内核栈。
+- 首次线程没有真实的 C caller，必须人工构造与汇编 pop/ret 顺序完全一致的初始栈，并保留一个伪返回地址满足 C 栈入口形状；trampoline 自身不得正常返回。
+- 关中断后切到新线程时，旧线程的 `irq_restore` 尚未执行；因此首次 trampoline 必须按创建时保存的 IF 状态恢复中断，不能无条件 `sti`。
+- IRQ 内抢占会把尚未返回的完整中断调用链留在旧线程内核栈上；切回后必须从同一个 `context_switch` 返回并最终 `iretd`，不能只保存一个普通函数级寄存器快照就丢弃 IRQ 栈。
+- 调度必须在 PIC EOI 之后发生；否则新线程恢复 IF 后，IRQ0 仍处于 in-service，会让后续 tick 与嵌套中断行为失真。
+- 用户页目录不能从“当前页目录”复制高半 PDE：当前页目录可能是创建较早的用户快照，缺少后来扩展的 Heap 等内核映射。应保存主内核页目录，并在每次 CR3 激活前从它刷新共享 PDE；临时映射窗口必须在关中断区间使用且不能复制进目标地址空间。
+- Ring 3 的 `int 0x80` 不只多压入 EIP/CS/EFLAGS，还因 CPL 变化压入用户 ESP/SS；syscall stub 必须在 `pushad` 之后另存段寄存器，才能保持 C trap frame 的通用寄存器/vector/error/EIP 布局，并在 `iretd` 前恢复用户段。
+- IRQ/异常入口也必须保存用户 DS/ES/FS/GS 并加载 Ring 0 data selector；否则从 CPL3 进入的 C 处理器会沿用用户段，且在异常路径切到另一个内核线程时把该段状态泄漏给新上下文。段保存区放在 `pushad` 之后时，传给 C 的 trap frame 指针需跳过这 16 bytes。
+- `waitpid` 不能在子进程 exit 时立即释放其 PCB：父进程必须先读取 ZOMBIE 的 exit code，再负责地址空间和内核栈回收。等待任意子进程可用 `wait_node == parent` 作为单 CPU 哨兵，等待指定子进程则直接指向 child；exit 路径据此唤醒父进程。
+- Heap 的 first-fit 遍历、split/coalesce 与按页扩展是同一个元数据事务；只保护链表写入仍会让抢占线程观察到半更新状态。单 CPU 当前方案保存 IF 后覆盖整个公开操作，嵌套于调度器关中断路径时必须恢复“原状态”而非无条件 `sti`。
