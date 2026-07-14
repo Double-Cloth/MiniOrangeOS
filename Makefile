@@ -148,6 +148,8 @@ KERNEL_IRQ_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irqs.o
 KERNEL_IRQ_DEP := $(KERNEL_ARCH_BUILD_DIR)/irqs.d
 KERNEL_CONTEXT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/context_switch.o
 KERNEL_CONTEXT_DEP := $(KERNEL_ARCH_BUILD_DIR)/context_switch.d
+KERNEL_USER_MODE_OBJ := $(KERNEL_ARCH_BUILD_DIR)/user_mode.o
+KERNEL_USER_MODE_DEP := $(KERNEL_ARCH_BUILD_DIR)/user_mode.d
 KERNEL_IDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/idt.o
 KERNEL_IDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/idt.d
 KERNEL_EXCEPTION_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exception.o
@@ -156,6 +158,8 @@ KERNEL_IRQ_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irq.o
 KERNEL_IRQ_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/irq.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
+KERNEL_SYSCALL_OBJ := $(KERNEL_CORE_BUILD_DIR)/syscall.o
+KERNEL_SYSCALL_DEP := $(KERNEL_CORE_BUILD_DIR)/syscall.d
 KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
 KERNEL_CONSOLE_DEP := $(KERNEL_CORE_BUILD_DIR)/console.d
 KERNEL_PANIC_OBJ := $(KERNEL_CORE_BUILD_DIR)/panic.o
@@ -188,6 +192,7 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_EXCEPTION_C_OBJ) \
 	$(KERNEL_IRQ_C_OBJ) \
 	$(KERNEL_CORE_OBJ) \
+	$(KERNEL_SYSCALL_OBJ) \
 	$(KERNEL_CONSOLE_OBJ) \
 	$(KERNEL_PANIC_OBJ) \
 	$(KERNEL_SERIAL_OBJ) \
@@ -207,6 +212,7 @@ KERNEL_C_DEPS := \
 	$(KERNEL_EXCEPTION_C_DEP) \
 	$(KERNEL_IRQ_C_DEP) \
 	$(KERNEL_CORE_DEP) \
+	$(KERNEL_SYSCALL_DEP) \
 	$(KERNEL_CONSOLE_DEP) \
 	$(KERNEL_PANIC_DEP) \
 	$(KERNEL_SERIAL_DEP) \
@@ -326,6 +332,9 @@ $(KERNEL_IRQ_OBJ): kernel/arch/x86/irqs.asm | prepare-build-dir
 $(KERNEL_CONTEXT_OBJ): kernel/arch/x86/context_switch.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(KERNEL_CONTEXT_DEP)" -MT "$@" -o "$@" "$<"
 
+$(KERNEL_USER_MODE_OBJ): kernel/arch/x86/user_mode.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_USER_MODE_DEP)" -MT "$@" -o "$@" "$<"
+
 $(KERNEL_IDT_OBJ): kernel/arch/x86/idt.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IDT_DEP)" -MT "$@" -c "$<" -o "$@"
 
@@ -337,6 +346,9 @@ $(KERNEL_IRQ_C_OBJ): kernel/arch/x86/irq.c | prepare-build-dir
 
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_SYSCALL_OBJ): kernel/core/syscall.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SYSCALL_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_CONSOLE_OBJ): kernel/core/console.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CONSOLE_DEP)" -MT "$@" -c "$<" -o "$@"
@@ -377,8 +389,8 @@ $(KERNEL_USERCOPY_OBJ): kernel/mm/usercopy.c | prepare-build-dir
 $(KERNEL_SCHEDULER_OBJ): kernel/proc/scheduler.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SCHEDULER_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_C_OBJECTS)
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -399,4 +411,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_C_DEPS)

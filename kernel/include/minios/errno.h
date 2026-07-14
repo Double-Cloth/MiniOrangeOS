@@ -1,6 +1,9 @@
 #ifndef MINIOS_ERRNO_H
 #define MINIOS_ERRNO_H
 
+#define MINIOS_EBADF 9
 #define MINIOS_EFAULT 14
+#define MINIOS_EINVAL 22
+#define MINIOS_ENOSYS 38
 
 #endif

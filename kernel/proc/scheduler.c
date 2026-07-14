@@ -1,6 +1,10 @@
 #include <minios/arch/x86/gdt.h>
 #include <minios/arch/x86/irq.h>
+#include <minios/arch/x86/user_mode.h>
+#include <minios/mm/address_space.h>
 #include <minios/mm/heap.h>
+#include <minios/mm/pmm.h>
+#include <minios/mm/vmm.h>
 #include <minios/panic.h>
 #include <minios/proc/scheduler.h>
 
@@ -17,6 +21,12 @@
 #define SELF_TEST_THREADS 3U
 #define SELF_TEST_ROUNDS 2U
 #define SELF_TEST_TRACE_LENGTH (SELF_TEST_THREADS * SELF_TEST_ROUNDS)
+#define PAGE_SIZE 4096U
+#define USER_CODE_VIRTUAL 0x00400000U
+#define USER_STACK_VIRTUAL 0xBFFFF000U
+#define USER_STACK_TOP 0xC0000000U
+#define USER_PAGE_LOAD_WINDOW 0xD0C00000U
+#define USER_SELF_TEST_YIELD_LIMIT 8U
 
 enum process_state {
     PROCESS_UNUSED = 0,
@@ -47,6 +57,7 @@ struct process {
     void *argument;
     void *kernel_stack_allocation;
     uint32_t initial_eflags;
+    uint32_t user_entry;
 };
 
 static struct process process_table[PROCESS_LIMIT];
@@ -91,6 +102,7 @@ static void clear_process(struct process *process)
     process->argument = NULL;
     process->kernel_stack_allocation = NULL;
     process->initial_eflags = 0U;
+    process->user_entry = 0U;
 }
 
 static void set_process_name(struct process *process, const char *name)
@@ -146,6 +158,15 @@ static struct process *find_next_ready(const struct process *after)
 static void switch_to(struct process *next)
 {
     struct process *previous = current_process;
+    struct vmm_address_space address_space = {next->page_directory};
+
+    if (next->page_directory == 0U) {
+        if (!vmm_activate_kernel_address_space()) {
+            panic("could not activate kernel address space");
+        }
+    } else if (!vmm_address_space_activate(&address_space)) {
+        panic("could not activate process address space");
+    }
 
     current_process = next;
     next->state = PROCESS_RUNNING;
@@ -154,7 +175,7 @@ static void switch_to(struct process *next)
     context_switch(&previous->saved_stack, next->saved_stack);
 }
 
-static _Noreturn void thread_exit(int32_t exit_code)
+_Noreturn void scheduler_exit_current(int32_t exit_code)
 {
     uint32_t flags = irq_save_disable();
     struct process *next;
@@ -177,7 +198,13 @@ static _Noreturn void thread_trampoline(void)
 
     irq_restore(current_process->initial_eflags);
     entry(argument);
-    thread_exit(0);
+    scheduler_exit_current(0);
+}
+
+static _Noreturn void user_process_trampoline(void)
+{
+    enter_user_mode(current_process->user_entry,
+                    current_process->user_stack_top);
 }
 
 static _Noreturn void thread_returned(void)
@@ -252,6 +279,142 @@ int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
     return (int32_t)process->pid;
 }
 
+static bool initialize_user_page(uint32_t physical_address,
+                                 const uint8_t *source, size_t length)
+{
+    volatile uint8_t *page =
+        (volatile uint8_t *)(uintptr_t)USER_PAGE_LOAD_WINDOW;
+    uint32_t unmapped = 0U;
+    size_t index;
+
+    if (length > PAGE_SIZE ||
+        !vmm_map(USER_PAGE_LOAD_WINDOW, physical_address, VMM_WRITABLE)) {
+        return false;
+    }
+    for (index = 0U; index < PAGE_SIZE; ++index) {
+        page[index] = 0U;
+    }
+    for (index = 0U; index < length; ++index) {
+        page[index] = source[index];
+    }
+    if (!vmm_unmap(USER_PAGE_LOAD_WINDOW, &unmapped) ||
+        unmapped != physical_address) {
+        panic("user page load window invariant failed");
+    }
+    return true;
+}
+
+static void release_physical_page(uint32_t physical_address)
+{
+    if (physical_address != 0U && !pmm_free(physical_address)) {
+        panic("user process rollback found invalid page");
+    }
+}
+
+static int32_t user_process_create(const char *name, const uint8_t *image,
+                                   size_t image_size)
+{
+    struct vmm_address_space address_space = {0U};
+    struct process *process;
+    void *kernel_stack = NULL;
+    uint32_t code_physical = 0U;
+    uint32_t stack_physical = 0U;
+    uint32_t *stack;
+    uint32_t flags;
+
+    if (name == NULL || name[0] == '\0' || image == NULL ||
+        image_size == 0U || image_size > PAGE_SIZE) {
+        return -1;
+    }
+    flags = irq_save_disable();
+    process = find_unused_process();
+    if (process == NULL || next_pid == UINT32_MAX ||
+        current_process->page_directory != 0U ||
+        vmm_current_page_directory() != vmm_kernel_page_directory()) {
+        irq_restore(flags);
+        return -1;
+    }
+    kernel_stack = kmalloc(KERNEL_STACK_SIZE);
+    code_physical = pmm_alloc();
+    stack_physical = pmm_alloc();
+    if (kernel_stack == NULL || code_physical == 0U ||
+        stack_physical == 0U ||
+        !initialize_user_page(code_physical, image, image_size) ||
+        !initialize_user_page(stack_physical, NULL, 0U) ||
+        !vmm_address_space_create(&address_space) ||
+        !vmm_address_space_map(&address_space, USER_CODE_VIRTUAL,
+                               code_physical, 0U)) {
+        goto rollback;
+    }
+    code_physical = 0U;
+    if (!vmm_address_space_map(&address_space, USER_STACK_VIRTUAL,
+                               stack_physical, VMM_WRITABLE)) {
+        goto rollback;
+    }
+    stack_physical = 0U;
+
+    clear_process(process);
+    process->pid = next_pid;
+    ++next_pid;
+    process->state = PROCESS_NEW;
+    set_process_name(process, name);
+    process->kernel_stack_allocation = kernel_stack;
+    process->kernel_stack_top =
+        (uint32_t)(uintptr_t)kernel_stack + KERNEL_STACK_SIZE;
+    process->user_stack_top = USER_STACK_TOP;
+    process->page_directory = address_space.page_directory_physical;
+    process->parent_pid = current_process->pid;
+    process->time_slice = DEFAULT_TIME_SLICE;
+    process->initial_eflags = EFLAGS_INTERRUPT_ENABLE;
+    process->user_entry = USER_CODE_VIRTUAL;
+
+    stack = (uint32_t *)(uintptr_t)process->kernel_stack_top;
+    *--stack = (uint32_t)(uintptr_t)thread_returned;
+    *--stack = (uint32_t)(uintptr_t)user_process_trampoline;
+    *--stack = 0U;
+    *--stack = 0U;
+    *--stack = 0U;
+    *--stack = 0U;
+    process->saved_stack = stack;
+    process->state = PROCESS_READY;
+    irq_restore(flags);
+    return (int32_t)process->pid;
+
+rollback:
+    if (address_space.page_directory_physical != 0U &&
+        !vmm_address_space_destroy(&address_space)) {
+        panic("user process address-space rollback failed");
+    }
+    release_physical_page(code_physical);
+    release_physical_page(stack_physical);
+    if (kernel_stack != NULL && !kfree(kernel_stack)) {
+        panic("user process kernel-stack rollback failed");
+    }
+    irq_restore(flags);
+    return -1;
+}
+
+static bool reap_user_process(struct process *process)
+{
+    struct vmm_address_space address_space;
+
+    if (process == NULL || process->state != PROCESS_ZOMBIE ||
+        process->page_directory == 0U) {
+        return false;
+    }
+    address_space.page_directory_physical = process->page_directory;
+    if (!vmm_address_space_destroy(&address_space)) {
+        return false;
+    }
+    process->page_directory = 0U;
+    if (!kfree(process->kernel_stack_allocation)) {
+        return false;
+    }
+    process->state = PROCESS_REAPED;
+    clear_process(process);
+    return true;
+}
+
 void scheduler_yield(void)
 {
     uint32_t flags = irq_save_disable();
@@ -302,7 +465,7 @@ static void scheduler_test_thread(void *argument)
 
     for (round = 0U; round < SELF_TEST_ROUNDS; ++round) {
         if (self_test_trace_count >= SELF_TEST_TRACE_LENGTH) {
-            thread_exit(-1);
+            scheduler_exit_current(-1);
         }
         self_test_trace[self_test_trace_count] = identifier;
         ++self_test_trace_count;
@@ -425,4 +588,36 @@ bool scheduler_preemption_self_test(void)
     clear_process(second);
     return current_process == &process_table[0] &&
            current_process->state == PROCESS_RUNNING;
+}
+
+bool user_process_self_test(void)
+{
+    struct heap_stats before = heap_get_stats();
+    size_t image_size = (size_t)((uintptr_t)user_test_end -
+                                 (uintptr_t)user_test_start);
+    int32_t pid = user_process_create("ring3-test", user_test_start,
+                                      image_size);
+    struct process *process =
+        pid < 1 ? NULL : find_process_by_pid((uint32_t)pid);
+    uint32_t yields = 0U;
+    bool passed;
+
+    if (process == NULL) {
+        return false;
+    }
+    while (process->state != PROCESS_ZOMBIE &&
+           yields < USER_SELF_TEST_YIELD_LIMIT) {
+        ++yields;
+        scheduler_yield();
+    }
+    passed = process->state == PROCESS_ZOMBIE && process->exit_code == 0 &&
+        current_process == &process_table[0] &&
+        current_process->state == PROCESS_RUNNING &&
+        vmm_current_page_directory() == vmm_kernel_page_directory();
+    if (!reap_user_process(process)) {
+        return false;
+    }
+    return passed && heap_get_stats().allocated_blocks ==
+        before.allocated_blocks && heap_get_stats().allocated_bytes ==
+        before.allocated_bytes;
 }

@@ -42,6 +42,8 @@ KERNEL_ADDRESS_SPACE_SOURCE = ROOT / "kernel/mm/address_space.c"
 KERNEL_USERCOPY_SOURCE = ROOT / "kernel/mm/usercopy.c"
 KERNEL_SCHEDULER_SOURCE = ROOT / "kernel/proc/scheduler.c"
 KERNEL_CONTEXT_ASSEMBLY = ROOT / "kernel/arch/x86/context_switch.asm"
+KERNEL_USER_MODE_ASSEMBLY = ROOT / "kernel/arch/x86/user_mode.asm"
+KERNEL_SYSCALL_SOURCE = ROOT / "kernel/core/syscall.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -570,6 +572,26 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("push ebp", assembly)
         self.assertIn("mov esp, edx", assembly)
 
+    def test_kernel_declares_ring3_syscall_contract(self) -> None:
+        self.assertTrue(KERNEL_USER_MODE_ASSEMBLY.is_file(), "缺少 Ring 3 汇编入口")
+        self.assertTrue(KERNEL_SYSCALL_SOURCE.is_file(), "缺少系统调用分发实现")
+        user_mode = KERNEL_USER_MODE_ASSEMBLY.read_text(encoding="utf-8")
+        syscall = KERNEL_SYSCALL_SOURCE.read_text(encoding="utf-8")
+        idt = KERNEL_IDT_SOURCE.read_text(encoding="utf-8")
+        scheduler = KERNEL_SCHEDULER_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("IDT_USER_INTERRUPT_GATE 0xEEU", idt)
+        self.assertIn("syscall_stub", idt)
+        self.assertIn("enter_user_mode", user_mode)
+        self.assertIn("iretd", user_mode)
+        self.assertIn("int 0x80", user_mode)
+        self.assertIn("syscall_dispatch", syscall)
+        self.assertIn("SYS_getpid", syscall)
+        self.assertIn("SYS_write", syscall)
+        self.assertIn("SYS_yield", syscall)
+        self.assertIn("SYS_exit", syscall)
+        self.assertIn("vmm_address_space_activate", scheduler)
+        self.assertIn("user_process_self_test", scheduler)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -865,8 +887,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] interrupts enabled",
                 "[KERN] pit tick=5",
                 "[KERN] scheduler preemption PASS",
+                "[KERN] ring3 syscall self-test PASS",
             ],
         )
+        self.assertIn("[USER] ring3 syscall PASS", output)
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
 
     def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:

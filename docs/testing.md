@@ -153,6 +153,8 @@ PIT 抢占增量同日在 `MiniOrangeOS-Dev` 中完成验证：IRQ0 完成 tick 
 
 用户地址空间激活增量同日在 `MiniOrangeOS-Dev` 中完成验证：VMM 保存主内核页目录物理地址，创建和激活用户页目录时从主目录刷新共享高半 PDE，并在关中断区间清理临时工作窗口后重载 CR3。用户内存自检真实切入独立页目录，验证用户页读写、R/W 权限收紧与恢复、活动页目录销毁拒绝，再恢复主内核页目录并确认 PMM 计数完整回收。严格交叉编译 PASS，环境验证 PASS，启动专项 27/27 PASS，全量宿主回归 221/221 PASS（392.749 秒）。Kernel ELF 为 41,324 bytes，SHA-256 为 `5a70443ae8c2b7d51afd94b78ff298887364708de9c32d7e886262ffed6fb8f6`；镜像为 67,108,864 bytes，SHA-256 为 `e39ef2d236e0fa0ebf937230bcbaeafc5928e5fb39a1218ac3dac6ccc1401ddb`。
 
+Ring 3/系统调用增量同日在 `MiniOrangeOS-Dev` 中完成验证：调度器在 PCB 切换时同步 CR3 与 TSS `esp0`，内嵌用户代码页只读、栈下方保留未映射保护页，并由 `iret` 首次进入 CPL3。DPL3 `int 0x80` 保存完整用户返回帧；Ring 3 程序依次验证未知调用号 `-ENOSYS`、非法 fd `-EBADF`、内核边界指针 `-EFAULT`、超长写入 `-EINVAL`，再通过 `getpid/write/yield/exit` 输出 `[USER] ring3 syscall PASS` 并由启动进程回收地址空间和内核栈。严格交叉编译 PASS，启动专项 28/28 PASS；本增量全量宿主回归留到用户故障隔离收口后执行。Kernel ELF 为 46,596 bytes，SHA-256 为 `fb64f785451eddf339a8cb16a106865c8c87235a83a5bc5d8ba52f4f59bf760b`；镜像为 67,108,864 bytes，SHA-256 为 `89977310544493f3f504b5bf47f842e1aa7d99049bbef6deadd4489aea4fbba6`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

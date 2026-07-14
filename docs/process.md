@@ -79,7 +79,7 @@ stateDiagram-v2
 
 PIT IRQ0 在设备处理和 EOI 完成后调用调度 tick；时间片耗尽时把当前 RUNNING 线程转回 READY，并可在仍保留完整 IRQ 栈的情况下切到下一线程。抢占自检让线程 1 在不调用 `yield` 的忙等中等待线程 2，只有真实 PIT 抢占能运行线程 2 并解除忙等。PID 当前单调分配；达到 `UINT32_MAX` 后的已回收 PID 扫描复用仍需在 P4 完成前补齐。
 
-用户地址空间目前已具备主内核页目录刷新、CR3 激活、内核页目录恢复及页级 R/W 权限收紧 API，并通过真实 QEMU 切换自检。现有调度自检仍全部使用内核页目录；把 PCB `page_directory` 与切换路径连接将在首个 Ring 3 测试进程接入时完成。
+用户地址空间已具备主内核页目录刷新、CR3 激活、内核页目录恢复及页级 R/W 权限收紧 API。调度切换现在根据 PCB `page_directory` 激活目标用户页目录或主内核页目录，再更新 TSS `esp0` 和内核栈。首个内嵌 Ring 3 测试进程拥有只读代码页、单页用户栈与未映射保护页，通过首次内核 trampoline 构造 `iret` 帧；退出后由启动进程销毁用户页目录并回收独立内核栈。
 
 切换进程时必须：
 
@@ -115,6 +115,8 @@ EIP=elf_entry
 ```
 
 GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 时使用的 `ss0` 和 `esp0`。
+
+当前 P4 已由 `enter_user_mode` 构造 `SS:ESP/EFLAGS/CS:EIP` 并真实执行 `iret`；用户代码在 IF=1 的 Ring 3 中运行，系统调用或硬件中断依靠 TSS 切到该进程 16 KiB 内核栈。内嵌程序仅用于 P4 机制自检，P5 仍将以 ELF32 loader 替换原始代码页复制。
 
 ## ELF 用户程序加载
 

@@ -98,3 +98,4 @@ M0 已完成并验证以下能力：
 - IRQ 内抢占会把尚未返回的完整中断调用链留在旧线程内核栈上；切回后必须从同一个 `context_switch` 返回并最终 `iretd`，不能只保存一个普通函数级寄存器快照就丢弃 IRQ 栈。
 - 调度必须在 PIC EOI 之后发生；否则新线程恢复 IF 后，IRQ0 仍处于 in-service，会让后续 tick 与嵌套中断行为失真。
 - 用户页目录不能从“当前页目录”复制高半 PDE：当前页目录可能是创建较早的用户快照，缺少后来扩展的 Heap 等内核映射。应保存主内核页目录，并在每次 CR3 激活前从它刷新共享 PDE；临时映射窗口必须在关中断区间使用且不能复制进目标地址空间。
+- Ring 3 的 `int 0x80` 不只多压入 EIP/CS/EFLAGS，还因 CPL 变化压入用户 ESP/SS；syscall stub 必须在 `pushad` 之后另存段寄存器，才能保持 C trap frame 的通用寄存器/vector/error/EIP 布局，并在 `iretd` 前恢复用户段。
