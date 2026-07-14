@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE1_SOURCE = ROOT / "boot/stage1/boot.asm"
+STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
 LAYOUT_PATH = ROOT / "config/image-layout.json"
 HANDOFF_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_handoff.asm"
 
@@ -37,6 +38,7 @@ class BootStage1Tests(unittest.TestCase):
     handoff_image: Path
     floppy_image: Path
     stage2_layout: dict[str, object]
+    kernel_layout: dict[str, object]
     layout_document: dict[str, object]
 
     @classmethod
@@ -54,6 +56,11 @@ class BootStage1Tests(unittest.TestCase):
             component
             for component in layout["components"]
             if component["name"] == "stage2"
+        )
+        cls.kernel_layout = next(
+            component
+            for component in layout["components"]
+            if component["name"] == "kernel"
         )
 
         result = cls._run_make("-j4", "image", timeout=90)
@@ -281,6 +288,28 @@ class BootStage1Tests(unittest.TestCase):
                     for symbol in symbols
                 ),
                 f"Stage 1 的 DAP 必须引用生成的 {description} 符号",
+            )
+
+        stage2_source = STAGE2_SOURCE.read_text(encoding="utf-8")
+        kernel_lba_symbols = matching_definitions(
+            ("KERNEL", "LBA"), int(self.kernel_layout["lba"])
+        )
+        kernel_max_symbols = matching_definitions(
+            ("KERNEL", "MAX", "SECTORS"),
+            int(self.kernel_layout["max_sectors"]),
+        )
+        self.assertTrue(kernel_lba_symbols, "生成布局必须导出 Kernel LBA")
+        self.assertTrue(kernel_max_symbols, "生成布局必须导出 Kernel max_sectors")
+        for description, symbols in (
+            ("Kernel LBA", kernel_lba_symbols),
+            ("Kernel max_sectors", kernel_max_symbols),
+        ):
+            self.assertTrue(
+                any(
+                    re.search(rf"\b{re.escape(symbol)}\b", stage2_source)
+                    for symbol in symbols
+                ),
+                f"Stage 2 必须引用生成的 {description} 符号",
             )
 
         self.assertGreater(max_sectors, 64, "T10 双 DAP 合同要求 Stage 2 区域超过 64 扇区")
@@ -600,6 +629,30 @@ class BootStage1Tests(unittest.TestCase):
             stage2["artifact"] = value
             return json.dumps(changed, separators=(",", ":")).encode("utf-8")
 
+        without_kernel_document = json.loads(valid)
+        without_kernel_document["components"] = [
+            component
+            for component in without_kernel_document["components"]
+            if component["name"] != "kernel"
+        ]
+        duplicate_kernel_document = json.loads(valid)
+        kernel_component = next(
+            component
+            for component in duplicate_kernel_document["components"]
+            if component["name"] == "kernel"
+        )
+        duplicate_kernel_document["components"].append(dict(kernel_component))
+        ata_overflow_document = json.loads(valid)
+        ata_overflow_kernel = next(
+            component
+            for component in ata_overflow_document["components"]
+            if component["name"] == "kernel"
+        )
+        ata_overflow_kernel["lba"] = 1 << 28
+        ata_overflow_document["image_size_bytes"] = (
+            (1 << 28) + int(ata_overflow_kernel["max_sectors"])
+        ) * 512
+
         cases = {
             "duplicate-key": duplicate.encode("utf-8"),
             "nan": nan_value.encode("utf-8"),
@@ -609,6 +662,15 @@ class BootStage1Tests(unittest.TestCase):
             "artifact-backslash": with_stage2_artifact(r"boot\stage2.bin"),
             "artifact-windows-absolute": with_stage2_artifact(r"C:\x"),
             "artifact-nul": with_stage2_artifact("boot/stage2\x00.bin"),
+            "kernel-missing": json.dumps(
+                without_kernel_document, separators=(",", ":")
+            ).encode("utf-8"),
+            "kernel-duplicate": json.dumps(
+                duplicate_kernel_document, separators=(",", ":")
+            ).encode("utf-8"),
+            "kernel-lba28-overflow": json.dumps(
+                ata_overflow_document, separators=(",", ":")
+            ).encode("utf-8"),
         }
         with tempfile.TemporaryDirectory(prefix="generator-invalid-") as directory:
             workspace = self._prepare_generator_workspace(Path(directory))

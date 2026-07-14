@@ -15,6 +15,7 @@ MAKE_TARGETS = {
     "debug",
     "gdb",
     "test-qemu",
+    "test-boot-qemu",
 }
 
 

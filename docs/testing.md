@@ -11,6 +11,7 @@
 | 宿主单元测试 | 纯算法、解析器、bitmap、路径、mkfs/fsck | `make test-host` |
 | QEMU 内核测试 | 中断、分页、堆、调度、Ring 3、syscall | `make test-qemu` |
 | QEMU 用户测试 | ELF、usercopy、Shell、文件命令 | `make test-qemu` |
+| QEMU 启动链测试 | A20、E820、保护模式、ATA、Kernel ELF、Boot Info | `make test-boot-qemu` |
 | 镜像测试 | mkfs、fsck、持久化、损坏防护 | `make test-image` 或并入 `test-qemu` |
 | CI | 干净 Linux 环境完整验证 | GitHub Actions |
 
@@ -104,6 +105,8 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 - 正式镜像按顺序输出两条 S1 与两条 S2 日志，并保留 BIOS 启动盘号 `0x80`；
 - 动态 QEMU fixture 直接链接正式 BIOS wrapper，验证字符接口寄存器/栈合同、EDD `CF/AH`、保留寄存器及 LBA0 `55 AA`；
 - `stage2.bin` 为 283 bytes，SHA-256 为 `db4cfa3c59e3a1ef624b1774f98f7be5f0c7f26214ddf48f128b03c8c668cfe4`。
+
+该节只保留历史 T11 边界；P1 完成证据记录在 `docs/task-reports/P1-boot-chain.md`，不回写覆盖历史产物指纹。
 
 ## 串口测试协议
 

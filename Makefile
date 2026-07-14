@@ -100,6 +100,7 @@ ROOT_DIR := $(CURDIR)
 BUILD_ABS := $(abspath $(BUILD_DIR))
 
 BOOT_BUILD_DIR := $(BUILD_ABS)/boot
+BOOT_INCLUDE_DIR := $(ROOT_DIR)/boot/include
 STAGE2_BUILD_DIR := $(BOOT_BUILD_DIR)/stage2
 KERNEL_BUILD_DIR := $(BUILD_ABS)/kernel
 KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
@@ -158,7 +159,7 @@ ALL_ARTIFACTS := \
 	$(KERNEL_MAP) \
 	$(KERNEL_SYM)
 
-.PHONY: all image clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu
+.PHONY: all image clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
@@ -179,6 +180,9 @@ gdb: $(KERNEL_ELF) | prepare-build-dir
 test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_test.py --qemu "$(QEMU)" --image "$(QEMU_TEST_FIXTURE)" --log "$(QEMU_SERIAL_LOG)" --timeout "$(QEMU_TIMEOUT)" --max-log-bytes "$(QEMU_LOG_MAX_BYTES)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
+test-boot-qemu: | prepare-build-dir
+	@MINIOS_QEMU="$(QEMU)" $(PYTHON) -m unittest tests.host.test_boot_stage2
+
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
 
@@ -188,8 +192,8 @@ $(STAGE1_LAYOUT_INC): config/image-layout.json tools/generate_boot_layout.py | p
 $(STAGE1_BIN): boot/stage1/boot.asm $(STAGE1_LAYOUT_INC) | prepare-build-dir
 	$(NASM) -I "$(BOOT_BUILD_DIR)/" -f bin -o "$@" "$<"
 
-$(STAGE2_OBJ): boot/stage2/entry.asm | prepare-build-dir
-	$(NASM) -f elf32 -MD "$(STAGE2_DEP)" -MT "$@" -o "$@" "$<"
+$(STAGE2_OBJ): boot/stage2/entry.asm boot/include/boot_info.inc $(STAGE1_LAYOUT_INC) | prepare-build-dir
+	$(NASM) -I "$(BOOT_BUILD_DIR)/" -I "$(BOOT_INCLUDE_DIR)/" -f elf32 -MD "$(STAGE2_DEP)" -MT "$@" -o "$@" "$<"
 
 $(STAGE2_ELF) $(STAGE2_MAP) &: $(STAGE2_OBJ) boot/stage2/linker.ld | prepare-build-dir
 	$(LD) -m elf_i386 -nostdlib -T boot/stage2/linker.ld -Map "$(STAGE2_MAP)" -o "$(STAGE2_ELF)" "$(STAGE2_OBJ)"
@@ -200,8 +204,8 @@ $(STAGE2_BIN): $(STAGE2_ELF) | prepare-build-dir
 $(STAGE2_SYM): $(STAGE2_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
-$(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm | prepare-build-dir
-	$(NASM) -f elf32 -MD "$(KERNEL_ENTRY_DEP)" -MT "$@" -o "$@" "$<"
+$(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm boot/include/boot_info.inc | prepare-build-dir
+	$(NASM) -I "$(BOOT_INCLUDE_DIR)/" -f elf32 -MD "$(KERNEL_ENTRY_DEP)" -MT "$@" -o "$@" "$<"
 
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"

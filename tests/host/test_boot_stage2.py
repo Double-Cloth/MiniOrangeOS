@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
+QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
 
 def _is_supported_linux() -> bool:
@@ -27,6 +31,7 @@ class BootStage2Tests(unittest.TestCase):
     build_directory: Path
     stage2_binary: Path
     stage2_elf: Path
+    kernel_elf: Path
     image: Path
     disassembly: list[tuple[int, str]]
     symbols: dict[str, int]
@@ -51,6 +56,7 @@ class BootStage2Tests(unittest.TestCase):
 
         cls.stage2_binary = cls.build_directory / "boot/stage2.bin"
         cls.stage2_elf = cls.build_directory / "boot/stage2.elf"
+        cls.kernel_elf = cls.build_directory / "kernel/kernel.elf"
         cls.image = cls.build_directory / "miniorangeos.img"
 
         disassembled = cls._run_tool(
@@ -180,7 +186,18 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
 
         commands = (
-            ("nasm", "-f", "elf32", "-o", str(stage2_object), str(STAGE2_SOURCE)),
+            (
+                "nasm",
+                "-I",
+                f"{cls.build_directory / 'boot'}/",
+                "-I",
+                f"{ROOT / 'boot/include'}/",
+                "-f",
+                "elf32",
+                "-o",
+                str(stage2_object),
+                str(STAGE2_SOURCE),
+            ),
             (
                 "nasm",
                 "-f",
@@ -294,6 +311,36 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         ]
         self.assertEqual(missing, [], f"stage2.elf 头缺少：{', '.join(missing)}")
 
+    def test_kernel_elf_is_high_half_with_physical_load_addresses(self) -> None:
+        header = self._run_tool(
+            "i686-elf-readelf", "-hW", str(self.kernel_elf), timeout=15
+        )
+        segments = self._run_tool(
+            "i686-elf-readelf", "-lW", str(self.kernel_elf), timeout=15
+        )
+        self.assertEqual(header.returncode, 0, header.stdout + header.stderr)
+        self.assertEqual(segments.returncode, 0, segments.stdout + segments.stderr)
+        self.assertRegex(header.stdout, r"Entry point address:\s+0x[cC][0-9a-fA-F]{7}\b")
+
+        load_segments = re.findall(
+            r"(?m)^\s*LOAD\s+\S+\s+(0x[0-9a-fA-F]+)\s+"
+            r"(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+"
+            r"(0x[0-9a-fA-F]+)\s+.+$",
+            segments.stdout,
+        )
+        nonempty_load_segments = [
+            (virtual_text, physical_text)
+            for virtual_text, physical_text, _file_size, memory_size in load_segments
+            if int(memory_size, 16) != 0
+        ]
+        self.assertTrue(nonempty_load_segments, "Kernel ELF 至少需要一个非空 PT_LOAD")
+        for virtual_text, physical_text in nonempty_load_segments:
+            virtual = int(virtual_text, 16)
+            physical = int(physical_text, 16)
+            self.assertGreaterEqual(virtual, 0xC0000000)
+            self.assertGreaterEqual(physical, 0x00100000)
+            self.assertEqual(0xC0000000, virtual - physical)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -363,6 +410,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             b"[S2] E820 entries=0x\x00",
             b"[S2] E820 failure\x00",
             b"[S2] protected mode entered\x00",
+            b"[S2] ATA failure\x00",
+            b"[S2] ELF failure\x00",
+            b"[S2] kernel loaded entry=0x\x00",
         ):
             self.assertEqual(
                 payload.count(message), 1, f"stage2.bin 必须唯一包含 {message!r}"
@@ -447,6 +497,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             [
                 sys.executable,
                 "tools/qemu_test.py",
+                "--qemu",
+                QEMU,
                 "--image",
                 str(fixture_image),
                 "--log",
@@ -484,6 +536,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             [
                 sys.executable,
                 "tools/qemu_test.py",
+                "--qemu",
+                QEMU,
                 "--image",
                 str(self.image),
                 "--log",
@@ -509,7 +563,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("QEMU 超时", result.stderr, "正式 Loader 必须由安全 runner 超时清理")
         output = log.read_text(encoding="utf-8", errors="replace")
         boot_lines = re.findall(r"(?m)^\[(?:S1|S2)\][^\r\n]*", output)
-        self.assertEqual(len(boot_lines), 7, f"启动阶段日志数量异常：\n{output}")
+        self.assertEqual(len(boot_lines), 8, f"启动阶段日志数量异常：\n{output}")
         self.assertEqual(
             boot_lines[:5],
             [
@@ -528,8 +582,85 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         self.assertNotEqual(boot_lines[5], "[S2] E820 entries=0x0000")
         self.assertEqual(boot_lines[6], "[S2] protected mode entered")
+        self.assertRegex(
+            boot_lines[7],
+            r"^\[S2\] kernel loaded entry=0xC[0-9A-F]{7}$",
+        )
+        kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
+        self.assertEqual(kernel_lines, ["[KERN] boot info valid"])
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
-        self.assertNotIn("kernel loaded", output.lower(), "内核加载未完成前不得提前宣称成功")
+
+    def test_corrupted_kernel_elf_is_rejected_before_entry(self) -> None:
+        layout = json.loads((ROOT / "config/image-layout.json").read_text(encoding="utf-8"))
+        kernel = next(
+            component
+            for component in layout["components"]
+            if component["name"] == "kernel"
+        )
+        kernel_payload = self.kernel_elf.read_bytes()
+        program_offset = struct.unpack_from("<I", kernel_payload, 28)[0]
+        memory_size = struct.unpack_from("<I", kernel_payload, program_offset + 20)[0]
+        corruptions = {
+            "bad-magic": ((0, b"BAD!"),),
+            "filesz-over-memsz": (
+                (program_offset + 16, struct.pack("<I", memory_size + 1)),
+            ),
+            "segment-over-loader": (
+                (program_offset + 8, struct.pack("<I", 0xC0008000)),
+                (program_offset + 12, struct.pack("<I", 0x00008000)),
+            ),
+            "load-segments-overlap": (
+                (program_offset + 32 + 8, struct.pack("<I", 0xC0100800)),
+                (program_offset + 32 + 12, struct.pack("<I", 0x00100800)),
+                (program_offset + 32 + 20, struct.pack("<I", 0x00000100)),
+                (program_offset + 32 + 28, struct.pack("<I", 1)),
+            ),
+        }
+        for name, writes in corruptions.items():
+            with self.subTest(name=name):
+                corrupted = (
+                    self.build_directory / f"test-fixtures/kernel-{name}.img"
+                )
+                corrupted.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.image, corrupted)
+                with corrupted.open("r+b") as image_file:
+                    for offset, payload in writes:
+                        image_file.seek(int(kernel["lba"]) * 512 + offset)
+                        image_file.write(payload)
+
+                log = self.build_directory / f"test-logs/kernel-{name}.log"
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "tools/qemu_test.py",
+                        "--qemu",
+                        QEMU,
+                        "--image",
+                        str(corrupted),
+                        "--log",
+                        str(log),
+                        "--timeout",
+                        "2",
+                        "--max-log-bytes",
+                        "262144",
+                        "--repo",
+                        str(ROOT),
+                        "--build-dir",
+                        self.build_relative.as_posix(),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=12,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("QEMU 超时", result.stderr)
+                output = log.read_text(encoding="utf-8", errors="replace")
+                self.assertIn("[S2] ELF failure", output)
+                self.assertNotIn("[KERN]", output)
 
 
 if __name__ == "__main__":
