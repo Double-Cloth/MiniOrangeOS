@@ -26,10 +26,11 @@ RUN if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then \
     && install -d -m 0755 -o minios -g minios /opt/miniorangeos-dev \
     && /tmp/miniorangeos-source/environment/bootstrap-inside.sh --system-only --target-user minios
 
-USER minios
-RUN /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
+RUN /usr/sbin/runuser -u minios -- env \
+        HOME=/home/minios USER=minios LOGNAME=minios \
+        MINIOS_CONTAINER=1 MINIOS_ENV_ROOT=/opt/miniorangeos-dev \
+        /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
 
-USER root
 RUN if [ -f /root/miniorangeos-build-marker-created ]; then \
         rm -f -- /.dockerenv /root/miniorangeos-build-marker-created; \
     fi
