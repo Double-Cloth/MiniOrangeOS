@@ -24,7 +24,7 @@
 | P4 进程与系统调用 | 完成 | `29a2c7d` 合并；Ring 3/TSS、PCB/16 KiB 内核栈、三线程 PIT 抢占、用户页目录、用户 #PF 隔离、sleep/waitpid、PID 复用、IRQ-safe Heap 与 7 个 `int 0x80` 调用；环境/干净构建 PASS、启动专项 28/28、全量宿主 222/222 |
 | P5 ELF 用户态与 Shell | 完成 | `f4363cb` 合并；静态 ELF32 loader、共享 ABI、crt0/最小 libc、init/Shell、echo/ps/memtest/fault；环境/干净构建 PASS、启动专项 28/28、全量宿主 225/225 |
 | P6 磁盘与 MiniFS | 完成 | `7de8d07` 合并；ATA/block、确定性 mkfs/fsck/装配、可写 MiniFS 文件/目录、VFS/fd 与完整最低文件调用；12 个用户 ELF 从磁盘加载；双启动覆盖 direct/indirect 文件、65 项目录和用户命令持久化，逐轮 fsck PASS；组合专项 49/49、全量宿主 239/239 |
-| P7 CI、文档和答辩版本 | 进行中 | `fb15888` 已加入聚合 test/check/test-host、LOC、固定容器 CI、只读源码容器工作副本、双启动演示与 release checklist；正式 WSL 环境/构建/fsck PASS、全量 243/243（898.861 秒）、持久化演示 PASS；GitHub 原生 Linux CI 首次运行与最终阶段报告待完成 |
+| P7 CI、文档和答辩版本 | 进行中 | `fb15888` 已加入聚合 test/check/test-host、LOC、固定容器 CI、只读源码容器工作副本、双启动演示与 release checklist；`3daa1c1` 补齐失败输出、QEMU 参数、串口日志和镜像摘要上传；正式 WSL 环境/构建/fsck PASS、全量 243/243（898.861 秒）、持久化演示 PASS；GitHub 原生 Linux CI 首次运行与最终阶段报告待完成 |
 
 ## 记录规则
 

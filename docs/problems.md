@@ -140,4 +140,5 @@
 - 首版 `make test BUILD_DIR=.p7-aggregate` 把命令行 `BUILD_DIR` 经 GNU Make 环境传播到 Python 测试内部的独立工作区，导致 build marker 身份不匹配。最终 `test-host` 在启动 Python 前清除 Make 递归状态、`BUILD_DIR` 和内核故障注入变量，并以伪造 `MAKEFLAGS/BUILD_DIR` 的真实构建专项验证隔离。
 - 全量顺序还暴露 DrvFS 公开 QEMU 用例隐式依赖默认 `build` 父目录：前序构建用例会在清理后删除空父目录。用例现显式创建、验证并只在自己创建时回收该父目录，单项及最终全量均 PASS。
 - OCI `run.sh` 原先只读挂载仓库却直接在 `/workspace` 执行，使文档中的 `run.sh make test` 无法生成产物。P7 改为 `/source:ro` 挂载，由受保守 Shell 策略检查的 `run-inside.sh` 复制到容器临时可写目录并保持 argv 边界执行，容器退出时随 `--rm` 回收。
-- 最终 WSL 聚合入口 243/243 PASS（898.861 秒）。GitHub workflow 已固定 runner、容器输入、checkout SHA 和最小权限，但分支尚未推送，不能把本地 WSL/合同测试表述为原生 Linux CI PASS。
+- 首版 CI 只把测试输出写入 Actions 控制台，容器中的串口日志和镜像诊断会随 `--rm` 丢失，不满足失败证据合同。现由 `ci-run.sh` 把完整输出、QEMU 实际参数、残留日志、布局和镜像摘要导出到宿主挂载目录，workflow 失败时用固定提交的官方 action 上传。
+- 最终 WSL 聚合入口 243/243 PASS（898.861 秒）。GitHub workflow 已固定 runner、容器输入、两个官方 action SHA、失败证据边界和最小权限，但分支尚未推送，不能把本地 WSL/合同测试表述为原生 Linux CI PASS。
