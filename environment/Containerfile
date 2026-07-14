@@ -12,6 +12,7 @@ ENV MINIOS_CONTAINER=1 \
 # 只复制昂贵依赖层的真实输入；adapter 或 README 变化不使 apt/GCC 层失效。
 COPY environment/versions.env /tmp/miniorangeos-source/environment/versions.env
 COPY environment/lib/common.sh /tmp/miniorangeos-source/environment/lib/common.sh
+COPY environment/lib/package_state_writer.py /tmp/miniorangeos-source/environment/lib/package_state_writer.py
 COPY environment/bootstrap-inside.sh /tmp/miniorangeos-source/environment/bootstrap-inside.sh
 COPY tools/build_toolchain.sh /tmp/miniorangeos-source/tools/build_toolchain.sh
 

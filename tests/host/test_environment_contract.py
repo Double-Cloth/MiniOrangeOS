@@ -1025,6 +1025,7 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         for build_input in (
             "environment/versions.env",
             "environment/lib/common.sh",
+            "environment/lib/package_state_writer.py",
             "environment/bootstrap-inside.sh",
             "tools/build_toolchain.sh",
         ):
