@@ -155,6 +155,18 @@ int32_t minios_sleep(uint32_t ticks) {
     return syscall1(SYS_sleep, ticks);
 }
 
+int32_t minios_chdir(const char *path) {
+    return syscall1(SYS_chdir, (uint32_t)(uintptr_t)path);
+}
+
+int32_t minios_getcwd(char *buffer, size_t capacity) {
+    return syscall2(
+        SYS_getcwd,
+        (uint32_t)(uintptr_t)buffer,
+        (uint32_t)capacity
+    );
+}
+
 uint32_t minios_getticks(void) {
     return (uint32_t)syscall0(SYS_getticks);
 }

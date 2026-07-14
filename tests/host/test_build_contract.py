@@ -23,9 +23,11 @@ REQUIRED_BUILD_FILES = (
     "kernel/linker.ld",
     "include/minios/abi/syscall.h",
     "include/minios/abi/errno.h",
+    "user/include/minios/io.h",
     "user/crt/start.asm",
     "user/libc/syscall.c",
     "user/libc/string.c",
+    "user/libc/io.c",
     "user/programs/init.c",
     "user/programs/echo.c",
     "user/programs/sh.c",
@@ -38,6 +40,10 @@ REQUIRED_BUILD_FILES = (
     "user/programs/write.c",
     "user/programs/mkdir.c",
     "user/programs/rm.c",
+    "user/programs/cp.c",
+    "user/programs/stat.c",
+    "user/programs/sleep.c",
+    "user/programs/uptime.c",
     "user/linker.ld",
     "kernel/include/minios/proc/elf.h",
     "kernel/include/minios/proc/program_registry.h",
@@ -134,6 +140,10 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("USER_WRITE_ELF", makefile)
         self.assertIn("USER_MKDIR_ELF", makefile)
         self.assertIn("USER_RM_ELF", makefile)
+        self.assertIn("USER_CP_ELF", makefile)
+        self.assertIn("USER_STAT_ELF", makefile)
+        self.assertIn("USER_SLEEP_ELF", makefile)
+        self.assertIn("USER_UPTIME_ELF", makefile)
         self.assertIn("user/linker.ld", makefile)
         self.assertIn("-ffreestanding", makefile)
         self.assertIn("-nostdlib", makefile)

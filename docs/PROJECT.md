@@ -34,7 +34,7 @@ BIOS
 | 模拟调试 | QEMU `qemu-system-i386`、GDB remote |
 | 内存 | E820、4 KiB 页、两级页表、bitmap PMM、first-fit Heap |
 | 进程 | 独立页目录、TSS、Ring 3、PIT 抢占式轮转 |
-| 系统调用 | `int 0x80`，18 个调用 |
+| 系统调用 | `int 0x80`，20 个调用 |
 | 存储 | primary master ATA PIO LBA28、512-byte sector |
 | 文件系统 | 4 KiB block、自定义 inode MiniFS、VFS/fd |
 | 用户态 | 静态 ELF32，`/bin/init` 拉起 `/bin/sh` |
@@ -55,7 +55,7 @@ MiniOrangeOS/
 │   ├── mm/               PMM、VMM、Heap、地址空间、usercopy
 │   ├── proc/             ELF loader、程序注册表、调度器
 │   └── include/          内核私有公开接口
-├── user/                 crt0、最小 libc、linker script 与 12 个程序
+├── user/                 crt0、最小 libc、linker script 与 16 个程序
 ├── tools/                构建守卫、镜像、MiniFS、QEMU、LOC 工具
 ├── tests/                宿主合同、运行时与 QEMU 测试
 ├── environment/          WSL、工具链、OCI 环境生命周期
@@ -126,8 +126,8 @@ Boot Info 固定 64 bytes，包含 magic/version/size/checksum、启动盘、虚
 - IDT 有 256 个槽位；前 32 个异常入口统一 CPU 自动错误码和软件补零后的 trap frame。
 - 8259 master/slave 重映射到 `0x20/0x28`，驱动就绪后逐项解除屏蔽。
 - PIT channel 0 使用 mode 3、100 Hz，负责 tick、sleep 唤醒和抢占。
-- PS/2 初始化执行控制器/端口自检、set-1 translation 和 scanning ACK；IRQ1 将 ASCII 写入 64-byte 环形缓冲。
-- COM1 采用有界轮询；VGA 使用 text mode。panic 关闭中断、输出上下文并进入 `hlt` 循环。
+- PS/2 初始化执行控制器/端口自检、set-1 translation 和 scanning ACK；IRQ1 解析普通与 `E0/E1` 扫描码、独立左右 Shift/Ctrl 状态，并将 ASCII 或共享特殊键码写入 128-byte 环形缓冲。
+- COM1 采用有界轮询；VGA 使用 text mode，维护硬件光标并处理退格和 Shell 清屏序列。panic 关闭中断、输出上下文并进入 `hlt` 循环。
 - ATA 驱动支持 IDENTIFY、多扇区读写、BSY/DRQ/ERR/DF、超时、容量检查和 cache flush。
 
 ## 内存管理
@@ -163,7 +163,7 @@ PIT 时间片轮转可抢占不主动 `yield` 的线程。上下文切换保存 
 
 用户 ELF loader 只接受静态 ELF32 `ET_EXEC`，先完整验证所有 Header/Program Header，再分配用户页、复制 `PT_LOAD`、清零 BSS、应用页级权限并构造 `argc/argv` 栈。`spawn` 从 VFS 读取磁盘 `/bin/*.elf`；内嵌的 6 个基础 ELF 仅用于迁移一致性自检，不参与运行时路径解析。
 
-Shell 提供 128-byte 行缓冲、最多 16 项 argv、空格/Tab 分词、`/bin/` 补全和前台 spawn/wait。因没有 cwd syscall，`cd`/`pwd` 当前只承认根目录。
+Shell 提供 256-byte 行缓冲、8 项命令历史、退格/Delete/方向键/Home/End 行编辑、`Ctrl+A/E/C/D/K/L/U` 控制、最多 16 项 argv、单/双引号、反斜杠转义、`/bin/` 补全、当前目录提示符和前台 spawn/wait。每个进程保存独立工作目录，子进程继承父进程目录；内核在进入 VFS 前统一规范化绝对/相对路径、重复 `/`、`.` 与 `..`。
 
 ## 系统调用 ABI
 
@@ -186,10 +186,11 @@ Shell 提供 128-byte 行缓冲、最多 16 项 argv、空格/Tab 分词、`/bin
 | 12 | `getpid` | 返回 PID |
 | 13 | `yield` | 主动让出 CPU |
 | 14 | `sleep` | 按 PIT tick 阻塞 |
-| 15 | 未分配 | 当前共享 ABI 保留该编号空缺 |
+| 15 | `chdir` | 校验并切换当前进程工作目录 |
 | 16 | `stat` | 查询路径元信息 |
 | 17 | `getticks` | 返回 tick 低 32 位 |
 | 18 | `ps` | 复制定长进程快照 |
+| 19 | `getcwd` | 复制当前进程的规范绝对工作目录 |
 
 每个进程的 fd 0/1/2 保留给键盘输入、控制台输出和错误输出；普通文件从 fd 3 开始。全局 VFS 有 32 项 file object 池，每个对象保存 backend、inode、独立 offset、flags、refcount 和 ops。普通 fd 不跨 spawn 继承；进程 exit/fault 会关闭全部普通 fd。
 
@@ -209,7 +210,7 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 
 宿主工具：
 
-- `tools/mkfs.py`：确定性创建卷并导入 12 个用户 ELF；
+- `tools/mkfs.py`：确定性创建卷并导入 16 个用户 ELF；
 - `tools/fsck.py`：只读检查 CRC、几何、bitmap、inode、目录、重复块和孤儿 inode；
 - `tools/make_image.py`：按统一布局原子装配完整磁盘；
 - `tools/demo_persistence.py`：用临时镜像完成两次 QEMU 启动与逐轮 fsck。
@@ -228,5 +229,5 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 - 目录删除空洞可复用，但不会自动缩小尾部目录块；
 - 进程表 16 项、用户栈固定一页，不支持 `fork`；
 - console/keyboard 仍由 syscall 适配，不是统一 VFS file object；
-- 普通 fd 不跨 spawn 继承，Shell 没有 cwd syscall；
+- 普通 fd 不跨 spawn 继承；
 - QEMU/CI 证据不等同于真实裸机验收。

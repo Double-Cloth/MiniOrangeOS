@@ -63,6 +63,7 @@ struct process {
     uint32_t wake_tick;
     uint32_t time_slice;
     uintptr_t fd_table[PROCESS_FD_LIMIT];
+    char current_working_directory[MINIOS_PROCESS_CWD_SIZE];
     struct process *run_node;
     struct process *wait_node;
     kernel_thread_entry entry;
@@ -112,6 +113,10 @@ static void clear_process(struct process *process)
     for (index = 0U; index < PROCESS_FD_LIMIT; ++index) {
         process->fd_table[index] = (uintptr_t)0U;
     }
+    for (index = 0U; index < MINIOS_PROCESS_CWD_SIZE; ++index) {
+        process->current_working_directory[index] = '\0';
+    }
+    process->current_working_directory[0] = '/';
     process->run_node = NULL;
     process->wait_node = NULL;
     process->entry = NULL;
@@ -130,6 +135,23 @@ static void set_process_name(struct process *process, const char *name)
         ++index;
     }
     process->name[index] = '\0';
+}
+
+static void inherit_current_working_directory(struct process *process)
+{
+    size_t index;
+
+    if (process == NULL || current_process == NULL) {
+        return;
+    }
+    for (index = 0U; index < MINIOS_PROCESS_CWD_SIZE; ++index) {
+        process->current_working_directory[index] =
+            current_process->current_working_directory[index];
+        if (process->current_working_directory[index] == '\0') {
+            return;
+        }
+    }
+    panic("process cwd is not terminated");
 }
 
 static struct process *find_unused_process(void)
@@ -332,6 +354,7 @@ int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
         return -1;
     }
     clear_process(process);
+    inherit_current_working_directory(process);
     process->pid = pid;
     process->state = PROCESS_NEW;
     set_process_name(process, name);
@@ -522,6 +545,7 @@ static int32_t user_process_create(const char *name, const uint8_t *image,
     }
 
     clear_process(process);
+    inherit_current_working_directory(process);
     process->pid = pid;
     process->state = PROCESS_NEW;
     set_process_name(process, name);
@@ -612,6 +636,7 @@ int32_t scheduler_spawn_image(const char *name, const uint8_t *image,
     }
 
     clear_process(process);
+    inherit_current_working_directory(process);
     process->pid = pid;
     process->state = PROCESS_NEW;
     set_process_name(process, name);
@@ -818,6 +843,53 @@ void scheduler_on_tick(void)
 uint32_t scheduler_current_pid(void)
 {
     return current_process == NULL ? 0U : current_process->pid;
+}
+
+bool scheduler_get_current_working_directory(char *path, size_t capacity)
+{
+    uint32_t flags;
+    size_t index;
+
+    if (path == NULL || capacity == 0U || current_process == NULL) {
+        return false;
+    }
+    flags = irq_save_disable();
+    for (index = 0U; index < MINIOS_PROCESS_CWD_SIZE; ++index) {
+        if (index >= capacity) {
+            irq_restore(flags);
+            return false;
+        }
+        path[index] = current_process->current_working_directory[index];
+        if (path[index] == '\0') {
+            irq_restore(flags);
+            return true;
+        }
+    }
+    irq_restore(flags);
+    return false;
+}
+
+bool scheduler_set_current_working_directory(const char *path)
+{
+    uint32_t flags;
+    size_t length = 0U;
+    size_t index;
+
+    if (path == NULL || path[0] != '/' || current_process == NULL) {
+        return false;
+    }
+    while (length < MINIOS_PROCESS_CWD_SIZE && path[length] != '\0') {
+        ++length;
+    }
+    if (length == 0U || length >= MINIOS_PROCESS_CWD_SIZE) {
+        return false;
+    }
+    flags = irq_save_disable();
+    for (index = 0U; index <= length; ++index) {
+        current_process->current_working_directory[index] = path[index];
+    }
+    irq_restore(flags);
+    return true;
 }
 
 int32_t scheduler_fd_install(uintptr_t handle)

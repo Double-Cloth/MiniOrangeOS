@@ -1,30 +1,30 @@
+#include <minios/io.h>
 #include <minios/string.h>
-#include <minios/user.h>
+
+#include <stdbool.h>
+#include <stddef.h>
 
 int main(int argc, char **argv);
 
 int main(int argc, char **argv)
 {
-    static const char separator[] = " ";
-    static const char newline[] = "\n";
-    int index;
+    bool newline = true;
+    int index = 1;
 
     if (argc < 1 || argv == NULL || argv[0] == NULL) {
         return 2;
     }
-    for (index = 1; index < argc; ++index) {
-        size_t length;
-
-        if (argv[index] == NULL) {
-            return 2;
-        }
-        if (index > 1 && minios_write(1, separator, 1U) != 1) {
-            return 1;
-        }
-        length = minios_strlen(argv[index]);
-        if (minios_write(1, argv[index], length) != (int32_t)length) {
+    if (index < argc && argv[index] != NULL &&
+        minios_streq(argv[index], "-n")) {
+        newline = false;
+        ++index;
+    }
+    for (; index < argc; ++index) {
+        if (argv[index] == NULL ||
+            (index > (newline ? 1 : 2) && !minios_print(1, " ")) ||
+            !minios_print(1, argv[index])) {
             return 1;
         }
     }
-    return minios_write(1, newline, 1U) == 1 ? 0 : 1;
+    return !newline || minios_print(1, "\n") ? 0 : 1;
 }

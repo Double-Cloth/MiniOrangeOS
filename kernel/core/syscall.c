@@ -21,7 +21,7 @@
 #define SYSCALL_WRITE_MAX 4096U
 #define SYSCALL_PATH_MAX 256U
 #define SYSCALL_ARGUMENT_LIMIT 16U
-#define SYSCALL_ARGUMENT_LENGTH 64U
+#define SYSCALL_ARGUMENT_LENGTH 256U
 #define SYSCALL_ARGUMENT_BYTES 1024U
 
 static int32_t syscall_write(uint32_t descriptor, const void *user_buffer,
@@ -94,7 +94,7 @@ static int32_t syscall_read(uint32_t descriptor, void *user_buffer,
         return 0;
     }
     if (descriptor == 0U) {
-        char character;
+        uint8_t character;
 
         while (!keyboard_try_read(&character)) {
             irq_enable();
@@ -132,12 +132,117 @@ static int32_t syscall_read(uint32_t descriptor, void *user_buffer,
     return (int32_t)offset;
 }
 
+static void remove_last_path_component(char *path, size_t *length)
+{
+    while (*length > 1U && path[*length - 1U] != '/') {
+        --*length;
+    }
+    if (*length > 1U) {
+        --*length;
+    }
+    path[*length] = '\0';
+}
+
+static int32_t append_path_components(char *path, size_t *path_length,
+                                      const char *source)
+{
+    size_t cursor = 0U;
+
+    while (source[cursor] != '\0') {
+        size_t component_start;
+        size_t component_length;
+        size_t separator;
+        size_t index;
+
+        while (source[cursor] == '/') {
+            ++cursor;
+        }
+        if (source[cursor] == '\0') {
+            break;
+        }
+        component_start = cursor;
+        while (source[cursor] != '\0' && source[cursor] != '/') {
+            ++cursor;
+        }
+        component_length = cursor - component_start;
+        if (component_length == 1U && source[component_start] == '.') {
+            continue;
+        }
+        if (component_length == 2U && source[component_start] == '.' &&
+            source[component_start + 1U] == '.') {
+            remove_last_path_component(path, path_length);
+            continue;
+        }
+        separator = *path_length > 1U ? 1U : 0U;
+        if (component_length >= SYSCALL_PATH_MAX ||
+            separator + component_length >=
+                SYSCALL_PATH_MAX - *path_length) {
+            return -MINIOS_EINVAL;
+        }
+        if (separator != 0U) {
+            path[*path_length] = '/';
+            ++*path_length;
+        }
+        for (index = 0U; index < component_length; ++index) {
+            path[*path_length + index] = source[component_start + index];
+        }
+        *path_length += component_length;
+        path[*path_length] = '\0';
+    }
+    return 0;
+}
+
+static int32_t normalize_path(const char *input, char *path)
+{
+    char current_working_directory[SYSCALL_PATH_MAX];
+    size_t input_length = 0U;
+    size_t path_length = 1U;
+    int32_t result;
+
+    while (input[input_length] != '\0') {
+        ++input_length;
+    }
+    path[0] = '/';
+    path[1] = '\0';
+    if (input[0] != '/') {
+        if (!scheduler_get_current_working_directory(
+                current_working_directory,
+                sizeof(current_working_directory))) {
+            return -MINIOS_EIO;
+        }
+        result = append_path_components(
+            path, &path_length, current_working_directory
+        );
+        if (result < 0) {
+            return result;
+        }
+    }
+    result = append_path_components(path, &path_length, input);
+    if (result < 0) {
+        return result;
+    }
+    if (input_length > 1U && input[input_length - 1U] == '/' &&
+        path_length > 1U) {
+        if (path_length + 1U >= SYSCALL_PATH_MAX) {
+            return -MINIOS_EINVAL;
+        }
+        path[path_length] = '/';
+        path[path_length + 1U] = '\0';
+    }
+    return 0;
+}
+
 static int32_t copy_syscall_path(char *path, const char *user_path)
 {
-    if (copy_user_string(path, user_path, SYSCALL_PATH_MAX) != 0) {
+    char input[SYSCALL_PATH_MAX];
+
+    if (copy_user_string(input, user_path, sizeof(input)) != 0) {
         return -MINIOS_EFAULT;
     }
-    return path[0] == '\0' ? -MINIOS_EINVAL : 0;
+    if (input[0] == '\0') {
+        return -MINIOS_EINVAL;
+    }
+    return normalize_path(input, path);
 }
 
 static int32_t syscall_open(const char *user_path, uint32_t flags)
@@ -214,6 +319,57 @@ static int32_t syscall_stat(const char *user_path, void *user_status)
         0 : -MINIOS_EFAULT;
 }
 
+static int32_t syscall_chdir(const char *user_path)
+{
+    struct minios_stat status;
+    char path[SYSCALL_PATH_MAX];
+    size_t length = 0U;
+    int32_t result = copy_syscall_path(path, user_path);
+
+    if (result < 0) {
+        return result;
+    }
+    result = vfs_stat(path, &status);
+    if (result < 0) {
+        return result;
+    }
+    if (status.mode != MINIFS_MODE_DIRECTORY) {
+        return -MINIOS_ENOTDIR;
+    }
+    while (path[length] != '\0') {
+        ++length;
+    }
+    if (length > 1U && path[length - 1U] == '/') {
+        path[length - 1U] = '\0';
+    }
+    return scheduler_set_current_working_directory(path) ?
+        0 : -MINIOS_EIO;
+}
+
+static int32_t syscall_getcwd(void *user_buffer, size_t capacity)
+{
+    char path[SYSCALL_PATH_MAX];
+    size_t length = 0U;
+
+    if (capacity == 0U || capacity > sizeof(path)) {
+        return -MINIOS_EINVAL;
+    }
+    if (!validate_user_range(user_buffer, capacity, USER_ACCESS_WRITE)) {
+        return -MINIOS_EFAULT;
+    }
+    if (!scheduler_get_current_working_directory(path, sizeof(path))) {
+        return -MINIOS_EIO;
+    }
+    while (path[length] != '\0') {
+        ++length;
+    }
+    if (length + 1U > capacity) {
+        return -MINIOS_EINVAL;
+    }
+    return copy_to_user(user_buffer, path, length + 1U) == 0 ?
+        0 : -MINIOS_EFAULT;
+}
+
 static size_t bounded_length(const char *value, size_t limit)
 {
     size_t length;
@@ -238,15 +394,18 @@ static int32_t syscall_spawn(const char *user_path,
     size_t argument_bytes = 0U;
     bool terminated = false;
 
-    if (copy_user_string(path, user_path, sizeof(path)) != 0 ||
-        user_argv == NULL ||
+    if (user_argv == NULL ||
         !validate_user_range(user_argv,
                              SYSCALL_ARGUMENT_LIMIT * sizeof(uint32_t),
                              USER_ACCESS_READ)) {
         return -MINIOS_EFAULT;
     }
-    if (path[0] == '\0') {
-        return -MINIOS_EINVAL;
+    {
+        int32_t result = copy_syscall_path(path, user_path);
+
+        if (result < 0) {
+            return result;
+        }
     }
     for (argument_count = 0U;
          argument_count < SYSCALL_ARGUMENT_LIMIT;
@@ -424,6 +583,11 @@ void syscall_dispatch(struct trap_frame *frame)
             result = scheduler_sleep_current(frame->ebx) ? 0 :
                 -MINIOS_EINVAL;
             break;
+        case SYS_chdir:
+            result = syscall_chdir(
+                (const char *)(uintptr_t)frame->ebx
+            );
+            break;
         case SYS_waitpid:
             if (frame->ecx != 0U &&
                 !validate_user_range((const void *)(uintptr_t)frame->ecx,
@@ -452,6 +616,12 @@ void syscall_dispatch(struct trap_frame *frame)
             break;
         case SYS_ps:
             result = syscall_ps(
+                (void *)(uintptr_t)frame->ebx,
+                (size_t)frame->ecx
+            );
+            break;
+        case SYS_getcwd:
+            result = syscall_getcwd(
                 (void *)(uintptr_t)frame->ebx,
                 (size_t)frame->ecx
             );

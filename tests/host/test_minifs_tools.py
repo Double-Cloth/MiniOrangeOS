@@ -28,6 +28,7 @@ CHECKSUM_OFFSET = 52
 PROGRAMS = (
     "init", "echo", "sh", "ps", "memtest", "fault",
     "ls", "cat", "touch", "write", "mkdir", "rm",
+    "cp", "stat", "sleep", "uptime",
 )
 
 

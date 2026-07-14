@@ -280,6 +280,8 @@ USER_SYSCALL_OBJ := $(USER_LIBC_BUILD_DIR)/syscall.o
 USER_SYSCALL_DEP := $(USER_LIBC_BUILD_DIR)/syscall.d
 USER_STRING_OBJ := $(USER_LIBC_BUILD_DIR)/string.o
 USER_STRING_DEP := $(USER_LIBC_BUILD_DIR)/string.d
+USER_IO_OBJ := $(USER_LIBC_BUILD_DIR)/io.o
+USER_IO_DEP := $(USER_LIBC_BUILD_DIR)/io.d
 USER_INIT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/init.o
 USER_INIT_DEP := $(USER_PROGRAMS_BUILD_DIR)/init.d
 USER_INIT_ELF := $(USER_BIN_BUILD_DIR)/init.elf
@@ -340,6 +342,26 @@ USER_RM_DEP := $(USER_PROGRAMS_BUILD_DIR)/rm.d
 USER_RM_ELF := $(USER_BIN_BUILD_DIR)/rm.elf
 USER_RM_MAP := $(USER_BIN_BUILD_DIR)/rm.map
 USER_RM_SYM := $(USER_BIN_BUILD_DIR)/rm.sym
+USER_CP_OBJ := $(USER_PROGRAMS_BUILD_DIR)/cp.o
+USER_CP_DEP := $(USER_PROGRAMS_BUILD_DIR)/cp.d
+USER_CP_ELF := $(USER_BIN_BUILD_DIR)/cp.elf
+USER_CP_MAP := $(USER_BIN_BUILD_DIR)/cp.map
+USER_CP_SYM := $(USER_BIN_BUILD_DIR)/cp.sym
+USER_STAT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/stat.o
+USER_STAT_DEP := $(USER_PROGRAMS_BUILD_DIR)/stat.d
+USER_STAT_ELF := $(USER_BIN_BUILD_DIR)/stat.elf
+USER_STAT_MAP := $(USER_BIN_BUILD_DIR)/stat.map
+USER_STAT_SYM := $(USER_BIN_BUILD_DIR)/stat.sym
+USER_SLEEP_OBJ := $(USER_PROGRAMS_BUILD_DIR)/sleep.o
+USER_SLEEP_DEP := $(USER_PROGRAMS_BUILD_DIR)/sleep.d
+USER_SLEEP_ELF := $(USER_BIN_BUILD_DIR)/sleep.elf
+USER_SLEEP_MAP := $(USER_BIN_BUILD_DIR)/sleep.map
+USER_SLEEP_SYM := $(USER_BIN_BUILD_DIR)/sleep.sym
+USER_UPTIME_OBJ := $(USER_PROGRAMS_BUILD_DIR)/uptime.o
+USER_UPTIME_DEP := $(USER_PROGRAMS_BUILD_DIR)/uptime.d
+USER_UPTIME_ELF := $(USER_BIN_BUILD_DIR)/uptime.elf
+USER_UPTIME_MAP := $(USER_BIN_BUILD_DIR)/uptime.map
+USER_UPTIME_SYM := $(USER_BIN_BUILD_DIR)/uptime.sym
 
 MINIFS_IMAGE := $(FS_BUILD_DIR)/minifs.img
 MINIFS_LAYOUT_HEADER := $(KERNEL_BUILD_DIR)/minifs-layout.h
@@ -441,6 +463,18 @@ ALL_ARTIFACTS := \
 	$(USER_RM_ELF) \
 	$(USER_RM_MAP) \
 	$(USER_RM_SYM) \
+	$(USER_CP_ELF) \
+	$(USER_CP_MAP) \
+	$(USER_CP_SYM) \
+	$(USER_STAT_ELF) \
+	$(USER_STAT_MAP) \
+	$(USER_STAT_SYM) \
+	$(USER_SLEEP_ELF) \
+	$(USER_SLEEP_MAP) \
+	$(USER_SLEEP_SYM) \
+	$(USER_UPTIME_ELF) \
+	$(USER_UPTIME_MAP) \
+	$(USER_UPTIME_SYM) \
 	$(MINIFS_IMAGE)
 
 .PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb check test-host test test-qemu test-boot-qemu test-image loc demo-persistence
@@ -449,7 +483,7 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
 
-user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) $(USER_LS_ELF) $(USER_LS_MAP) $(USER_LS_SYM) $(USER_CAT_ELF) $(USER_CAT_MAP) $(USER_CAT_SYM) $(USER_TOUCH_ELF) $(USER_TOUCH_MAP) $(USER_TOUCH_SYM) $(USER_WRITE_ELF) $(USER_WRITE_MAP) $(USER_WRITE_SYM) $(USER_MKDIR_ELF) $(USER_MKDIR_MAP) $(USER_MKDIR_SYM) $(USER_RM_ELF) $(USER_RM_MAP) $(USER_RM_SYM) | prepare-build-dir
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) $(USER_LS_ELF) $(USER_LS_MAP) $(USER_LS_SYM) $(USER_CAT_ELF) $(USER_CAT_MAP) $(USER_CAT_SYM) $(USER_TOUCH_ELF) $(USER_TOUCH_MAP) $(USER_TOUCH_SYM) $(USER_WRITE_ELF) $(USER_WRITE_MAP) $(USER_WRITE_SYM) $(USER_MKDIR_ELF) $(USER_MKDIR_MAP) $(USER_MKDIR_SYM) $(USER_RM_ELF) $(USER_RM_MAP) $(USER_RM_SYM) $(USER_CP_ELF) $(USER_CP_MAP) $(USER_CP_SYM) $(USER_STAT_ELF) $(USER_STAT_MAP) $(USER_STAT_SYM) $(USER_SLEEP_ELF) $(USER_SLEEP_MAP) $(USER_SLEEP_SYM) $(USER_UPTIME_ELF) $(USER_UPTIME_MAP) $(USER_UPTIME_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -629,11 +663,14 @@ $(USER_SYSCALL_OBJ): user/libc/syscall.c | prepare-build-dir
 $(USER_STRING_OBJ): user/libc/string.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_STRING_DEP)" -MT "$@" -c "$<" -o "$@"
 
+$(USER_IO_OBJ): user/libc/io.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_IO_DEP)" -MT "$@" -c "$<" -o "$@"
+
 $(USER_INIT_OBJ): user/programs/init.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_INIT_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ)
+$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_INIT_OBJ)
 
 $(USER_INIT_SYM): $(USER_INIT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -641,8 +678,8 @@ $(USER_INIT_SYM): $(USER_INIT_ELF) | prepare-build-dir
 $(USER_ECHO_OBJ): user/programs/echo.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_ECHO_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_ECHO_ELF) $(USER_ECHO_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_ECHO_MAP)" -o "$(USER_ECHO_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ)
+$(USER_ECHO_ELF) $(USER_ECHO_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_ECHO_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_ECHO_MAP)" -o "$(USER_ECHO_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_ECHO_OBJ)
 
 $(USER_ECHO_SYM): $(USER_ECHO_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -650,8 +687,8 @@ $(USER_ECHO_SYM): $(USER_ECHO_ELF) | prepare-build-dir
 $(USER_SH_OBJ): user/programs/sh.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SH_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_SH_ELF) $(USER_SH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_SH_MAP)" -o "$(USER_SH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ)
+$(USER_SH_ELF) $(USER_SH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_SH_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_SH_MAP)" -o "$(USER_SH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_SH_OBJ)
 
 $(USER_SH_SYM): $(USER_SH_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -659,8 +696,8 @@ $(USER_SH_SYM): $(USER_SH_ELF) | prepare-build-dir
 $(USER_PS_OBJ): user/programs/ps.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_PS_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_PS_ELF) $(USER_PS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_PS_MAP)" -o "$(USER_PS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_PS_OBJ)
+$(USER_PS_ELF) $(USER_PS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_PS_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_PS_MAP)" -o "$(USER_PS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_PS_OBJ)
 
 $(USER_PS_SYM): $(USER_PS_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -668,8 +705,8 @@ $(USER_PS_SYM): $(USER_PS_ELF) | prepare-build-dir
 $(USER_MEMTEST_OBJ): user/programs/memtest.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_MEMTEST_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MEMTEST_MAP)" -o "$(USER_MEMTEST_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MEMTEST_OBJ)
+$(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_MEMTEST_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MEMTEST_MAP)" -o "$(USER_MEMTEST_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_MEMTEST_OBJ)
 
 $(USER_MEMTEST_SYM): $(USER_MEMTEST_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -677,8 +714,8 @@ $(USER_MEMTEST_SYM): $(USER_MEMTEST_ELF) | prepare-build-dir
 $(USER_FAULT_OBJ): user/programs/fault.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_FAULT_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_FAULT_MAP)" -o "$(USER_FAULT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_FAULT_OBJ)
+$(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_FAULT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_FAULT_MAP)" -o "$(USER_FAULT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_FAULT_OBJ)
 
 $(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -686,8 +723,8 @@ $(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
 $(USER_LS_OBJ): user/programs/ls.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_LS_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_LS_ELF) $(USER_LS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_LS_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_LS_MAP)" -o "$(USER_LS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_LS_OBJ)
+$(USER_LS_ELF) $(USER_LS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_LS_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_LS_MAP)" -o "$(USER_LS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_LS_OBJ)
 
 $(USER_LS_SYM): $(USER_LS_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -695,8 +732,8 @@ $(USER_LS_SYM): $(USER_LS_ELF) | prepare-build-dir
 $(USER_CAT_OBJ): user/programs/cat.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_CAT_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_CAT_ELF) $(USER_CAT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_CAT_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_CAT_MAP)" -o "$(USER_CAT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_CAT_OBJ)
+$(USER_CAT_ELF) $(USER_CAT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_CAT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_CAT_MAP)" -o "$(USER_CAT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_CAT_OBJ)
 
 $(USER_CAT_SYM): $(USER_CAT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -704,8 +741,8 @@ $(USER_CAT_SYM): $(USER_CAT_ELF) | prepare-build-dir
 $(USER_TOUCH_OBJ): user/programs/touch.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_TOUCH_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_TOUCH_ELF) $(USER_TOUCH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_TOUCH_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_TOUCH_MAP)" -o "$(USER_TOUCH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_TOUCH_OBJ)
+$(USER_TOUCH_ELF) $(USER_TOUCH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_TOUCH_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_TOUCH_MAP)" -o "$(USER_TOUCH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_TOUCH_OBJ)
 
 $(USER_TOUCH_SYM): $(USER_TOUCH_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -713,8 +750,8 @@ $(USER_TOUCH_SYM): $(USER_TOUCH_ELF) | prepare-build-dir
 $(USER_WRITE_OBJ): user/programs/write.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_WRITE_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_WRITE_ELF) $(USER_WRITE_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_WRITE_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_WRITE_MAP)" -o "$(USER_WRITE_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_WRITE_OBJ)
+$(USER_WRITE_ELF) $(USER_WRITE_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_WRITE_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_WRITE_MAP)" -o "$(USER_WRITE_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_WRITE_OBJ)
 
 $(USER_WRITE_SYM): $(USER_WRITE_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -722,8 +759,8 @@ $(USER_WRITE_SYM): $(USER_WRITE_ELF) | prepare-build-dir
 $(USER_MKDIR_OBJ): user/programs/mkdir.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_MKDIR_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_MKDIR_ELF) $(USER_MKDIR_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MKDIR_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MKDIR_MAP)" -o "$(USER_MKDIR_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MKDIR_OBJ)
+$(USER_MKDIR_ELF) $(USER_MKDIR_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_MKDIR_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MKDIR_MAP)" -o "$(USER_MKDIR_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_MKDIR_OBJ)
 
 $(USER_MKDIR_SYM): $(USER_MKDIR_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
@@ -731,13 +768,49 @@ $(USER_MKDIR_SYM): $(USER_MKDIR_ELF) | prepare-build-dir
 $(USER_RM_OBJ): user/programs/rm.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_RM_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_RM_ELF) $(USER_RM_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_RM_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_RM_MAP)" -o "$(USER_RM_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_RM_OBJ)
+$(USER_RM_ELF) $(USER_RM_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_RM_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_RM_MAP)" -o "$(USER_RM_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_RM_OBJ)
 
 $(USER_RM_SYM): $(USER_RM_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
-$(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) $(USER_LS_ELF) $(USER_CAT_ELF) $(USER_TOUCH_ELF) $(USER_WRITE_ELF) $(USER_MKDIR_ELF) $(USER_RM_ELF) | prepare-build-dir
+$(USER_CP_OBJ): user/programs/cp.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_CP_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_CP_ELF) $(USER_CP_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_CP_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_CP_MAP)" -o "$(USER_CP_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_CP_OBJ)
+
+$(USER_CP_SYM): $(USER_CP_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_STAT_OBJ): user/programs/stat.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_STAT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_STAT_ELF) $(USER_STAT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_STAT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_STAT_MAP)" -o "$(USER_STAT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_STAT_OBJ)
+
+$(USER_STAT_SYM): $(USER_STAT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_SLEEP_OBJ): user/programs/sleep.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SLEEP_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_SLEEP_ELF) $(USER_SLEEP_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_SLEEP_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_SLEEP_MAP)" -o "$(USER_SLEEP_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_SLEEP_OBJ)
+
+$(USER_SLEEP_SYM): $(USER_SLEEP_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_UPTIME_OBJ): user/programs/uptime.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_UPTIME_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_UPTIME_ELF) $(USER_UPTIME_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_UPTIME_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_UPTIME_MAP)" -o "$(USER_UPTIME_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_IO_OBJ) $(USER_UPTIME_OBJ)
+
+$(USER_UPTIME_SYM): $(USER_UPTIME_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) $(USER_LS_ELF) $(USER_CAT_ELF) $(USER_TOUCH_ELF) $(USER_WRITE_ELF) $(USER_MKDIR_ELF) $(USER_RM_ELF) $(USER_CP_ELF) $(USER_STAT_ELF) $(USER_SLEEP_ELF) $(USER_UPTIME_ELF) | prepare-build-dir
 	$(PYTHON) tools/mkfs.py --layout config/image-layout.json --output "$@" \
 		--import "/bin/init=$(USER_INIT_ELF)" \
 		--import "/bin/echo=$(USER_ECHO_ELF)" \
@@ -750,7 +823,11 @@ $(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_I
 		--import "/bin/touch=$(USER_TOUCH_ELF)" \
 		--import "/bin/write=$(USER_WRITE_ELF)" \
 		--import "/bin/mkdir=$(USER_MKDIR_ELF)" \
-		--import "/bin/rm=$(USER_RM_ELF)"
+		--import "/bin/rm=$(USER_RM_ELF)" \
+		--import "/bin/cp=$(USER_CP_ELF)" \
+		--import "/bin/stat=$(USER_STAT_ELF)" \
+		--import "/bin/sleep=$(USER_SLEEP_ELF)" \
+		--import "/bin/uptime=$(USER_UPTIME_ELF)"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
@@ -765,4 +842,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP) $(USER_LS_DEP) $(USER_CAT_DEP) $(USER_TOUCH_DEP) $(USER_WRITE_DEP) $(USER_MKDIR_DEP) $(USER_RM_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_IO_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP) $(USER_LS_DEP) $(USER_CAT_DEP) $(USER_TOUCH_DEP) $(USER_WRITE_DEP) $(USER_MKDIR_DEP) $(USER_RM_DEP) $(USER_CP_DEP) $(USER_STAT_DEP) $(USER_SLEEP_DEP) $(USER_UPTIME_DEP)
