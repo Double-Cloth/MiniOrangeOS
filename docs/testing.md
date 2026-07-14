@@ -163,6 +163,8 @@ Heap 抢占安全增量同日在 `MiniOrangeOS-Dev` 中完成验证：`kmalloc/k
 
 阶段验收前把无-yield PIT 抢占自检从两个线程扩为三个线程：线程 1 忙等完整 `0b111` 运行标志，线程 2/3 必须分别获得真实时间片后才能解除，随后三者全部进入 ZOMBIE 并回收 16 KiB 栈，从而直接满足“至少三个进程被时间片轮转”的验收证据。严格交叉编译与真实产品路径 PASS；最终全量证据以阶段报告为准。
 
+P4 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environment/verify.sh` PASS，`make clean` 后 `make -j4 image` PASS，启动专项 28/28 PASS，全量宿主回归 222/222 PASS（393.027 秒）。正式产品依次到达三线程无-yield 抢占、基础进程生命周期、Ring 3 syscall 和用户 #PF 隔离 PASS；独立 kernel #PF panic、`int3` 与 HMP 键盘注入继续通过。最终 `kernel.elf` 为 47,600 bytes，SHA-256 为 `30be9c52a4a1d0bfa14a42b836bb236407946b352887aec722c7743be96a2aa4`；`miniorangeos.img` 为 67,108,864 bytes，SHA-256 为 `515022f94036467060ccd2734e1d041ba95ad0292111aa94c4c061965bf079c7`。完整证据见 `docs/task-reports/P4-process-syscall.md`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
