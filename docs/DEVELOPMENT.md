@@ -4,17 +4,13 @@
 
 ## 权威工作树与执行边界
 
-唯一权威工作树：
+唯一权威工作树是当前 Windows 仓库根目录，不要求固定盘符或父目录：
 
 ```text
-D:\DC\program-projects\OTHER\MiniOrangeOS
+<任意本地目录>\MiniOrangeOS
 ```
 
-WSL 中访问同一工作树：
-
-```text
-/mnt/d/DC/program-projects/OTHER/MiniOrangeOS
-```
+WSL 中通过脚本自动推导的 `/mnt/<drive>/.../MiniOrangeOS` 访问同一工作树。不要在代码或文档中写死某台机器的仓库绝对路径。
 
 固定规则：
 
@@ -25,10 +21,10 @@ WSL 中访问同一工作树：
 - 项目环境不修改 Windows PATH、注册表、全局 Git 配置和 Linux 全局 Shell 配置；
 - `/mnt/d` 的性能、大小写、权限和 inode 语义通过 `.gitattributes`、WSL metadata 和运行时测试持续约束。
 
-项目环境载荷固定在：
+项目环境载荷需要绝对路径以校验 WSL ownership，唯一配置入口为 `config/wsl.psd1`：
 
-```text
-D:\ApplicationData\MiniOrangeOS
+```powershell
+@{ AuthorizedRoot = '<项目环境绝对路径>' }
 ```
 
 Linux 用户私有工具根默认为：
@@ -39,10 +35,14 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/miniorangeos-dev
 
 不得把项目载荷写入 Windows PATH、Linux `/usr/local`、全局 Shell 配置、系统 Python site-packages 或与项目无关的容器资源。
 
+路径规则按用途区分：仓库内文件一律由仓库根拼接相对路径；宿主仓库位置由脚本动态推导；可迁移但必须绝对的 WSL 授权根只写入 `config/wsl.psd1`。`/proc`、`/etc`、`/usr/bin`、`HKCU:\Software\...` 等操作系统 ABI、安全校验入口，以及 MiniOrangeOS 自身的 `/bin` 路径不属于宿主机器安装位置，继续使用其规范绝对路径，不放入项目路径配置。
+
 ## 环境公开接口
 
 | 文件 | 职责 |
 |---|---|
+| `config/wsl.psd1` | 集中配置必须保持绝对形式的 WSL 授权根 |
+| `environment/wsl/common.ps1` | 从脚本位置解析仓库根、加载路径配置并推导 WSL 路径 |
 | `environment/wsl/create.ps1` | 定向创建/复用 `MiniOrangeOS-Dev`，可执行 bootstrap 或身份迁移 |
 | `environment/wsl/enter.ps1` | 校验 ownership 后进入发行版或执行单个 `bash -lc` 命令 |
 | `environment/wsl/backup.ps1` | 终止并导出专用发行版到授权根 `exports` |
@@ -64,7 +64,7 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/miniorangeos-dev
 ```powershell
 environment/wsl/create.ps1 -Bootstrap
 environment/wsl/enter.ps1
-environment/wsl/enter.ps1 -Command 'cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS && ./environment/verify.sh'
+environment/wsl/enter.ps1 -Command './environment/verify.sh'
 environment/wsl/backup.ps1
 environment/wsl/destroy.ps1
 environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
@@ -83,6 +83,8 @@ environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
 ```
 
 容器销毁无参数只预览且不删除任何资源；只有 `--all` 才执行定向清理。WSL 销毁同样默认只预览，必须同时提供 `-Apply` 和大小写精确的 `-ConfirmName MiniOrangeOS-Dev`。禁止使用无范围的 `system prune` 或删除整个 `$HOME/.local/share`。
+
+`environment/wsl/enter.ps1 -Command` 会先切换到自动推导的仓库根目录，再执行单个 `bash -lc` 命令，因此公开命令和文档都应使用仓库相对路径。
 
 ## 开发流程
 
@@ -228,10 +230,7 @@ type(scope): summary
 阶段内可先运行局部测试，但交付前至少执行：
 
 ```powershell
-wsl.exe -d MiniOrangeOS-Dev -- bash -lc '
-cd /mnt/d/DC/program-projects/OTHER/MiniOrangeOS
-./environment/with-env.sh make test
-'
+.\environment\wsl\enter.ps1 -Command './environment/with-env.sh make test'
 ```
 
 ### 串口协议

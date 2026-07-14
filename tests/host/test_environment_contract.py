@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 PUBLIC_T01_FILES = (
+    "config/wsl.psd1",
+    "environment/wsl/common.ps1",
     "environment/wsl/create.ps1",
     "environment/wsl/enter.ps1",
     "environment/wsl/backup.ps1",
@@ -471,12 +473,24 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         )
 
     def test_wsl_scripts_restrict_names_and_authorized_root(self) -> None:
+        path_config = self._read_required("config/wsl.psd1")
+        self.assertRegex(
+            path_config,
+            r"(?m)^\s*AuthorizedRoot\s*=\s*'[A-Za-z]:\\[^']+'\s*$",
+        )
+        common = self._read_required("environment/wsl/common.ps1")
+        self.assertIn("Import-PowerShellDataFile", common)
+        self.assertIn("config\\wsl.psd1", common)
+        self.assertIn("ConvertTo-MiniosWslPath", common)
+        self.assertIn("cannot be a volume root", common)
         for relative_path in WSL_SCRIPTS:
             with self.subTest(path=relative_path):
                 content = self._read_required(relative_path)
                 self.assertIn("MiniOrangeOS-Dev", content)
                 self.assertIn("MiniOrangeOS-Dev-Test-", content)
-                self.assertIn(r"D:\ApplicationData\MiniOrangeOS", content)
+                self.assertNotRegex(content, r"(?i)['\"][A-Z]:\\")
+                self.assertIn("common.ps1", content)
+                self.assertIn("$PathConfiguration.AuthorizedRoot", content)
                 self.assertIn("GetFullPath", content)
                 self.assertNotRegex(content, r"(?i)wsl(?:\.exe)?\s+--shutdown")
 

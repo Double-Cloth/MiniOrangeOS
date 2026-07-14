@@ -13,7 +13,9 @@
 
 ### Windows 权威工作树，WSL 只执行 Linux 工作负载
 
-2026-07-13 接受：用户要求源码保留在 Windows 当前目录，因此唯一权威工作树固定为 `D:\DC\program-projects\OTHER\MiniOrangeOS`，Git 只由 Windows 执行。`MiniOrangeOS-Dev` 通过 `/mnt/d/DC/program-projects/OTHER/MiniOrangeOS` 访问同一份文件，只运行构建、QEMU、GDB 和测试。
+2026-07-13 接受：用户要求源码保留在 Windows 当前目录，因此唯一权威工作树位于 Windows 当前仓库目录，Git 只由 Windows 执行。`MiniOrangeOS-Dev` 通过该目录动态映射的 `/mnt/<drive>/...` 路径访问同一份文件，只运行构建、QEMU、GDB 和测试。
+
+2026-07-14 更新：移除代码、测试和公开文档中与单台机器绑定的仓库绝对路径。WSL 脚本从自身位置解析仓库根并推导挂载路径；因 ownership 安全校验必须保持绝对形式的环境授权根集中到 `config/wsl.psd1`。
 
 收益是没有双工作树同步分叉；代价是 DrvFS 性能、大小写、权限、rename 可见性和 inode 行为弱于 ext4。项目以 `.gitattributes`、metadata 挂载、构建身份、并行/增量测试和 Linux CI 管理这些差异，而不是静默复制第二份源码。
 

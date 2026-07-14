@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$DistroName = 'MiniOrangeOS-Dev',
-    [string]$AuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS',
+    [string]$AuthorizedRoot = '',
     [switch]$Apply,
     [string]$ConfirmName = '',
     [string]$WslExecutable = 'wsl.exe'
@@ -9,7 +9,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
+. (Join-Path $PSScriptRoot 'common.ps1')
+$PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
+$ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
+if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 $Script:DestructionConfirmed = $false
 

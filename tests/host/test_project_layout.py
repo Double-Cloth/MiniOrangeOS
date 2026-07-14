@@ -38,6 +38,8 @@ REQUIRED_FILES = (
     "docs/PROJECT.md",
     "docs/DEVELOPMENT.md",
     "docs/HISTORY.md",
+    "config/wsl.psd1",
+    "environment/wsl/common.ps1",
 )
 
 REQUIRED_IGNORE_RULES = {
@@ -68,12 +70,18 @@ TEXT_SUFFIXES = {
     ".ld",
     ".md",
     ".ps1",
+    ".psd1",
     ".py",
     ".sh",
     ".txt",
     ".yml",
     ".yaml",
 }
+
+MACHINE_SPECIFIC_REPO_PATHS = (
+    "D:" + r"\DC\program-projects\OTHER\MiniOrangeOS",
+    "/mnt/" + "d/DC/program-projects/OTHER/MiniOrangeOS",
+)
 
 
 class ProjectLayoutTests(unittest.TestCase):
@@ -137,13 +145,33 @@ class ProjectLayoutTests(unittest.TestCase):
                 bad_files.append(f"{relative_name}: 包含 CR")
         self.assertEqual([], bad_files, f"文本策略失败：{bad_files}")
 
-    def test_readme_records_authoritative_worktree(self) -> None:
+    def test_machine_specific_repository_paths_are_not_committed(self) -> None:
+        violations: list[str] = []
+        ignored_parts = {".git", ".state", ".venv", "build", "toolchain"}
+        for path in ROOT.rglob("*"):
+            relative_path = path.relative_to(ROOT)
+            if not path.is_file() or any(
+                part in ignored_parts for part in relative_path.parts
+            ):
+                continue
+            if path.suffix not in TEXT_SUFFIXES and path.name not in {
+                "Makefile",
+                "Containerfile",
+            }:
+                continue
+            content = path.read_text(encoding="utf-8-sig")
+            for fixed_path in MACHINE_SPECIFIC_REPO_PATHS:
+                if fixed_path in content:
+                    violations.append(f"{relative_path.as_posix()}: {fixed_path}")
+        self.assertEqual([], violations, f"发现机器特定仓库路径：{violations}")
+
+    def test_readme_records_relocatable_authoritative_worktree(self) -> None:
         path = ROOT / "README.md"
         self.assertTrue(path.is_file(), "缺少文件：README.md")
         content = path.read_text(encoding="utf-8")
-        self.assertIn("D:\\DC\\program-projects\\OTHER\\MiniOrangeOS", content)
         self.assertIn("MiniOrangeOS-Dev", content)
-        self.assertIn("/mnt/d/DC/program-projects/OTHER/MiniOrangeOS", content)
+        self.assertIn("仓库根目录", content)
+        self.assertIn("自动推导", content)
 
     def test_readme_records_real_ubuntu_verification(self) -> None:
         path = ROOT / "README.md"
@@ -162,12 +190,13 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertFalse((ROOT / "PROJECT_PLAN.md").exists())
         self.assertFalse((ROOT / "CONTRIBUTING.md").exists())
 
-    def test_development_guide_records_current_worktree_and_phase_contract(self) -> None:
+    def test_development_guide_records_relocatable_worktree_and_phase_contract(self) -> None:
         path = ROOT / "docs/DEVELOPMENT.md"
         self.assertTrue(path.is_file(), "缺少文件：docs/DEVELOPMENT.md")
         content = path.read_text(encoding="utf-8")
 
-        self.assertIn("D:\\DC\\program-projects\\OTHER\\MiniOrangeOS", content)
+        self.assertIn("仓库根目录", content)
+        self.assertIn("config/wsl.psd1", content)
         self.assertIn("MiniOrangeOS-Dev", content)
         self.assertIn("Git 只由 Windows 执行", content)
         self.assertIn("只负责 Linux 构建、QEMU、GDB 和测试", content)

@@ -1,0 +1,3 @@
+@{
+    AuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
+}

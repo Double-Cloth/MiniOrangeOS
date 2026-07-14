@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$DistroName = 'MiniOrangeOS-Dev',
-    [string]$AuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS',
+    [string]$AuthorizedRoot = '',
     [string]$WslExecutable = 'wsl.exe',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Command
@@ -9,7 +9,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
+. (Join-Path $PSScriptRoot 'common.ps1')
+$PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
+$ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
+if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
+$RepoWslPath = ConvertTo-MiniosWslPath $PathConfiguration.RepoRoot
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 $script:LastWslShellExitCode = 0
 
@@ -111,7 +115,8 @@ $Names = @($Names | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Obj
 if (@($Names | Where-Object { $_ -ceq $DistroName }).Count -ne 1) { throw "WSL 发行版不存在（精确匹配）：$DistroName" }
 Assert-WslDistributionOwnership $DistroName $ExpectedPath
 if ($null -ne $Command -and $Command.Count -eq 1) {
-    Invoke-WslShellCommand $WslExecutable $DistroName $Command[0]
+    $RepoCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $Command[0]
+    Invoke-WslShellCommand $WslExecutable $DistroName $RepoCommand
     $global:LASTEXITCODE = $script:LastWslShellExitCode
 }
 else {

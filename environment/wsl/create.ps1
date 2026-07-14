@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$DistroName = 'MiniOrangeOS-Dev',
-    [string]$AuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS',
+    [string]$AuthorizedRoot = '',
     [string]$RootfsPath = '',
     [switch]$Bootstrap,
     [switch]$SkipBootstrap,
@@ -12,10 +12,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ProductionAuthorizedRoot = 'D:\ApplicationData\MiniOrangeOS'
-$RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+. (Join-Path $PSScriptRoot 'common.ps1')
+$PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
+$ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
+if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
+$RepoRoot = $PathConfiguration.RepoRoot
 $VersionsPath = Join-Path $RepoRoot 'environment\versions.env'
-$RepoWslPath = '/mnt/d/DC/program-projects/OTHER/MiniOrangeOS'
+$RepoWslPath = ConvertTo-MiniosWslPath $RepoRoot
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 $script:ValidatedRegistration = $null
 

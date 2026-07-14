@@ -10,6 +10,10 @@ $CreateScript = Join-Path $WslDirectory 'create.ps1'
 $EnterScript = Join-Path $WslDirectory 'enter.ps1'
 $BackupScript = Join-Path $WslDirectory 'backup.ps1'
 $DestroyScript = Join-Path $WslDirectory 'destroy.ps1'
+. (Join-Path $WslDirectory 'common.ps1')
+$PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $WslDirectory
+$ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
+$RepoWslPath = ConvertTo-MiniosWslPath $PathConfiguration.RepoRoot
 $Script:Passed = 0
 $Script:Failed = 0
 
@@ -606,7 +610,8 @@ try {
         $ActualArguments = @($Lines[($LastCall + 1)..($Lines.Length - 1)] | ForEach-Object {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
         })
-        $ExpectedArguments = @('-d', $DistroName, '--', 'bash', '-lc', $ComplexCommand)
+        $ExpectedCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $ComplexCommand
+        $ExpectedArguments = @('-d', $DistroName, '--', 'bash', '-lc', $ExpectedCommand)
         Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("命令字符串边界发生变化：" + ($ActualArguments -join '|'))
         Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
     }
@@ -650,7 +655,7 @@ try {
         Assert-True ($null -ne $Key) '未找到真实发行版 Lxss 注册项'
         $BasePath = [IO.Path]::GetFullPath((Get-ItemProperty -LiteralPath $Key.PSPath).BasePath)
         $Version = (Get-ItemProperty -LiteralPath $Key.PSPath).Version
-        $Expected = [IO.Path]::GetFullPath('D:\ApplicationData\MiniOrangeOS\rootfs')
+        $Expected = [IO.Path]::GetFullPath((Join-Path $ProductionAuthorizedRoot 'rootfs'))
         Assert-True ($BasePath -ceq $Expected) "真实 BasePath 不匹配：$BasePath"
         Assert-True ($Version -eq 2) "真实发行版不是 WSL2：Version=$Version"
         $Current = [IO.Path]::GetPathRoot($Expected)
@@ -681,7 +686,7 @@ try {
         Assert-True ($Registration.Version -eq 2) '正式 Lxss 注册项不是 WSL2'
 
         $BasePath = [IO.Path]::GetFullPath($Registration.BasePath)
-        $ExpectedBasePath = [IO.Path]::GetFullPath('D:\ApplicationData\MiniOrangeOS\rootfs')
+        $ExpectedBasePath = [IO.Path]::GetFullPath((Join-Path $ProductionAuthorizedRoot 'rootfs'))
         Assert-True ($BasePath -ceq $ExpectedBasePath) '正式 Lxss BasePath 不匹配'
         $Sha256 = [Security.Cryptography.SHA256]::Create()
         try {
