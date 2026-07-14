@@ -10,6 +10,8 @@
 - `61ddc58`：`feat(mm): install recursive kernel page tables`
 - `66a4c0f`：`feat(mm): add first-fit kernel heap`
 - `4fc5db5`：`feat(mm): enforce user memory boundaries`
+- `29c7a0b`：`docs(p3): record completed memory management`
+- `54d7cf3`：`merge: complete P3 memory management`
 
 ## 修改文件
 
