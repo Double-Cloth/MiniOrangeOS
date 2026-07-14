@@ -6,6 +6,7 @@
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
+#include <minios/mm/heap.h>
 #include <minios/mm/pmm.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
@@ -43,6 +44,12 @@ void kernel_main(const struct boot_info *boot_info)
         panic("VMM self-test failed");
     }
     console_printf("[KERN] vmm self-test PASS\n");
+    heap_init();
+    console_printf("[KERN] heap ready\n");
+    if (!heap_self_test()) {
+        panic("heap self-test failed");
+    }
+    console_printf("[KERN] heap self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

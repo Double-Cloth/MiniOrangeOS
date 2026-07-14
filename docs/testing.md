@@ -139,6 +139,8 @@ Boot Info/PMM 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：64-byte
 
 正式 VMM 增量同日在 `MiniOrangeOS-Dev` 中完成验证：复用启动页目录建立 PDE 1023 递归映射，动态页表通过 PMM 与 scratch 映射清零；内核 text/rodata 按链接符号只读、data/bss 可写，启用 CR0.WP 后移除 PDE 0。运行时自检覆盖物理页分配、动态页表建立、映射查询、重复映射拒绝、真实虚拟地址读写、解除映射、空页表回收与 PMM 空闲计数恢复。`environment/verify.sh` PASS，启动专项 22/22 PASS，全量宿主测试 216/216 PASS；真实断点异常与 HMP `sendkey a` 回归继续通过。Kernel ELF 为 24,616 bytes，SHA-256 为 `c8d1b6f2f373af19ae0e9d12eda50a62432b3df0d26ecf52db8b4b56af3c9db6`；镜像为 67,108,864 bytes，SHA-256 为 `ad9ffa9c1e63b3fced10ecd8535313223ce1ee77d6fd2368a5b573d3bf1005e2`。
 
+first-fit Heap 增量同日在 `MiniOrangeOS-Dev` 中完成验证：16 MiB 高半堆窗口从一页开始按需扩展，跨 PMM/VMM 的部分失败具有回滚路径；块头边界、magic 与双向链接在遍历时校验。运行时自检覆盖 8 字节对齐、first-fit 原地址复用、前后合并、64 块交错碎片压力、跨页增长、真实 payload 写入、double free 拒绝及超上限耗尽返回。启动专项 23/23 PASS，全量宿主测试 217/217 PASS；真实断点异常与 HMP 键盘回归继续通过。Kernel ELF 为 29,780 bytes，SHA-256 为 `27a4fdc9b80e2d24ed96b5efdc66f0c4aef0db44b4aff457361dedaac71ea862`；镜像为 67,108,864 bytes，SHA-256 为 `0e983f66b0134d1293324635aa414ea8cddb0d5d1a9ee9bdfca32923a1c75508`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

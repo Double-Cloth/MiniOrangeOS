@@ -37,6 +37,7 @@ KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
 KERNEL_BOOT_INFO_HEADER = ROOT / "kernel/include/minios/boot_info.h"
 KERNEL_PMM_SOURCE = ROOT / "kernel/mm/pmm.c"
 KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
+KERNEL_HEAP_SOURCE = ROOT / "kernel/mm/heap.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -483,6 +484,18 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("bool vmm_unmap", source)
         self.assertIn("page_directory[0] = 0U", source)
 
+    def test_kernel_declares_first_fit_heap_contract(self) -> None:
+        self.assertTrue(KERNEL_HEAP_SOURCE.is_file(), "缺少内核堆实现")
+        source = KERNEL_HEAP_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("HEAP_ALIGNMENT 8U", source)
+        self.assertIn("HEAP_MAGIC 0x48454150U", source)
+        self.assertIn("find_first_fit", source)
+        self.assertIn("split_block", source)
+        self.assertIn("coalesce", source)
+        self.assertIn("void *kmalloc", source)
+        self.assertIn("bool kfree", source)
+        self.assertIn("vmm_map", source)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -752,9 +765,16 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertEqual(
-            kernel_lines[9:],
+            kernel_lines[9:12],
             [
                 "[KERN] vmm self-test PASS",
+                "[KERN] heap ready",
+                "[KERN] heap self-test PASS",
+            ],
+        )
+        self.assertEqual(
+            kernel_lines[12:],
+            [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
                 "[KERN] keyboard ready",
