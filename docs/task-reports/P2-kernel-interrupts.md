@@ -12,6 +12,8 @@
 - `79a6df8`：`feat(kernel): handle cpu exceptions through idt`
 - `bc5f204`：`feat(kernel): route timer irqs through pic`
 - `2927c89`：`feat(kernel): deliver ps2 keyboard input`
+- `714b36f`：`docs(p2): record completed kernel interrupts`
+- `6a307e8`：`merge: complete P2 kernel interrupts`
 
 ## 修改文件
 
