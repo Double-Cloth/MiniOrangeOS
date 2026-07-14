@@ -17,6 +17,7 @@ REQUIRED_BUILD_FILES = (
     "boot/stage1/boot.asm",
     "boot/stage2/entry.asm",
     "boot/stage2/linker.ld",
+    "boot/include/boot_info.inc",
     "kernel/arch/x86/entry.asm",
     "kernel/core/kernel.c",
     "kernel/linker.ld",

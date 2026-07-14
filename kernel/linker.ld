@@ -2,30 +2,45 @@ OUTPUT_FORMAT(elf32-i386)
 OUTPUT_ARCH(i386)
 ENTRY(kernel_entry)
 
+KERNEL_VIRTUAL_BASE = 0xC0000000;
+KERNEL_PHYSICAL_BASE = 0x00100000;
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);
+    data PT_LOAD FLAGS(6);
+}
+
 SECTIONS
 {
-    . = 0x100000;
+    . = KERNEL_VIRTUAL_BASE + KERNEL_PHYSICAL_BASE;
 
-    .text : ALIGN(4096)
+    .text ALIGN(4096) : AT(ADDR(.text) - KERNEL_VIRTUAL_BASE)
     {
         *(.text*)
-    }
+    } :text
 
-    .rodata : ALIGN(4096)
+    .rodata ALIGN(4096) : AT(ADDR(.rodata) - KERNEL_VIRTUAL_BASE)
     {
         *(.rodata*)
-    }
+    } :text
 
-    .data : ALIGN(4096)
+    .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VIRTUAL_BASE)
     {
         *(.data*)
-    }
+    } :data
 
-    .bss : ALIGN(4096)
+    .bss ALIGN(4096) : AT(ADDR(.bss) - KERNEL_VIRTUAL_BASE)
     {
         *(COMMON)
         *(.bss*)
-    }
+    } :data
+
+    __kernel_virtual_start = KERNEL_VIRTUAL_BASE + KERNEL_PHYSICAL_BASE;
+    __kernel_virtual_end = .;
+
+    ASSERT(kernel_entry >= 0xC0000000,
+           "Kernel entry must be linked in the high half")
 
     /DISCARD/ :
     {

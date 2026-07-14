@@ -1,0 +1,23 @@
+; Stage 2 与内核早期入口共享的 Boot Info 二进制合同。
+
+%define BOOT_INFO_MAGIC                    0x534F494D
+%define BOOT_INFO_VERSION                  1
+%define BOOT_INFO_PHYSICAL_ADDRESS         0x00019000
+%define BOOT_INFO_SIZE                     64
+
+%define BOOT_INFO_MAGIC_OFFSET             0
+%define BOOT_INFO_VERSION_OFFSET           4
+%define BOOT_INFO_SIZE_OFFSET              8
+%define BOOT_INFO_CHECKSUM_OFFSET          12
+%define BOOT_INFO_BOOT_DRIVE_OFFSET        16
+%define BOOT_INFO_KERNEL_ENTRY_OFFSET      20
+%define BOOT_INFO_KERNEL_PHYS_ENTRY_OFFSET 24
+%define BOOT_INFO_KERNEL_PHYS_START_OFFSET 28
+%define BOOT_INFO_KERNEL_PHYS_END_OFFSET   32
+%define BOOT_INFO_E820_COUNT_OFFSET        36
+%define BOOT_INFO_E820_ADDRESS_OFFSET      40
+%define BOOT_INFO_LOADER_START_OFFSET      44
+%define BOOT_INFO_LOADER_END_OFFSET        48
+%define BOOT_INFO_KERNEL_LBA_OFFSET        52
+%define BOOT_INFO_KERNEL_SECTORS_OFFSET    56
+%define BOOT_INFO_RESERVED_OFFSET          60
