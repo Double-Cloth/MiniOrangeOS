@@ -38,6 +38,10 @@ REQUIRED_BUILD_FILES = (
     "kernel/proc/elf.c",
     "kernel/proc/program_registry.c",
     "kernel/proc/embedded_programs.asm",
+    "kernel/include/minios/drivers/ata.h",
+    "kernel/include/minios/block/block.h",
+    "kernel/drivers/ata.c",
+    "kernel/block/block.c",
 )
 
 GENERATED_SUFFIXES = {
@@ -148,6 +152,13 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("BUILD_IDENTITY_STABILIZE_SECONDS", guard)
         self.assertIn("status.st_ino != 0", guard)
         self.assertIn("_stable_created_status", guard)
+
+    def test_kernel_build_declares_ata_and_block_layers(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("KERNEL_ATA_OBJ", makefile)
+        self.assertIn("KERNEL_BLOCK_OBJ", makefile)
+        self.assertIn('(\"kernel\", \"block\")', guard)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

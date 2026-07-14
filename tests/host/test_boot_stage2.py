@@ -44,6 +44,9 @@ KERNEL_SCHEDULER_SOURCE = ROOT / "kernel/proc/scheduler.c"
 KERNEL_CONTEXT_ASSEMBLY = ROOT / "kernel/arch/x86/context_switch.asm"
 KERNEL_USER_MODE_ASSEMBLY = ROOT / "kernel/arch/x86/user_mode.asm"
 KERNEL_SYSCALL_SOURCE = ROOT / "kernel/core/syscall.c"
+KERNEL_ATA_SOURCE = ROOT / "kernel/drivers/ata.c"
+KERNEL_BLOCK_HEADER = ROOT / "kernel/include/minios/block/block.h"
+KERNEL_BLOCK_SOURCE = ROOT / "kernel/block/block.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -610,6 +613,40 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("page_fault_set_user_handler", scheduler)
         self.assertIn("user_page_fault_self_test", scheduler)
 
+    def test_kernel_declares_ata_and_block_contract(self) -> None:
+        self.assertTrue(KERNEL_ATA_SOURCE.is_file(), "缺少内核 ATA PIO 驱动")
+        self.assertTrue(KERNEL_BLOCK_SOURCE.is_file(), "缺少 block device 层")
+        ata = KERNEL_ATA_SOURCE.read_text(encoding="utf-8")
+        block = (
+            KERNEL_BLOCK_HEADER.read_text(encoding="utf-8")
+            + KERNEL_BLOCK_SOURCE.read_text(encoding="utf-8")
+        )
+        for contract in (
+            "ATA_DATA_PORT",
+            "ATA_COMMAND_IDENTIFY",
+            "ATA_COMMAND_READ_SECTORS",
+            "ATA_COMMAND_WRITE_SECTORS",
+            "ATA_COMMAND_CACHE_FLUSH",
+            "ATA_STATUS_BUSY",
+            "ATA_STATUS_DRQ",
+            "ATA_STATUS_ERROR",
+            "ATA_STATUS_DEVICE_FAULT",
+            "ATA_POLL_LIMIT",
+            "ata_read_sectors",
+            "ata_write_sectors",
+            "irq_save_disable",
+        ):
+            self.assertIn(contract, ata)
+        for contract in (
+            "BLOCK_SIZE 4096U",
+            "SECTORS_PER_BLOCK 8U",
+            "block_read",
+            "block_write",
+            "ata_read_sectors",
+            "ata_write_sectors",
+        ):
+            self.assertIn(contract, block)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -896,8 +933,17 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] scheduler self-test PASS",
             ],
         )
+        self.assertRegex(
+            kernel_lines[17],
+            r"^\[KERN\] ata ready sectors=[1-9][0-9]*$",
+        )
+        self.assertRegex(
+            kernel_lines[18],
+            r"^\[KERN\] block ready blocks=[1-9][0-9]*$",
+        )
+        self.assertEqual(kernel_lines[19], "[KERN] block self-test PASS")
         self.assertEqual(
-            kernel_lines[17:],
+            kernel_lines[20:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",

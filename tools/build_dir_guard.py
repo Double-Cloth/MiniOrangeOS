@@ -50,6 +50,7 @@ BUILD_SUBDIRECTORIES = (
     ("kernel",),
     ("kernel", "arch"),
     ("kernel", "arch", "x86"),
+    ("kernel", "block"),
     ("kernel", "core"),
     ("kernel", "drivers"),
     ("kernel", "mm"),

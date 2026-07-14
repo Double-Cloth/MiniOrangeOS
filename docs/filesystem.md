@@ -80,10 +80,12 @@ SECTORS_PER_BLOCK = 8
 
 接口语义：
 
-- `read_blocks(block_no, count, buffer)` 读取完整逻辑块；
-- `write_blocks(block_no, count, buffer)` 写入完整逻辑块；
+- `block_read(block_number, count, buffer)` 读取完整逻辑块；
+- `block_write(block_number, count, buffer)` 写入完整逻辑块；
 - 块号和 count 必须做溢出与边界检查；
 - 所有 MiniFS 元数据读写通过块设备层。
+
+当前 P6 增量已实现主 IDE 主盘的 `IDENTIFY`、LBA28 多扇区读写、状态轮询、超时、写后 cache flush 和关中断串行化，并以 4 KiB 块层统一容量与边界检查。正式启动只读取 Boot Sector 签名和 Kernel ELF 魔数；写路径测试必须使用临时镜像，不能修改权威构建镜像。
 
 ## Superblock
 

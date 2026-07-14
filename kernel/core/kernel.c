@@ -2,8 +2,10 @@
 #include <minios/arch/x86/idt.h>
 #include <minios/arch/x86/irq.h>
 #include <minios/arch/x86/page_fault.h>
+#include <minios/block/block.h>
 #include <minios/boot_info.h>
 #include <minios/console.h>
+#include <minios/drivers/ata.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
@@ -72,6 +74,18 @@ void kernel_main(const struct boot_info *boot_info)
         panic("scheduler self-test failed");
     }
     console_printf("[KERN] scheduler self-test PASS\n");
+    if (ata_init() != 0) {
+        panic("ATA initialization failed");
+    }
+    console_printf("[KERN] ata ready sectors=%u\n", ata_sector_count());
+    if (block_init() != 0) {
+        panic("block initialization failed");
+    }
+    console_printf("[KERN] block ready blocks=%u\n", block_count());
+    if (!block_self_test()) {
+        panic("block self-test failed");
+    }
+    console_printf("[KERN] block self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);
