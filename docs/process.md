@@ -49,6 +49,8 @@ wait_node
 - `fd_table` 由 VFS 引用计数管理；
 - PCB 状态转换必须在关中断或调度锁保护下完成。
 
+当前 fd 3-15 保存经 VFS 验证的 file object handle；标准 fd 不继承普通文件对象，新 `spawn` 进程仅获得保留的 0/1/2 语义。`exit` 在进入 ZOMBIE 前调用 VFS 关闭全部普通 fd，因此 ZOMBIE 不持有 file object 引用。
+
 ## 状态机
 
 ```mermaid

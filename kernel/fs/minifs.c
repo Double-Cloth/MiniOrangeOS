@@ -1031,6 +1031,32 @@ int32_t minifs_lookup(const char *path, struct minifs_stat *status)
     return result;
 }
 
+int32_t minifs_stat_inode(uint32_t inode_number, struct minifs_stat *status)
+{
+    struct minifs_inode inode;
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted) {
+        return -MINIOS_EIO;
+    }
+    if (status == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = read_inode_internal(inode_number, &inode);
+    if (result == 0) {
+        status->inode = inode_number;
+        status->mode = inode.mode;
+        status->link_count = inode.link_count;
+        status->size = inode.size;
+    }
+    minifs_release(irq_flags);
+    return result;
+}
+
 int32_t minifs_read(uint32_t inode_number, uint32_t offset, void *buffer,
                     size_t length)
 {

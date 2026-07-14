@@ -71,6 +71,7 @@ EXPECTED_DEPFILES = (
     "kernel/drivers/ata.d",
     "kernel/block/block.d",
     "kernel/fs/minifs.d",
+    "kernel/fs/vfs.d",
     "user/crt/start.d",
     "user/libc/syscall.d",
     "user/libc/string.d",

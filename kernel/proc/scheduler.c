@@ -4,13 +4,13 @@
 #include <minios/arch/x86/user_mode.h>
 #include <minios/errno.h>
 #include <minios/drivers/pit.h>
+#include <minios/fs/vfs.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/pmm.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
 #include <minios/proc/elf.h>
-#include <minios/proc/program_registry.h>
 #include <minios/proc/scheduler.h>
 
 #include <stdbool.h>
@@ -19,7 +19,7 @@
 
 #define PROCESS_LIMIT 16U
 #define PROCESS_NAME_LENGTH 32U
-#define PROCESS_FD_LIMIT 16U
+#define PROCESS_FD_LIMIT MINIOS_PROCESS_FD_LIMIT
 #define KERNEL_STACK_SIZE 16384U
 #define DEFAULT_TIME_SLICE 5U
 #define EFLAGS_INTERRUPT_ENABLE 0x00000200U
@@ -31,7 +31,7 @@
 #define USER_STACK_VIRTUAL 0xBFFFF000U
 #define USER_STACK_TOP 0xC0000000U
 #define USER_PAGE_LOAD_WINDOW 0xD0C00000U
-#define USER_SELF_TEST_YIELD_LIMIT 8U
+#define USER_SELF_TEST_YIELD_LIMIT 64U
 #define USER_ARGUMENT_LIMIT 16U
 #define USER_ARGUMENT_LENGTH_LIMIT 256U
 #define USER_FAULT_TEST_ADDRESS 0x0BADF000U
@@ -234,6 +234,7 @@ _Noreturn void scheduler_exit_current(int32_t exit_code)
     struct process *next;
 
     (void)flags;
+    vfs_close_all_current();
     current_process->exit_code = exit_code;
     current_process->state = PROCESS_ZOMBIE;
     wake_waiting_parent(current_process);
@@ -819,6 +820,57 @@ uint32_t scheduler_current_pid(void)
     return current_process == NULL ? 0U : current_process->pid;
 }
 
+int32_t scheduler_fd_install(uintptr_t handle)
+{
+    uint32_t flags;
+    size_t descriptor;
+
+    if (handle == (uintptr_t)0U || current_process == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    flags = irq_save_disable();
+    for (descriptor = 3U; descriptor < PROCESS_FD_LIMIT; ++descriptor) {
+        if (current_process->fd_table[descriptor] == (uintptr_t)0U) {
+            current_process->fd_table[descriptor] = handle;
+            irq_restore(flags);
+            return (int32_t)descriptor;
+        }
+    }
+    irq_restore(flags);
+    return -MINIOS_EMFILE;
+}
+
+uintptr_t scheduler_fd_get(int32_t descriptor)
+{
+    uint32_t flags;
+    uintptr_t handle = (uintptr_t)0U;
+
+    if (descriptor < 3 || descriptor >= (int32_t)PROCESS_FD_LIMIT ||
+        current_process == NULL) {
+        return (uintptr_t)0U;
+    }
+    flags = irq_save_disable();
+    handle = current_process->fd_table[(size_t)descriptor];
+    irq_restore(flags);
+    return handle;
+}
+
+uintptr_t scheduler_fd_remove(int32_t descriptor)
+{
+    uint32_t flags;
+    uintptr_t handle;
+
+    if (descriptor < 3 || descriptor >= (int32_t)PROCESS_FD_LIMIT ||
+        current_process == NULL) {
+        return (uintptr_t)0U;
+    }
+    flags = irq_save_disable();
+    handle = current_process->fd_table[(size_t)descriptor];
+    current_process->fd_table[(size_t)descriptor] = (uintptr_t)0U;
+    irq_restore(flags);
+    return handle;
+}
+
 size_t scheduler_process_snapshot(struct minios_process_info *processes,
                                   size_t capacity)
 {
@@ -1094,18 +1146,35 @@ bool user_elf_self_test(void)
     };
     struct heap_stats heap_before = heap_get_stats();
     struct pmm_stats pmm_before = pmm_get_stats();
-    const uint8_t *image = NULL;
-    size_t image_size = 0U;
+    struct minios_stat status;
+    uint8_t *image = NULL;
+    int32_t descriptor = -1;
     int32_t pid;
     struct process *process;
     uint32_t yields = 0U;
     bool passed;
 
-    if (!program_registry_lookup("/bin/init", &image, &image_size) ||
-        !elf_loader_validation_self_test(image, image_size)) {
+    if (vfs_stat("/bin/init", &status) != 0 || status.size == 0U) {
         return false;
     }
-    pid = scheduler_spawn_image("init", image, image_size, arguments);
+    image = (uint8_t *)kmalloc(status.size);
+    descriptor = vfs_open("/bin/init", MINIOS_O_RDONLY);
+    if (image == NULL || descriptor < 3 ||
+        vfs_read(descriptor, image, status.size) != (int32_t)status.size ||
+        vfs_close(descriptor) != 0 ||
+        !elf_loader_validation_self_test(image, status.size)) {
+        if (descriptor >= 3) {
+            (void)vfs_close(descriptor);
+        }
+        if (image != NULL && !kfree(image)) {
+            panic("ELF self-test image rollback failed");
+        }
+        return false;
+    }
+    pid = scheduler_spawn_image("init", image, status.size, arguments);
+    if (!kfree(image)) {
+        panic("ELF self-test image release failed");
+    }
     process = pid < 1 ? NULL : find_process_by_pid((uint32_t)pid);
     if (process == NULL) {
         return false;
@@ -1122,10 +1191,18 @@ bool user_elf_self_test(void)
     if (!reap_process(process)) {
         return false;
     }
-    return passed &&
-        heap_get_stats().allocated_blocks == heap_before.allocated_blocks &&
-        heap_get_stats().allocated_bytes == heap_before.allocated_bytes &&
-        pmm_get_stats().free_pages == pmm_before.free_pages;
+    {
+        struct heap_stats heap_after = heap_get_stats();
+        struct pmm_stats pmm_after = pmm_get_stats();
+
+        return passed && vfs_self_test() &&
+            heap_after.allocated_blocks == heap_before.allocated_blocks &&
+            heap_after.allocated_bytes == heap_before.allocated_bytes &&
+            heap_after.mapped_pages >= heap_before.mapped_pages &&
+            pmm_before.free_pages >= pmm_after.free_pages &&
+            heap_after.mapped_pages - heap_before.mapped_pages ==
+                pmm_before.free_pages - pmm_after.free_pages;
+    }
 }
 
 bool user_page_fault_self_test(void)

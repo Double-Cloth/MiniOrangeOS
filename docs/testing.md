@@ -177,6 +177,8 @@ MiniFS 宿主工具增量固定 LBA 2048 起始、16128 个 4 KiB 块、1024 个
 
 MiniFS 首个可写增量实现 inode/block bitmap 分配与回收、普通文件目录项追加、无稀疏写入、direct 到一级 indirect 扩展及缩小截断。专用 `KERNEL_TEST_MINIFS_WRITE=1` 构建只操作临时镜像：第一次真实 QEMU 启动创建 `/p6-persist` 并写入 45179 bytes，第二次启动逐字节验证后截断为 4113 bytes；两次启动后的宿主只读 fsck 均 PASS，默认产品镜像不执行写入自测。`environment/verify.sh` PASS；启动专项 32/32、构建契约与 MiniFS 工具组合 16/16、完整运行时构建回归 21/21 PASS（369.119 秒）；独立干净构建及 `make test-image` PASS。`kernel.elf` 为 129508 bytes，SHA-256 为 `ed35963f2243622ac182d1fa66dd5587a26a7ceef107eaaa569474116c37b62c`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `23748e21cd125cc7e4f5859c66f43bafdded82e216e07e0a9514a9a6495a47f8`。
 
+VFS/fd 增量加入 32 项 file object 池、每进程 16 项 fd 表、独立 offset、flags/refcount/ops 和退出清理。Ring 3 `/bin/init` 实际验证 `stat/open/read/lseek/close`、ELF 魔数、未知路径/flags 与 close 后 `-EBADF`，并故意遗留一个 fd 由 exit 自动关闭；回到启动进程后 VFS 池完整性复验 PASS。`spawn` 已从注册表切换为 VFS，初始 init 和全部子程序均由磁盘 ELF 创建。启动专项 33/33、构建契约与 MiniFS 工具 16/16、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 135700 bytes，SHA-256 为 `ce8a638a27134dd6a639311187a32bf96cfb158fc14ca4affb2fa154bebed263`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `32adf6d3e55607e5392ecf52aa73b077d6396ae22d46f1652f3f796bf712b7b8`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

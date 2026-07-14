@@ -197,6 +197,8 @@ KERNEL_BLOCK_OBJ := $(KERNEL_BLOCK_BUILD_DIR)/block.o
 KERNEL_BLOCK_DEP := $(KERNEL_BLOCK_BUILD_DIR)/block.d
 KERNEL_MINIFS_OBJ := $(KERNEL_FS_BUILD_DIR)/minifs.o
 KERNEL_MINIFS_DEP := $(KERNEL_FS_BUILD_DIR)/minifs.d
+KERNEL_VFS_OBJ := $(KERNEL_FS_BUILD_DIR)/vfs.o
+KERNEL_VFS_DEP := $(KERNEL_FS_BUILD_DIR)/vfs.d
 KERNEL_PMM_OBJ := $(KERNEL_MM_BUILD_DIR)/pmm.o
 KERNEL_PMM_DEP := $(KERNEL_MM_BUILD_DIR)/pmm.d
 KERNEL_VMM_OBJ := $(KERNEL_MM_BUILD_DIR)/vmm.o
@@ -232,6 +234,7 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_ATA_OBJ) \
 	$(KERNEL_BLOCK_OBJ) \
 	$(KERNEL_MINIFS_OBJ) \
+	$(KERNEL_VFS_OBJ) \
 	$(KERNEL_PMM_OBJ) \
 	$(KERNEL_VMM_OBJ) \
 	$(KERNEL_HEAP_OBJ) \
@@ -257,6 +260,7 @@ KERNEL_C_DEPS := \
 	$(KERNEL_ATA_DEP) \
 	$(KERNEL_BLOCK_DEP) \
 	$(KERNEL_MINIFS_DEP) \
+	$(KERNEL_VFS_DEP) \
 	$(KERNEL_PMM_DEP) \
 	$(KERNEL_VMM_DEP) \
 	$(KERNEL_HEAP_DEP) \
@@ -510,6 +514,9 @@ $(KERNEL_BLOCK_OBJ): kernel/block/block.c | prepare-build-dir
 
 $(KERNEL_MINIFS_OBJ): kernel/fs/minifs.c $(MINIFS_LAYOUT_HEADER) | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_MINIFS_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_VFS_OBJ): kernel/fs/vfs.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VFS_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_PMM_OBJ): kernel/mm/pmm.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PMM_DEP)" -MT "$@" -c "$<" -o "$@"

@@ -10,6 +10,7 @@
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
 #include <minios/fs/minifs.h>
+#include <minios/fs/vfs.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/pmm.h>
@@ -96,6 +97,12 @@ void kernel_main(const struct boot_info *boot_info)
         panic("MiniFS self-test failed");
     }
     console_printf("[KERN] minifs self-test PASS\n");
+    vfs_init();
+    console_printf("[KERN] vfs ready\n");
+    if (!vfs_self_test()) {
+        panic("VFS self-test failed");
+    }
+    console_printf("[KERN] vfs self-test PASS\n");
 #if MINIOS_TEST_MINIFS_WRITE == 1
     {
         enum minifs_persistence_result persistence =

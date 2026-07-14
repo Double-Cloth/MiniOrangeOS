@@ -2,7 +2,44 @@
 #include <minios/string.h>
 #include <minios/abi/errno.h>
 
+#include <stdbool.h>
+
 static volatile int32_t init_status;
+
+static bool test_file_syscalls(void) {
+    static const char pass[] = "[USER] file syscall PASS\n";
+    struct minios_stat status;
+    uint8_t magic[4];
+    int32_t descriptor;
+
+    if (minios_stat("/bin/init", &status) != 0 || status.size < sizeof(magic) ||
+        minios_open("/bin/missing", MINIOS_O_RDONLY) != -MINIOS_ENOENT ||
+        minios_open("/bin/init", 0x80000000U) != -MINIOS_EINVAL) {
+        return false;
+    }
+    descriptor = minios_open("/bin/init", MINIOS_O_RDONLY);
+    if (descriptor < 3 ||
+        minios_read(descriptor, magic, sizeof(magic)) !=
+            (int32_t)sizeof(magic) ||
+        magic[0] != 0x7FU || magic[1] != 'E' || magic[2] != 'L' ||
+        magic[3] != 'F' ||
+        minios_lseek(descriptor, 0, MINIOS_SEEK_SET) != 0 ||
+        minios_read(descriptor, magic, 1U) != 1 || magic[0] != 0x7FU ||
+        minios_close(descriptor) != 0 ||
+        minios_close(descriptor) != -MINIOS_EBADF) {
+        if (descriptor >= 3) {
+            (void)minios_close(descriptor);
+        }
+        return false;
+    }
+    /* 故意保留一个 fd，由进程退出路径验证自动关闭。 */
+    descriptor = minios_open("/bin/sh", MINIOS_O_RDONLY);
+    if (descriptor < 3) {
+        return false;
+    }
+    return minios_write(1, pass, sizeof(pass) - 1U) ==
+        (int32_t)(sizeof(pass) - 1U);
+}
 
 int main(int argc, char **argv);
 
@@ -35,7 +72,7 @@ int main(int argc, char **argv) {
     }
     if (argc != 2 || argv == NULL || argv[0] == NULL || argv[1] == NULL ||
         argv[2] != NULL || !minios_streq(argv[0], "/bin/init") ||
-        !minios_streq(argv[1], "--self-test")) {
+        !minios_streq(argv[1], "--self-test") || !test_file_syscalls()) {
         return 2;
     }
     child_pid = minios_spawn("/bin/echo", echo_arguments);

@@ -49,6 +49,8 @@ KERNEL_BLOCK_HEADER = ROOT / "kernel/include/minios/block/block.h"
 KERNEL_BLOCK_SOURCE = ROOT / "kernel/block/block.c"
 KERNEL_MINIFS_HEADER = ROOT / "kernel/include/minios/fs/minifs.h"
 KERNEL_MINIFS_SOURCE = ROOT / "kernel/fs/minifs.c"
+KERNEL_VFS_HEADER = ROOT / "kernel/include/minios/fs/vfs.h"
+KERNEL_VFS_SOURCE = ROOT / "kernel/fs/vfs.c"
 MINIFS_LAYOUT_TOOL = ROOT / "tools/generate_minifs_layout.py"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
@@ -602,6 +604,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("SYS_getpid", syscall)
         self.assertIn("SYS_write", syscall)
         self.assertIn("SYS_read", syscall)
+        self.assertIn("SYS_open", syscall)
+        self.assertIn("SYS_close", syscall)
+        self.assertIn("SYS_lseek", syscall)
+        self.assertIn("SYS_create", syscall)
+        self.assertIn("SYS_stat", syscall)
         self.assertIn("SYS_yield", syscall)
         self.assertIn("SYS_exit", syscall)
         self.assertIn("SYS_waitpid", syscall)
@@ -612,7 +619,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("vmm_address_space_activate", scheduler)
         self.assertIn("user_process_self_test", scheduler)
         self.assertIn("user_elf_self_test", scheduler)
-        self.assertIn("program_registry_lookup", scheduler)
+        self.assertIn("vfs_open", scheduler)
+        self.assertIn("vfs_read", scheduler)
         self.assertIn("page_fault_set_user_handler", scheduler)
         self.assertIn("user_page_fault_self_test", scheduler)
 
@@ -677,6 +685,27 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             self.assertIn(contract, source)
         self.assertIn("MINIFS_VOLUME_START_BLOCK", generator)
         self.assertIn("MINIFS_VOLUME_BLOCK_COUNT", generator)
+
+    def test_kernel_declares_vfs_and_process_fd_contract(self) -> None:
+        self.assertTrue(KERNEL_VFS_HEADER.is_file(), "缺少内核 VFS 接口")
+        self.assertTrue(KERNEL_VFS_SOURCE.is_file(), "缺少内核 VFS 实现")
+        source = KERNEL_VFS_SOURCE.read_text(encoding="utf-8")
+        scheduler = KERNEL_SCHEDULER_SOURCE.read_text(encoding="utf-8")
+        for contract in (
+            "struct vfs_file",
+            "refcount",
+            "vfs_open",
+            "vfs_read",
+            "vfs_write",
+            "vfs_lseek",
+            "vfs_close",
+            "vfs_stat",
+            "vfs_close_all_current",
+            "scheduler_fd_install",
+            "scheduler_fd_get",
+            "scheduler_fd_remove",
+        ):
+            self.assertIn(contract, source + scheduler)
 
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
@@ -981,6 +1010,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertEqual(
             kernel_lines[22:],
             [
+                "[KERN] vfs ready",
+                "[KERN] vfs self-test PASS",
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
                 "[KERN] keyboard ready",
@@ -994,6 +1025,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertIn("[USER] ring3 syscall PASS", output)
+        self.assertIn("[USER] file syscall PASS", output)
         self.assertIn("[USER] elf init PASS", output)
         self.assertIn("[USER] echo child PASS", output)
         self.assertIn("[USER] shell command PASS", output)

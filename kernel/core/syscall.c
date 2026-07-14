@@ -1,11 +1,14 @@
 #include <minios/console.h>
+#include <minios/abi/file.h>
+#include <minios/abi/minifs.h>
 #include <minios/arch/x86/irq.h>
 #include <minios/errno.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pit.h>
+#include <minios/fs/vfs.h>
+#include <minios/mm/heap.h>
 #include <minios/mm/usercopy.h>
 #include <minios/panic.h>
-#include <minios/proc/program_registry.h>
 #include <minios/proc/scheduler.h>
 #include <minios/syscall.h>
 
@@ -24,10 +27,10 @@
 static int32_t syscall_write(uint32_t descriptor, const void *user_buffer,
                              size_t length)
 {
-    char buffer[SYSCALL_WRITE_BUFFER_SIZE];
+    uint8_t buffer[SYSCALL_WRITE_BUFFER_SIZE];
     size_t offset = 0U;
 
-    if (descriptor != 1U && descriptor != 2U) {
+    if (descriptor == 0U || descriptor >= MINIOS_PROCESS_FD_LIMIT) {
         return -MINIOS_EBADF;
     }
     if (length > SYSCALL_WRITE_MAX) {
@@ -38,7 +41,7 @@ static int32_t syscall_write(uint32_t descriptor, const void *user_buffer,
     }
     while (offset < length) {
         size_t chunk = length - offset;
-        size_t index;
+        int32_t written;
 
         if (chunk > sizeof(buffer)) {
             chunk = sizeof(buffer);
@@ -50,20 +53,35 @@ static int32_t syscall_write(uint32_t descriptor, const void *user_buffer,
             ) != 0) {
             return -MINIOS_EFAULT;
         }
-        for (index = 0U; index < chunk; ++index) {
-            console_putc(buffer[index]);
+        if (descriptor == 1U || descriptor == 2U) {
+            size_t index;
+
+            for (index = 0U; index < chunk; ++index) {
+                console_putc((char)buffer[index]);
+            }
+            written = (int32_t)chunk;
+        } else {
+            written = vfs_write((int32_t)descriptor, buffer, chunk);
         }
-        offset += chunk;
+        if (written < 0) {
+            return offset == 0U ? written : (int32_t)offset;
+        }
+        offset += (size_t)written;
+        if ((size_t)written < chunk) {
+            break;
+        }
     }
-    return (int32_t)length;
+    return (int32_t)offset;
 }
 
 static int32_t syscall_read(uint32_t descriptor, void *user_buffer,
                             size_t length)
 {
-    char character;
+    uint8_t buffer[SYSCALL_WRITE_BUFFER_SIZE];
+    size_t offset = 0U;
 
-    if (descriptor != 0U) {
+    if (descriptor == 1U || descriptor == 2U ||
+        descriptor >= MINIOS_PROCESS_FD_LIMIT) {
         return -MINIOS_EBADF;
     }
     if (length > SYSCALL_WRITE_MAX) {
@@ -75,15 +93,89 @@ static int32_t syscall_read(uint32_t descriptor, void *user_buffer,
     if (length == 0U) {
         return 0;
     }
-    while (!keyboard_try_read(&character)) {
-        irq_enable();
-        __asm__ volatile("hlt");
-        (void)irq_save_disable();
+    if (descriptor == 0U) {
+        char character;
+
+        while (!keyboard_try_read(&character)) {
+            irq_enable();
+            __asm__ volatile("hlt");
+            (void)irq_save_disable();
+        }
+        if (copy_to_user(user_buffer, &character, 1U) != 0) {
+            return -MINIOS_EFAULT;
+        }
+        return 1;
     }
-    if (copy_to_user(user_buffer, &character, 1U) != 0) {
+    while (offset < length) {
+        size_t chunk = length - offset;
+        int32_t read;
+
+        if (chunk > sizeof(buffer)) {
+            chunk = sizeof(buffer);
+        }
+        read = vfs_read((int32_t)descriptor, buffer, chunk);
+        if (read < 0) {
+            return offset == 0U ? read : (int32_t)offset;
+        }
+        if (read == 0) {
+            break;
+        }
+        if (copy_to_user((void *)((uintptr_t)user_buffer + offset),
+                         buffer, (size_t)read) != 0) {
+            return offset == 0U ? -MINIOS_EFAULT : (int32_t)offset;
+        }
+        offset += (size_t)read;
+        if ((size_t)read < chunk) {
+            break;
+        }
+    }
+    return (int32_t)offset;
+}
+
+static int32_t copy_syscall_path(char *path, const char *user_path)
+{
+    if (copy_user_string(path, user_path, SYSCALL_PATH_MAX) != 0) {
         return -MINIOS_EFAULT;
     }
-    return 1;
+    return path[0] == '\0' ? -MINIOS_EINVAL : 0;
+}
+
+static int32_t syscall_open(const char *user_path, uint32_t flags)
+{
+    char path[SYSCALL_PATH_MAX];
+    int32_t result = copy_syscall_path(path, user_path);
+
+    return result < 0 ? result : vfs_open(path, flags);
+}
+
+static int32_t syscall_create(const char *user_path)
+{
+    int32_t descriptor = syscall_open(
+        user_path, MINIOS_O_WRONLY | MINIOS_O_CREAT
+    );
+
+    return descriptor < 0 ? descriptor : vfs_close(descriptor);
+}
+
+static int32_t syscall_stat(const char *user_path, void *user_status)
+{
+    struct minios_stat status;
+    char path[SYSCALL_PATH_MAX];
+    int32_t result;
+
+    if (!validate_user_range(user_status, sizeof(status), USER_ACCESS_WRITE)) {
+        return -MINIOS_EFAULT;
+    }
+    result = copy_syscall_path(path, user_path);
+    if (result < 0) {
+        return result;
+    }
+    result = vfs_stat(path, &status);
+    if (result < 0) {
+        return result;
+    }
+    return copy_to_user(user_status, &status, sizeof(status)) == 0 ?
+        0 : -MINIOS_EFAULT;
 }
 
 static size_t bounded_length(const char *value, size_t limit)
@@ -104,8 +196,8 @@ static int32_t syscall_spawn(const char *user_path,
     char path[SYSCALL_PATH_MAX];
     char argument_storage[SYSCALL_ARGUMENT_LIMIT][SYSCALL_ARGUMENT_LENGTH];
     const char *arguments[SYSCALL_ARGUMENT_LIMIT + 1U];
-    const uint8_t *image;
-    size_t image_size;
+    struct minios_stat status;
+    uint8_t *image = NULL;
     size_t argument_count;
     size_t argument_bytes = 0U;
     bool terminated = false;
@@ -155,10 +247,42 @@ static int32_t syscall_spawn(const char *user_path,
         return -MINIOS_E2BIG;
     }
     arguments[argument_count] = NULL;
-    if (!program_registry_lookup(path, &image, &image_size)) {
-        return -MINIOS_ENOENT;
+    {
+        int32_t descriptor;
+        int32_t result = vfs_stat(path, &status);
+
+        if (result < 0) {
+            return result;
+        }
+        if (status.mode == MINIFS_MODE_DIRECTORY) {
+            return -MINIOS_EISDIR;
+        }
+        if (status.size == 0U) {
+            return -MINIOS_ENOEXEC;
+        }
+        image = (uint8_t *)kmalloc(status.size);
+        if (image == NULL) {
+            return -MINIOS_ENOMEM;
+        }
+        descriptor = vfs_open(path, MINIOS_O_RDONLY);
+        if (descriptor < 0 ||
+            vfs_read(descriptor, image, status.size) !=
+                (int32_t)status.size ||
+            vfs_close(descriptor) != 0) {
+            if (descriptor >= 0) {
+                (void)vfs_close(descriptor);
+            }
+            if (!kfree(image)) {
+                panic("spawn image buffer rollback failed");
+            }
+            return descriptor < 0 ? descriptor : -MINIOS_EIO;
+        }
+        result = scheduler_spawn_image(path, image, status.size, arguments);
+        if (!kfree(image)) {
+            panic("spawn image buffer release failed");
+        }
+        return result;
     }
-    return scheduler_spawn_image(path, image, image_size, arguments);
 }
 
 static int32_t syscall_ps(void *user_processes, size_t capacity)
@@ -209,6 +333,27 @@ void syscall_dispatch(struct trap_frame *frame)
                 (size_t)frame->edx
             );
             break;
+        case SYS_open:
+            result = syscall_open(
+                (const char *)(uintptr_t)frame->ebx,
+                frame->ecx
+            );
+            break;
+        case SYS_close:
+            result = vfs_close((int32_t)frame->ebx);
+            break;
+        case SYS_lseek:
+            result = vfs_lseek(
+                (int32_t)frame->ebx,
+                (int32_t)frame->ecx,
+                (int32_t)frame->edx
+            );
+            break;
+        case SYS_create:
+            result = syscall_create(
+                (const char *)(uintptr_t)frame->ebx
+            );
+            break;
         case SYS_spawn:
             result = syscall_spawn(
                 (const char *)(uintptr_t)frame->ebx,
@@ -245,6 +390,12 @@ void syscall_dispatch(struct trap_frame *frame)
             break;
         case SYS_getticks:
             result = (int32_t)pit_ticks();
+            break;
+        case SYS_stat:
+            result = syscall_stat(
+                (const char *)(uintptr_t)frame->ebx,
+                (void *)(uintptr_t)frame->ecx
+            );
             break;
         case SYS_ps:
             result = syscall_ps(

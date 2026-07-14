@@ -24,6 +24,7 @@ int32_t minifs_mount(void);
 uint32_t minifs_total_blocks(void);
 uint32_t minifs_total_inodes(void);
 int32_t minifs_lookup(const char *path, struct minifs_stat *status);
+int32_t minifs_stat_inode(uint32_t inode, struct minifs_stat *status);
 int32_t minifs_read(uint32_t inode, uint32_t offset, void *buffer,
                     size_t length);
 int32_t minifs_create(const char *path, struct minifs_stat *status);

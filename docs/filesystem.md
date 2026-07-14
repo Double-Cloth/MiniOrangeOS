@@ -232,9 +232,11 @@ ops
 - 多进程独立 offset；
 - VFS 不暴露 MiniFS 私有磁盘结构给用户态。
 
+当前内核已建立 32 项全局 file object 池和每进程 16 项 fd 表；fd 0/1/2 仍由 syscall 控制台适配层保留，普通文件从 fd 3 开始。file object 保存后端类型、MiniFS inode、独立 offset、flags、refcount 与 ops；同一 inode 的两次 `open` 使用两个对象，因此 offset 互不影响。`open/read/write/lseek/close/stat` 已接入 MiniFS，支持 `O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_TRUNC`，拒绝未知 flags、目录写入和无权限访问。进程 `exit` 或用户 fault 会关闭其全部普通 fd；用户态自测故意遗留一个打开文件，并在进程回收后由 VFS 池完整性自测确认引用已释放。控制台/键盘对象化、目录迭代和普通 fd 继承仍待后续增量。
+
 ## 宿主工具
 
-P5 为在 MiniFS 实现前验证正式 ELF loader、用户 ABI 与 Shell，允许把同一批用户 ELF 作为只读构建产物链入内核注册表。该过渡来源不占用磁盘文件语义，也不得成为第二套可变文件系统；P6 的 `mkfs.py` 将导入这些 ELF，并由 VFS 取代注册表路径解析。
+P5 为在 MiniFS 实现前验证正式 ELF loader、用户 ABI 与 Shell，允许把同一批用户 ELF 作为只读构建产物链入内核注册表。P6 当前已由 VFS 读取 `/bin/init` 及其全部子程序 ELF；注册表只保留为过渡期逐字节磁盘一致性自测来源，不再参与 `spawn(path, argv)` 的运行时路径解析，也不得成为第二套可变文件系统。
 
 后续工具：
 

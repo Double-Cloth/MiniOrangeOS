@@ -3,11 +3,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <minios/abi/file.h>
 #include <minios/abi/process.h>
 
 _Noreturn void minios_exit(int32_t status);
 int32_t minios_write(int32_t descriptor, const void *buffer, size_t count);
 int32_t minios_read(int32_t descriptor, void *buffer, size_t count);
+int32_t minios_open(const char *path, uint32_t flags);
+int32_t minios_close(int32_t descriptor);
+int32_t minios_lseek(int32_t descriptor, int32_t offset, int32_t whence);
+int32_t minios_create(const char *path);
+int32_t minios_stat(const char *path, struct minios_stat *status);
 int32_t minios_spawn(const char *path, char *const argv[]);
 int32_t minios_waitpid(int32_t pid, int32_t *status);
 int32_t minios_getpid(void);

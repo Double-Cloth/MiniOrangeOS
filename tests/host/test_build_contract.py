@@ -43,11 +43,14 @@ REQUIRED_BUILD_FILES = (
     "kernel/drivers/ata.c",
     "kernel/block/block.c",
     "include/minios/abi/minifs.h",
+    "include/minios/abi/file.h",
     "tools/minifs.py",
     "tools/mkfs.py",
     "tools/fsck.py",
     "kernel/include/minios/fs/minifs.h",
     "kernel/fs/minifs.c",
+    "kernel/include/minios/fs/vfs.h",
+    "kernel/fs/vfs.c",
     "tools/generate_minifs_layout.py",
 )
 
@@ -179,6 +182,7 @@ class BuildContractTests(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
         self.assertIn("KERNEL_MINIFS_OBJ", makefile)
+        self.assertIn("KERNEL_VFS_OBJ", makefile)
         self.assertIn("MINIFS_LAYOUT_HEADER", makefile)
         self.assertIn("tools/generate_minifs_layout.py", makefile)
         self.assertIn('(\"kernel\", \"fs\")', guard)
