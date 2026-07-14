@@ -4,6 +4,7 @@
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
 #include <minios/panic.h>
+#include <minios/proc/scheduler.h>
 
 #include <stdint.h>
 
@@ -27,6 +28,9 @@ void irq_dispatch(const struct trap_frame *frame)
         keyboard_handle_irq();
     }
     pic_send_eoi((uint8_t)irq);
+    if (irq == 0U) {
+        scheduler_on_tick();
+    }
 }
 
 void irq_enable(void)

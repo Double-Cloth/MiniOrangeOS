@@ -54,6 +54,8 @@ static struct process *current_process;
 static uint32_t next_pid;
 static uint32_t self_test_trace[SELF_TEST_TRACE_LENGTH];
 static uint32_t self_test_trace_count;
+static volatile uint32_t preemption_mask;
+static volatile uint32_t preemption_busy_count;
 
 void context_switch(uint32_t **old_saved_stack, uint32_t *new_saved_stack);
 extern uint8_t boot_stack_top[];
@@ -108,6 +110,19 @@ static struct process *find_unused_process(void)
 
     for (index = 1U; index < PROCESS_LIMIT; ++index) {
         if (process_table[index].state == PROCESS_UNUSED) {
+            return &process_table[index];
+        }
+    }
+    return NULL;
+}
+
+static struct process *find_process_by_pid(uint32_t pid)
+{
+    size_t index;
+
+    for (index = 0U; index < PROCESS_LIMIT; ++index) {
+        if (process_table[index].state != PROCESS_UNUSED &&
+            process_table[index].pid == pid) {
             return &process_table[index];
         }
     }
@@ -253,6 +268,28 @@ void scheduler_yield(void)
     irq_restore(flags);
 }
 
+void scheduler_on_tick(void)
+{
+    struct process *next;
+
+    if (current_process == NULL ||
+        current_process->state != PROCESS_RUNNING) {
+        return;
+    }
+    if (current_process->time_slice > 1U) {
+        --current_process->time_slice;
+        return;
+    }
+    current_process->state = PROCESS_READY;
+    next = find_next_ready(current_process);
+    if (next == NULL || next == current_process) {
+        current_process->state = PROCESS_RUNNING;
+        current_process->time_slice = DEFAULT_TIME_SLICE;
+        return;
+    }
+    switch_to(next);
+}
+
 uint32_t scheduler_current_pid(void)
 {
     return current_process == NULL ? 0U : current_process->pid;
@@ -319,6 +356,73 @@ bool scheduler_self_test(void)
         process->state = PROCESS_REAPED;
         clear_process(process);
     }
+    return current_process == &process_table[0] &&
+           current_process->state == PROCESS_RUNNING;
+}
+
+static void scheduler_preemption_thread(void *argument)
+{
+    uint32_t identifier = (uint32_t)(uintptr_t)argument;
+
+    preemption_mask |= 1U << (identifier - 1U);
+    if (identifier == 1U) {
+        preemption_busy_count = 1U;
+        while (preemption_mask != 3U) {
+            ++preemption_busy_count;
+        }
+    }
+}
+
+bool scheduler_preemption_self_test(void)
+{
+    uint32_t flags;
+    int32_t first_pid;
+    int32_t second_pid;
+    struct process *first;
+    struct process *second;
+
+    if ((irq_read_flags() & EFLAGS_INTERRUPT_ENABLE) == 0U) {
+        return false;
+    }
+    preemption_mask = 0U;
+    preemption_busy_count = 0U;
+    flags = irq_save_disable();
+    first_pid = kernel_thread_create(
+        "preempt-one", scheduler_preemption_thread,
+        (void *)(uintptr_t)1U
+    );
+    second_pid = kernel_thread_create(
+        "preempt-two", scheduler_preemption_thread,
+        (void *)(uintptr_t)2U
+    );
+    first = first_pid < 1 ? NULL : find_process_by_pid((uint32_t)first_pid);
+    second = second_pid < 1 ? NULL : find_process_by_pid((uint32_t)second_pid);
+    if (first != NULL) {
+        first->initial_eflags = flags & EFLAGS_INTERRUPT_ENABLE;
+    }
+    if (second != NULL) {
+        second->initial_eflags = flags & EFLAGS_INTERRUPT_ENABLE;
+    }
+    irq_restore(flags);
+    if (first == NULL || second == NULL) {
+        return false;
+    }
+
+    scheduler_yield();
+    while (first->state != PROCESS_ZOMBIE ||
+           second->state != PROCESS_ZOMBIE) {
+        scheduler_yield();
+    }
+    if (preemption_mask != 3U || preemption_busy_count == 0U ||
+        first->exit_code != 0 || second->exit_code != 0 ||
+        !kfree(first->kernel_stack_allocation) ||
+        !kfree(second->kernel_stack_allocation)) {
+        return false;
+    }
+    first->state = PROCESS_REAPED;
+    second->state = PROCESS_REAPED;
+    clear_process(first);
+    clear_process(second);
     return current_process == &process_table[0] &&
            current_process->state == PROCESS_RUNNING;
 }

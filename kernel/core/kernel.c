@@ -82,6 +82,10 @@ void kernel_main(const struct boot_info *boot_info)
     console_printf("[KERN] keyboard ready\n");
     irq_enable();
     console_printf("[KERN] interrupts enabled\n");
+    if (!scheduler_preemption_self_test()) {
+        panic("scheduler preemption self-test failed");
+    }
+    console_printf("[KERN] scheduler preemption PASS\n");
     for (;;) {
         __asm__ volatile("hlt");
     }

@@ -558,6 +558,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("PROCESS_RUNNING", source)
         self.assertIn("PROCESS_ZOMBIE", source)
         self.assertIn("scheduler_yield", source)
+        self.assertIn("scheduler_on_tick", source)
+        self.assertIn("scheduler_preemption_self_test", source)
         self.assertIn("context_switch", source)
         self.assertIn("push ebp", assembly)
         self.assertIn("mov esp, edx", assembly)
@@ -856,6 +858,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] keyboard ready",
                 "[KERN] interrupts enabled",
                 "[KERN] pit tick=5",
+                "[KERN] scheduler preemption PASS",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")

@@ -77,7 +77,7 @@ stateDiagram-v2
 
 当前 P4 协作式内核线程实现使用 16 项静态 PCB 表，slot 0 接管启动线程，其他线程从 Heap 获得 16 KiB 独立内核栈。汇编 `context_switch` 保存 EBP/EBX/ESI/EDI 与 ESP；首次栈返回到 C trampoline，既有线程则返回原 `scheduler_yield` 调用点。状态选择与切换在保存 EFLAGS 后关中断执行，每次切换同步 TSS `esp0`。三线程自检严格验证 `1,2,3,1,2,3` round-robin 轨迹、ZOMBIE 退出和所有栈块回收。
 
-该增量尚未声称抢占式完成：当前 PIT 只计数，时间片耗尽接入 IRQ 尾部属于下一步。PID 当前单调分配；达到 `UINT32_MAX` 后的已回收 PID 扫描复用也需在 P4 完成前补齐。
+PIT IRQ0 在设备处理和 EOI 完成后调用调度 tick；时间片耗尽时把当前 RUNNING 线程转回 READY，并可在仍保留完整 IRQ 栈的情况下切到下一线程。抢占自检让线程 1 在不调用 `yield` 的忙等中等待线程 2，只有真实 PIT 抢占能运行线程 2 并解除忙等。PID 当前单调分配；达到 `UINT32_MAX` 后的已回收 PID 扫描复用仍需在 P4 完成前补齐。
 
 切换进程时必须：
 

@@ -10,7 +10,9 @@ void scheduler_init(void);
 int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
                              void *argument);
 void scheduler_yield(void);
+void scheduler_on_tick(void);
 uint32_t scheduler_current_pid(void);
 bool scheduler_self_test(void);
+bool scheduler_preemption_self_test(void);
 
 #endif
