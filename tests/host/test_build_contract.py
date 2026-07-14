@@ -46,6 +46,9 @@ REQUIRED_BUILD_FILES = (
     "tools/minifs.py",
     "tools/mkfs.py",
     "tools/fsck.py",
+    "kernel/include/minios/fs/minifs.h",
+    "kernel/fs/minifs.c",
+    "tools/generate_minifs_layout.py",
 )
 
 GENERATED_SUFFIXES = {
@@ -171,6 +174,14 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("tools/mkfs.py", makefile)
         self.assertIn("tools/fsck.py", makefile)
         self.assertIn("test-image", makefile)
+
+    def test_kernel_build_declares_minifs_mount(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("KERNEL_MINIFS_OBJ", makefile)
+        self.assertIn("MINIFS_LAYOUT_HEADER", makefile)
+        self.assertIn("tools/generate_minifs_layout.py", makefile)
+        self.assertIn('(\"kernel\", \"fs\")', guard)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

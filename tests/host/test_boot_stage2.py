@@ -47,6 +47,9 @@ KERNEL_SYSCALL_SOURCE = ROOT / "kernel/core/syscall.c"
 KERNEL_ATA_SOURCE = ROOT / "kernel/drivers/ata.c"
 KERNEL_BLOCK_HEADER = ROOT / "kernel/include/minios/block/block.h"
 KERNEL_BLOCK_SOURCE = ROOT / "kernel/block/block.c"
+KERNEL_MINIFS_HEADER = ROOT / "kernel/include/minios/fs/minifs.h"
+KERNEL_MINIFS_SOURCE = ROOT / "kernel/fs/minifs.c"
+MINIFS_LAYOUT_TOOL = ROOT / "tools/generate_minifs_layout.py"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -647,6 +650,28 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         ):
             self.assertIn(contract, block)
 
+    def test_kernel_declares_read_only_minifs_contract(self) -> None:
+        self.assertTrue(KERNEL_MINIFS_HEADER.is_file(), "缺少内核 MiniFS 接口")
+        self.assertTrue(KERNEL_MINIFS_SOURCE.is_file(), "缺少内核 MiniFS 实现")
+        self.assertTrue(MINIFS_LAYOUT_TOOL.is_file(), "缺少 MiniFS 布局头生成器")
+        source = KERNEL_MINIFS_SOURCE.read_text(encoding="utf-8")
+        generator = MINIFS_LAYOUT_TOOL.read_text(encoding="utf-8")
+        for contract in (
+            "MINIFS_VOLUME_START_BLOCK",
+            "MINIFS_SUPERBLOCK_CHECKSUM_OFFSET",
+            "MINIFS_CRC32_POLYNOMIAL",
+            "read_le32",
+            "block_read",
+            "minifs_mount",
+            "minifs_lookup",
+            "minifs_read",
+            "irq_save_disable",
+            "program_registry_lookup",
+        ):
+            self.assertIn(contract, source)
+        self.assertIn("MINIFS_VOLUME_START_BLOCK", generator)
+        self.assertIn("MINIFS_VOLUME_BLOCK_COUNT", generator)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -942,8 +967,13 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             r"^\[KERN\] block ready blocks=[1-9][0-9]*$",
         )
         self.assertEqual(kernel_lines[19], "[KERN] block self-test PASS")
+        self.assertRegex(
+            kernel_lines[20],
+            r"^\[KERN\] minifs mounted blocks=16128 inodes=1024$",
+        )
+        self.assertEqual(kernel_lines[21], "[KERN] minifs self-test PASS")
         self.assertEqual(
-            kernel_lines[20:],
+            kernel_lines[22:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
@@ -967,6 +997,61 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] fault isolation PASS", output)
         self.assertNotIn("[PANIC]", output)
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
+
+    def test_corrupted_minifs_superblock_is_rejected_before_mount(self) -> None:
+        layout = json.loads(
+            (ROOT / "config/image-layout.json").read_text(encoding="utf-8")
+        )
+        component = next(
+            item for item in layout["components"] if item["name"] == "minifs"
+        )
+        volume_offset = component["lba"] * layout["sector_size"]
+        for name, corruption_offset in (("magic", 0), ("checksum", 100)):
+            with self.subTest(name=name):
+                image = self.build_directory / f"test-fixtures/minifs-{name}.img"
+                image.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.image, image)
+                with image.open("r+b") as stream:
+                    stream.seek(volume_offset + corruption_offset)
+                    original = stream.read(1)
+                    self.assertEqual(1, len(original))
+                    stream.seek(volume_offset + corruption_offset)
+                    stream.write(bytes((original[0] ^ 0xFF,)))
+                log = self.build_directory / f"test-logs/minifs-{name}.log"
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "tools/qemu_test.py",
+                        "--qemu",
+                        QEMU,
+                        "--image",
+                        str(image),
+                        "--log",
+                        str(log),
+                        "--timeout",
+                        "2",
+                        "--max-log-bytes",
+                        "262144",
+                        "--repo",
+                        str(ROOT),
+                        "--build-dir",
+                        self.build_relative.as_posix(),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=12,
+                    check=False,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("QEMU 超时", result.stderr)
+                output = log.read_text(encoding="utf-8", errors="replace")
+                self.assertIn("[KERN] block self-test PASS", output)
+                self.assertIn("[PANIC] MiniFS mount failed", output)
+                self.assertNotIn("[KERN] minifs mounted", output)
+                self.assertNotIn("[KERN] pic ready", output)
 
     def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:
         log = self.build_directory / "test-logs/keyboard-input.log"

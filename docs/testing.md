@@ -173,6 +173,8 @@ ATA/block 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：主 IDE 主
 
 MiniFS 宿主工具增量固定 LBA 2048 起始、16128 个 4 KiB 块、1024 个 64-byte inode、64-byte 目录项与 CRC32 Superblock ABI。确定性 mkfs 导入 6 个真实用户 ELF，`make_image.py` 逐字节装配 63 MiB 卷；只读 fsck 同时检查独立卷和整盘，并拒绝坏 magic、坏 CRC、bitmap 不一致、重复块和孤儿 inode。环境验证与干净镜像构建 PASS，MiniFS 工具 6/6、构建契约和真实产品启动组合 10/10、完整运行时构建回归 21/21 PASS（360.246 秒）。`minifs.img` SHA-256 为 `9d9c90bed5bc17c8781082d90ab4b27712bd9796bfe70bcf84c7c27413a5f415`；`kernel.elf` SHA-256 为 `1f7bb6bfe7346fc0b2c783c11862a86f9774499dc70739124677a990ad025965`；`miniorangeos.img` SHA-256 为 `13ec99ac8fac702ccd896c85ede839086e9064397d928326dcf58c2f1b7253af`。
 
+内核只读 MiniFS 增量从统一 JSON 生成卷起点/容量 C 头，挂载时校验设备范围、完整 CRC32、连续几何、元数据与 root bitmap；inode 和目录读取验证分配状态、direct/indirect 形状、数据块范围及类型一致性。绝对路径覆盖重复 `/`、`.`、`..`、尾随 `/`、不存在组件和中间普通文件；真实 QEMU 将磁盘 `/bin` 的 6 个 ELF 与 P5 嵌入副本逐字节比对。产品启动 PASS，坏 magic 与坏 CRC 临时镜像均在 PIC/用户态前失败关闭；相关构建/MiniFS 组合回归 18/18 PASS。干净镜像构建与完整启动专项 31/31 PASS；`kernel.elf` SHA-256 为 `78068413234f37e8c8bc0c36137af1cc791fa8147c68399b2d225349c75a9030`，`miniorangeos.img` SHA-256 为 `d7eee480f1ec3efa6d9e33b6ab8cd2c5f9286b3c5d552e73f0698bd6dbf17f3f`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

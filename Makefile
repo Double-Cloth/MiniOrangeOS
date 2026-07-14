@@ -125,6 +125,7 @@ KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
 KERNEL_BLOCK_BUILD_DIR := $(KERNEL_BUILD_DIR)/block
 KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
 KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
+KERNEL_FS_BUILD_DIR := $(KERNEL_BUILD_DIR)/fs
 KERNEL_MM_BUILD_DIR := $(KERNEL_BUILD_DIR)/mm
 KERNEL_PROC_BUILD_DIR := $(KERNEL_BUILD_DIR)/proc
 USER_BUILD_DIR := $(BUILD_ABS)/user
@@ -185,6 +186,8 @@ KERNEL_ATA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/ata.o
 KERNEL_ATA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/ata.d
 KERNEL_BLOCK_OBJ := $(KERNEL_BLOCK_BUILD_DIR)/block.o
 KERNEL_BLOCK_DEP := $(KERNEL_BLOCK_BUILD_DIR)/block.d
+KERNEL_MINIFS_OBJ := $(KERNEL_FS_BUILD_DIR)/minifs.o
+KERNEL_MINIFS_DEP := $(KERNEL_FS_BUILD_DIR)/minifs.d
 KERNEL_PMM_OBJ := $(KERNEL_MM_BUILD_DIR)/pmm.o
 KERNEL_PMM_DEP := $(KERNEL_MM_BUILD_DIR)/pmm.d
 KERNEL_VMM_OBJ := $(KERNEL_MM_BUILD_DIR)/vmm.o
@@ -219,6 +222,7 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_KEYBOARD_OBJ) \
 	$(KERNEL_ATA_OBJ) \
 	$(KERNEL_BLOCK_OBJ) \
+	$(KERNEL_MINIFS_OBJ) \
 	$(KERNEL_PMM_OBJ) \
 	$(KERNEL_VMM_OBJ) \
 	$(KERNEL_HEAP_OBJ) \
@@ -243,6 +247,7 @@ KERNEL_C_DEPS := \
 	$(KERNEL_KEYBOARD_DEP) \
 	$(KERNEL_ATA_DEP) \
 	$(KERNEL_BLOCK_DEP) \
+	$(KERNEL_MINIFS_DEP) \
 	$(KERNEL_PMM_DEP) \
 	$(KERNEL_VMM_DEP) \
 	$(KERNEL_HEAP_DEP) \
@@ -294,6 +299,7 @@ USER_FAULT_MAP := $(USER_BIN_BUILD_DIR)/fault.map
 USER_FAULT_SYM := $(USER_BIN_BUILD_DIR)/fault.sym
 
 MINIFS_IMAGE := $(FS_BUILD_DIR)/minifs.img
+MINIFS_LAYOUT_HEADER := $(KERNEL_BUILD_DIR)/minifs-layout.h
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
@@ -301,6 +307,7 @@ QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 KERNEL_CFLAGS := \
 	-I "$(ROOT_DIR)/include" \
 	-I "$(ROOT_DIR)/kernel/include" \
+	-I "$(KERNEL_BUILD_DIR)" \
 	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
 	-DMINIOS_TEST_PAGE_FAULT=$(KERNEL_TEST_PAGE_FAULT) \
 	-std=c11 \
@@ -410,6 +417,9 @@ prepare-build-dir:
 $(STAGE1_LAYOUT_INC): config/image-layout.json tools/generate_boot_layout.py | prepare-build-dir
 	$(PYTHON) tools/generate_boot_layout.py --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)" --layout "$<" --output "$@"
 
+$(MINIFS_LAYOUT_HEADER): config/image-layout.json tools/minifs.py tools/generate_minifs_layout.py | prepare-build-dir
+	$(PYTHON) tools/generate_minifs_layout.py --layout "$<" --output "$@"
+
 $(STAGE1_BIN): boot/stage1/boot.asm $(STAGE1_LAYOUT_INC) | prepare-build-dir
 	$(NASM) -I "$(BOOT_BUILD_DIR)/" -f bin -o "$@" "$<"
 
@@ -487,6 +497,9 @@ $(KERNEL_ATA_OBJ): kernel/drivers/ata.c | prepare-build-dir
 
 $(KERNEL_BLOCK_OBJ): kernel/block/block.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_BLOCK_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_MINIFS_OBJ): kernel/fs/minifs.c $(MINIFS_LAYOUT_HEADER) | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_MINIFS_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_PMM_OBJ): kernel/mm/pmm.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PMM_DEP)" -MT "$@" -c "$<" -o "$@"

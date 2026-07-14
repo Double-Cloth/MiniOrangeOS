@@ -70,6 +70,7 @@ EXPECTED_DEPFILES = (
     "kernel/proc/embedded_programs.d",
     "kernel/drivers/ata.d",
     "kernel/block/block.d",
+    "kernel/fs/minifs.d",
     "user/crt/start.d",
     "user/libc/syscall.d",
     "user/libc/string.d",

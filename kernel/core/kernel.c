@@ -9,6 +9,7 @@
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
+#include <minios/fs/minifs.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/pmm.h>
@@ -86,6 +87,15 @@ void kernel_main(const struct boot_info *boot_info)
         panic("block self-test failed");
     }
     console_printf("[KERN] block self-test PASS\n");
+    if (minifs_mount() != 0) {
+        panic("MiniFS mount failed");
+    }
+    console_printf("[KERN] minifs mounted blocks=%u inodes=%u\n",
+                   minifs_total_blocks(), minifs_total_inodes());
+    if (!minifs_self_test()) {
+        panic("MiniFS self-test failed");
+    }
+    console_printf("[KERN] minifs self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);
