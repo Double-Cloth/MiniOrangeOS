@@ -6,10 +6,21 @@ BITS 32
 %define COM1_LINE_STATUS            (COM1_BASE + 5)
 %define COM1_TRANSMIT_READY         0x20
 %define SERIAL_POLL_LIMIT           0x0000FFFF
+%define KERNEL_VIRTUAL_BASE         0xC0000000
+%define PAGE_PRESENT                0x00000001
+%define PAGE_WRITABLE               0x00000002
+%define PAGE_FLAGS                  (PAGE_PRESENT | PAGE_WRITABLE)
+%define PAGE_SIZE                   4096
+%define PAGE_ENTRY_COUNT            1024
+%define HIGH_HALF_PAGE_DIRECTORY    (KERNEL_VIRTUAL_BASE >> 22)
+%define BSS_PROBE_DIRTY             0xA5A5A5A5
 
 section .text
 global kernel_entry
+global kernel_high_entry
 extern kernel_main
+extern __bss_start
+extern __bss_end
 
 kernel_entry:
     cli
@@ -39,11 +50,59 @@ kernel_entry:
     pop esi
     add esi, message_boot_info_valid - .success_message_address
     call serial_write_line
+
+    mov edi, boot_page_table - KERNEL_VIRTUAL_BASE
+    mov eax, PAGE_FLAGS
+    mov ecx, PAGE_ENTRY_COUNT
+.fill_page_table:
+    mov [edi], eax
+    add eax, PAGE_SIZE
+    add edi, 4
+    loop .fill_page_table
+
+    mov edi, boot_page_directory - KERNEL_VIRTUAL_BASE
+    xor eax, eax
+    mov ecx, PAGE_ENTRY_COUNT
+    rep stosd
+
+    mov eax, boot_page_table - KERNEL_VIRTUAL_BASE
+    or eax, PAGE_FLAGS
+    mov edi, boot_page_directory - KERNEL_VIRTUAL_BASE
+    mov [edi], eax
+    mov [edi + HIGH_HALF_PAGE_DIRECTORY * 4], eax
+
+    mov dword [kernel_bss_probe - KERNEL_VIRTUAL_BASE], BSS_PROBE_DIRTY
+
+    mov eax, boot_page_directory - KERNEL_VIRTUAL_BASE
+    mov cr3, eax
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+
+    mov eax, kernel_high_entry
+    jmp eax
+
+kernel_high_entry:
+    mov edi, __bss_start
+    mov ecx, __bss_end
+    sub ecx, edi
+    xor eax, eax
+    rep stosb
+
+    mov esp, boot_stack_top
+    xor ebp, ebp
+
+    mov esi, message_paging_enabled
+    call serial_write_line
+    cmp dword [kernel_bss_probe], 0
+    jne bss_clear_failed
+    mov esi, message_bss_cleared
+    call serial_write_line
     call kernel_main
 
-.halt:
+kernel_halt:
     hlt
-    jmp .halt
+    jmp kernel_halt
 
 boot_info_invalid:
     call .failure_message_address
@@ -51,7 +110,12 @@ boot_info_invalid:
     pop esi
     add esi, message_boot_info_invalid - .failure_message_address
     call serial_write_line
-    jmp kernel_entry.halt
+    jmp kernel_halt
+
+bss_clear_failed:
+    mov esi, message_bss_clear_failed
+    call serial_write_line
+    jmp kernel_halt
 
 serial_write_line:
     call serial_write_string
@@ -95,3 +159,24 @@ serial_write_byte:
 section .rodata
 message_boot_info_valid: db "[KERN] boot info valid", 0
 message_boot_info_invalid: db "[KERN] boot info invalid", 0
+message_paging_enabled: db "[KERN] paging enabled", 0
+message_bss_cleared: db "[KERN] bss cleared", 0
+message_bss_clear_failed: db "[KERN] bss clear failed", 0
+
+section .boot.paging nobits alloc noexec write align=4096
+global boot_page_directory
+global boot_page_table
+boot_page_directory:
+    resb PAGE_SIZE
+boot_page_table:
+    resb PAGE_SIZE
+
+section .boot.stack nobits alloc noexec write align=4096
+boot_stack_bottom:
+    resb PAGE_SIZE * 4
+boot_stack_top:
+
+section .bss
+align 4
+kernel_bss_probe:
+    resd 1

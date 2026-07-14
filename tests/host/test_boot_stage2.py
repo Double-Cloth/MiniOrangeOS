@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
+KERNEL_ENTRY_SOURCE = ROOT / "kernel/arch/x86/entry.asm"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -341,6 +342,23 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             self.assertGreaterEqual(physical, 0x00100000)
             self.assertEqual(0xC0000000, virtual - physical)
 
+    def test_kernel_entry_declares_early_paging_and_bss_contract(self) -> None:
+        source = KERNEL_ENTRY_SOURCE.read_text(encoding="utf-8")
+        required_patterns = {
+            "页目录": r"(?m)^global boot_page_directory$",
+            "页表": r"(?m)^global boot_page_table$",
+            "加载 CR3": r"(?m)^\s*mov cr3, eax$",
+            "开启分页": r"(?m)^\s*or eax, 0x80000000$",
+            "高半入口": r"(?m)^global kernel_high_entry$",
+            "清零 BSS": r"(?m)^\s*rep stosb$",
+        }
+        missing = [
+            description
+            for description, pattern in required_patterns.items()
+            if re.search(pattern, source) is None
+        ]
+        self.assertEqual(missing, [], f"内核早期分页合同缺少：{', '.join(missing)}")
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -587,7 +605,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             r"^\[S2\] kernel loaded entry=0xC[0-9A-F]{7}$",
         )
         kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
-        self.assertEqual(kernel_lines, ["[KERN] boot info valid"])
+        self.assertEqual(
+            kernel_lines,
+            [
+                "[KERN] boot info valid",
+                "[KERN] paging enabled",
+                "[KERN] bss cleared",
+            ],
+        )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
 
     def test_corrupted_kernel_elf_is_rejected_before_entry(self) -> None:

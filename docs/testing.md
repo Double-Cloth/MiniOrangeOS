@@ -108,6 +108,16 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 
 该节只保留历史 T11 边界；P1 完成证据记录在 `docs/task-reports/P1-boot-chain.md`，不回写覆盖历史产物指纹。
 
+## P2 进行中证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中完成首个 P2 增量验证：
+
+- 早期分页源码合同覆盖页目录、页表、CR3、CR0.PG、高半入口与 `.bss` 清零；
+- Kernel ELF 保持两个 `PT_LOAD` 段，虚拟地址与物理地址差为 `0xC0000000`；`.boot.paging`、`.boot.stack` 和 `.bss` 均为 NOBITS；
+- `environment/verify.sh`：PASS；全量宿主测试：206/206 PASS；
+- 干净 `make image` 与 `make test-boot-qemu QEMU_TIMEOUT=5`：PASS，启动专项 12/12；真实镜像按序输出 `[KERN] boot info valid`、`[KERN] paging enabled`、`[KERN] bss cleared`，P1 损坏 ELF 负面路径无回退；
+- Kernel ELF 为 10,000 bytes，SHA-256 为 `ad04e3ef94ce989740c7adaeb4c08bdafc51c25db183557b71890d5e746b775a`；镜像为 67,108,864 bytes，SHA-256 为 `28c141a60e252110a735603d650773bc306cc686dd3db785523914fcc4050aa5`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
