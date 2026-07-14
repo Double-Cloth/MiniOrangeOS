@@ -141,4 +141,16 @@
 - 全量顺序还暴露 DrvFS 公开 QEMU 用例隐式依赖默认 `build` 父目录：前序构建用例会在清理后删除空父目录。用例现显式创建、验证并只在自己创建时回收该父目录，单项及最终全量均 PASS。
 - OCI `run.sh` 原先只读挂载仓库却直接在 `/workspace` 执行，使文档中的 `run.sh make test` 无法生成产物。P7 改为 `/source:ro` 挂载，由受保守 Shell 策略检查的 `run-inside.sh` 复制到容器临时可写目录并保持 argv 边界执行，容器退出时随 `--rm` 回收。
 - 首版 CI 只把测试输出写入 Actions 控制台，容器中的串口日志和镜像诊断会随 `--rm` 丢失，不满足失败证据合同。现由 `ci-run.sh` 把完整输出、QEMU 实际参数、残留日志、布局和镜像摘要导出到宿主挂载目录，workflow 失败时用固定提交的官方 action 上传。
-- 最终 WSL 聚合入口 243/243 PASS（898.861 秒）。GitHub workflow 已固定 runner、容器输入、两个官方 action SHA、失败证据边界和最小权限，但分支尚未推送，不能把本地 WSL/合同测试表述为原生 Linux CI PASS。
+- 最终 WSL 聚合入口 243/243 PASS（898.861 秒）。GitHub workflow 固定 runner、容器输入、两个官方 action SHA、失败证据边界和最小权限；后续原生 Ubuntu 24.04 运行 `29329613100` 对 `69be0c2` 完成环境验证及 246/246 PASS（170.948 秒）。
+
+## 2026-07-14 / P7 原生 Linux CI 校准
+
+任务：P7
+
+- workflow 的 job 级 `env` 首版引用 `${{ runner.temp }}`，GitHub 在 job 建立前无法解析该上下文，导致运行没有创建任何 job。改为在每个 Shell step 中从 runner 提供的 `$RUNNER_TEMP` 计算失败证据目录；上传 step 仍在支持该上下文的位置使用 `${{ runner.temp }}`。
+- Docker BuildKit 的构建 sandbox 具备真实 overlay/cgroup 事实，却不保证注入 `/.dockerenv` 或 `/run/.containerenv`。Containerfile 现仅在两个 marker 都缺失时创建可追踪的构建期 marker，并在最终镜像层精确删除，避免把构建兼容标记伪装成运行期事实。
+- Containerfile 原先只复制 `bootstrap-inside.sh` 和 `common.sh`，遗漏其真实依赖 `package_state_writer.py`；固定输入层现显式复制该 helper，系统阶段才能生成原子 package lock。
+- 直接以 `USER minios` 执行 BuildKit 工具链层会让 BuildKit 的 PID 1 运行时事实归非 root 用户所有，与特权系统阶段的身份检查冲突。现由 root layer 以 `runuser -u minios` 执行实际工具链构建：写入身份仍是普通用户，PID 1 与容器事实仍由构建 runtime 管理，最终镜像继续以 `USER minios` 运行。
+- GNU Binutils 发布归档省略了 315 个可由文件路径隐式创建的父目录项；旧来源清单只枚举 tar header，因此与真实解压树不一致。清单生成器现按 `umask 022` 合成缺失父目录，若归档随后给出显式目录项则以其元数据覆盖，并继续拒绝类型冲突、非目录父路径和保留 provenance 路径。
+- 固定镜像首次完整构建成功后，Docker 以最终 `USER minios` 启动测试容器，内核生成的 `/proc/1/cgroup` 与 `/proc/1/mountinfo` 因 PID 1 身份合法地归普通用户所有；旧验证器误要求 UID 0。现改为要求 `/proc/1` 与两个事实位于真实 `procfs`、所有者彼此一致且组/其他用户不可写，同时仍要求 root-owned OCI marker 和 overlay/cgroup 事实，不接受环境变量自证。
+- 除 workflow 尚未建立 job 的 expression 求值失败外，每次进入 job 的失败运行均由 `Upload failure evidence` 成功保留完整控制台输出、QEMU 参数、残留日志、布局和镜像摘要；这使修复依据来自对应远端 runner，而不是把本地推测写成结论。

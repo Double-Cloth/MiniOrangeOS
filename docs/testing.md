@@ -192,11 +192,13 @@ VFS/fd 增量加入 32 项 file object 池、每进程 16 项 fd 表、独立 of
 
 P6 最终验收在正式 `MiniOrangeOS-Dev` 中执行：环境验证 PASS，构建契约、MiniFS 工具与启动专项组合 49/49 PASS，受影响运行时构建专项 2/2 PASS，独立干净镜像构建及 `make test-image` PASS，全量宿主回归 239/239 PASS（565.244 秒）。专用双启动镜像在每轮 QEMU 后均由宿主 fsck 复核，产品路径完成用户命令创建、读取和跨重启持久化闭环。最终产物及哈希沿用上一段记录；完整证据见 `docs/task-reports/P6-disk-minifs.md`。
 
-## P7 进行中证据
+## P7 最终证据
 
 P7 首个收尾增量 `fb15888` 新增 `make check/test-host/test/loc/demo-persistence`、固定官方 action 提交与 `contents: read` 权限的 Ubuntu 24.04 容器 CI，以及 release checklist；`3daa1c1` 通过独立可审计脚本补齐完整输出、QEMU 实际命令行、残留串口日志、镜像布局和镜像哈希摘要，失败时上传并保留 14 天。正式 `MiniOrangeOS-Dev` 中 `make BUILD_DIR=.p7-aggregate test` 完成环境验证、完整镜像构建、fsck 与全量宿主/QEMU 243/243 PASS（898.861 秒）；另以 `.p7-release` 从清理状态执行 `make -j4 image` 和 `make test-image`，MiniFS 工具 6/6 PASS。独立 `make demo-persistence` 两次启动分别输出用户命令持久化 created/verified，逐轮 fsck PASS；`kernel.elf` 为 145656 bytes、SHA-256 `2a0749ff4fb27289c79e1a9f75b186b7dcd66ac0b777a0177ad84734aa87873b`，`minifs.img` 为 66060288 bytes、SHA-256 `79fe925f71552cf9b4fd47cedd99ef91b08a3bfc1d97ec0d5c301435156ead2b`，`miniorangeos.img` 为 67108864 bytes、SHA-256 `3c55f18a0a4768d98e8d834a9f783c47adf7d77c88d9576d436f4f35bb0001fe`。
 
-`make loc` 已按 Boot/Loader 汇编、内核 C/汇编、共享 ABI、用户程序/libc、工具、测试、文档、构建配置、自动生成与第三方边界输出统计：共 174 个文本文件、39,872 行、35,836 个非空行；自动生成与第三方文件均为 0。GitHub workflow 尚未推送触发，因此原生 Linux CI 仍是 P7 未完成项。
+GitHub Actions 原生 Ubuntu 24.04 运行 [29329613100](https://github.com/Double-Cloth/MiniOrangeOS/actions/runs/29329613100) 对提交 `69be0c2` 从固定 OCI 基础镜像构建项目开发环境，环境验证报告 `environment_kind=container` 与 `result=PASS`，随后执行聚合 `make test`：246/246 PASS，用时 170.948 秒，其中 23 项 Windows/WSL 平台限定测试按设计跳过。镜像构建用时 20 分 50 秒，完整 job 用时 23 分 51 秒；成功路径按合同跳过失败上传，Actions API 返回 0 个 artifact。此前失败运行均成功上传证据，最终校准过程见 `docs/problems.md`。
+
+`make loc` 已按 Boot/Loader 汇编、内核 C/汇编、共享 ABI、用户程序/libc、工具、测试、文档、构建配置、自动生成与第三方边界输出统计：共 175 个文本文件、40,144 行、36,072 个非空行；自动生成与第三方文件均为 0。
 
 ## 串口测试协议
 

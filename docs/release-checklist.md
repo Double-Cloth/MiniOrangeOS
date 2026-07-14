@@ -15,7 +15,7 @@
 - [x] `./environment/with-env.sh make test` 聚合入口 PASS。
 - [x] `./environment/with-env.sh make loc` 生成分类型代码量统计。
 - [x] 最终 `kernel.elf`、`minifs.img` 与 `miniorangeos.img` 已记录大小和 SHA-256。
-- [ ] Linux CI 在干净 Ubuntu runner 的固定容器环境中 PASS。
+- [x] Linux CI 在干净 Ubuntu runner 的固定容器环境中 PASS（运行 `29329613100`，提交 `69be0c2`，246/246 PASS）。
 
 ## 演示闭环
 
