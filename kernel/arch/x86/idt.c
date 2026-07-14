@@ -5,6 +5,8 @@
 
 #define IDT_ENTRY_COUNT 256
 #define CPU_EXCEPTION_COUNT 32U
+#define HARDWARE_IRQ_COUNT 16U
+#define HARDWARE_IRQ_BASE 32U
 #define KERNEL_CODE_SELECTOR 0x0008U
 #define IDT_INTERRUPT_GATE 0x8EU
 
@@ -25,6 +27,7 @@ _Static_assert(sizeof(struct idt_entry) == 8U, "IDT entry 必须为 8 bytes");
 _Static_assert(sizeof(struct idt_pointer) == 6U, "IDTR operand 必须为 6 bytes");
 
 extern void (*exception_stub_table[CPU_EXCEPTION_COUNT])(void);
+extern void (*irq_stub_table[HARDWARE_IRQ_COUNT])(void);
 void idt_load(const struct idt_pointer *pointer);
 
 static struct idt_entry idt[IDT_ENTRY_COUNT];
@@ -54,6 +57,9 @@ void idt_init(void)
     }
     for (index = 0U; index < CPU_EXCEPTION_COUNT; ++index) {
         idt_set_gate(index, exception_stub_table[index]);
+    }
+    for (index = 0U; index < HARDWARE_IRQ_COUNT; ++index) {
+        idt_set_gate(HARDWARE_IRQ_BASE + index, irq_stub_table[index]);
     }
 
     idtr.limit = (uint16_t)(sizeof(idt) - 1U);

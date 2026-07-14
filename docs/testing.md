@@ -129,6 +129,8 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 
 同日完成 IDT/CPU 异常验证：正式镜像安装 256 项 IDT 的前 32 个异常门并输出 `[KERN] idt ready`；独立测试镜像执行 `int3`，真实串口输出 `[PANIC] exception vector=3 error=0 eip=0x...`，证明 stub、trap frame、C 分发和 panic 全链路。`KERNEL_TEST_BREAKPOINT` 非 `0/1` 或包含 Make 函数时在产生副作用前拒绝。启动专项 17/17 PASS，全量宿主测试 211/211 PASS。Kernel ELF 为 12,716 bytes，SHA-256 为 `8cbccb08ca50187f6b5c4ad5bb02ecf8e78b68b86c1e9cd841cd29cf115e39df`；镜像为 67,108,864 bytes，SHA-256 为 `e779a2013f3e1066f96930682bd20de46501c3b802a683e45408ebad156d3221`。
 
+同日完成 PIC/PIT 验证：正式镜像将 PIC 重映射到 `0x20/0x28`，安装 16 个 IRQ 门，只放开 IRQ0，并在开启中断后由真实 PIT 依次输出 `[KERN] interrupts enabled` 与 `[KERN] pit tick=5`。启动专项 18/18 PASS，全量宿主测试 212/212 PASS。Kernel ELF 为 13,880 bytes，SHA-256 为 `8a5603dcc5e5728b4e4e8a640276408646dff31ed629f6b0ffc78ac26e53280c`；镜像为 67,108,864 bytes，SHA-256 为 `360e68b8c255ba794a08c4fa5e0afb82b5317717db91babdf9d23c84df81c31c`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

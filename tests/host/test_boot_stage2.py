@@ -26,6 +26,11 @@ KERNEL_GDT_ASSEMBLY = ROOT / "kernel/arch/x86/gdt.asm"
 KERNEL_IDT_SOURCE = ROOT / "kernel/arch/x86/idt.c"
 KERNEL_EXCEPTION_ASSEMBLY = ROOT / "kernel/arch/x86/exceptions.asm"
 KERNEL_EXCEPTION_SOURCE = ROOT / "kernel/arch/x86/exception.c"
+KERNEL_TRAP_FRAME_HEADER = ROOT / "kernel/include/minios/arch/x86/trap_frame.h"
+KERNEL_IRQ_ASSEMBLY = ROOT / "kernel/arch/x86/irqs.asm"
+KERNEL_IRQ_SOURCE = ROOT / "kernel/arch/x86/irq.c"
+KERNEL_PIC_SOURCE = ROOT / "kernel/drivers/pic.c"
+KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -408,17 +413,37 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             KERNEL_IDT_SOURCE,
             KERNEL_EXCEPTION_ASSEMBLY,
             KERNEL_EXCEPTION_SOURCE,
+            KERNEL_TRAP_FRAME_HEADER,
         )
         self.assertEqual([path.name for path in required if not path.is_file()], [])
         idt = KERNEL_IDT_SOURCE.read_text(encoding="utf-8")
         stubs = KERNEL_EXCEPTION_ASSEMBLY.read_text(encoding="utf-8")
         handler = KERNEL_EXCEPTION_SOURCE.read_text(encoding="utf-8")
+        trap_frame = KERNEL_TRAP_FRAME_HEADER.read_text(encoding="utf-8")
         self.assertIn("IDT_ENTRY_COUNT 256", idt)
         self.assertIn("IDT_INTERRUPT_GATE 0x8E", idt)
         self.assertIn("exception_stub_table", stubs)
         self.assertEqual(len(re.findall(r"(?m)^EXCEPTION_(?:NO_ERROR|ERROR) \d+$", stubs)), 32)
-        self.assertIn("struct trap_frame", handler)
+        self.assertIn("struct trap_frame", trap_frame)
         self.assertIn("panicf", handler)
+
+    def test_kernel_declares_pic_pit_and_irq_contract(self) -> None:
+        required = (
+            KERNEL_IRQ_ASSEMBLY,
+            KERNEL_IRQ_SOURCE,
+            KERNEL_PIC_SOURCE,
+            KERNEL_PIT_SOURCE,
+        )
+        self.assertEqual([path.name for path in required if not path.is_file()], [])
+        irqs = KERNEL_IRQ_ASSEMBLY.read_text(encoding="utf-8")
+        pic = KERNEL_PIC_SOURCE.read_text(encoding="utf-8")
+        pit = KERNEL_PIT_SOURCE.read_text(encoding="utf-8")
+        self.assertEqual(len(re.findall(r"(?m)^IRQ_STUB \d+$", irqs)), 16)
+        self.assertIn("0x20", pic)
+        self.assertIn("0x28", pic)
+        self.assertIn("pic_send_eoi", pic)
+        self.assertIn("1193182", pit)
+        self.assertIn("[KERN] pit tick=%u", pit)
 
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
@@ -675,6 +700,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
                 "[KERN] gdt ready",
                 "[KERN] idt ready",
+                "[KERN] pic ready",
+                "[KERN] pit ready hz=100",
+                "[KERN] interrupts enabled",
+                "[KERN] pit tick=5",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")

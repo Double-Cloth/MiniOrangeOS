@@ -133,10 +133,14 @@ KERNEL_GDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/gdt.o
 KERNEL_GDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/gdt.d
 KERNEL_EXCEPTION_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exceptions.o
 KERNEL_EXCEPTION_DEP := $(KERNEL_ARCH_BUILD_DIR)/exceptions.d
+KERNEL_IRQ_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irqs.o
+KERNEL_IRQ_DEP := $(KERNEL_ARCH_BUILD_DIR)/irqs.d
 KERNEL_IDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/idt.o
 KERNEL_IDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/idt.d
 KERNEL_EXCEPTION_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exception.o
 KERNEL_EXCEPTION_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/exception.d
+KERNEL_IRQ_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irq.o
+KERNEL_IRQ_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/irq.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
 KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
@@ -147,24 +151,34 @@ KERNEL_SERIAL_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/serial.o
 KERNEL_SERIAL_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/serial.d
 KERNEL_VGA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/vga.o
 KERNEL_VGA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/vga.d
+KERNEL_PIC_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/pic.o
+KERNEL_PIC_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/pic.d
+KERNEL_PIT_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/pit.o
+KERNEL_PIT_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/pit.d
 KERNEL_C_OBJECTS := \
 	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_IDT_OBJ) \
 	$(KERNEL_EXCEPTION_C_OBJ) \
+	$(KERNEL_IRQ_C_OBJ) \
 	$(KERNEL_CORE_OBJ) \
 	$(KERNEL_CONSOLE_OBJ) \
 	$(KERNEL_PANIC_OBJ) \
 	$(KERNEL_SERIAL_OBJ) \
-	$(KERNEL_VGA_OBJ)
+	$(KERNEL_VGA_OBJ) \
+	$(KERNEL_PIC_OBJ) \
+	$(KERNEL_PIT_OBJ)
 KERNEL_C_DEPS := \
 	$(KERNEL_GDT_DEP) \
 	$(KERNEL_IDT_DEP) \
 	$(KERNEL_EXCEPTION_C_DEP) \
+	$(KERNEL_IRQ_C_DEP) \
 	$(KERNEL_CORE_DEP) \
 	$(KERNEL_CONSOLE_DEP) \
 	$(KERNEL_PANIC_DEP) \
 	$(KERNEL_SERIAL_DEP) \
-	$(KERNEL_VGA_DEP)
+	$(KERNEL_VGA_DEP) \
+	$(KERNEL_PIC_DEP) \
+	$(KERNEL_PIT_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -264,11 +278,17 @@ $(KERNEL_GDT_OBJ): kernel/arch/x86/gdt.c | prepare-build-dir
 $(KERNEL_EXCEPTION_OBJ): kernel/arch/x86/exceptions.asm | prepare-build-dir
 	$(NASM) -f elf32 -MD "$(KERNEL_EXCEPTION_DEP)" -MT "$@" -o "$@" "$<"
 
+$(KERNEL_IRQ_OBJ): kernel/arch/x86/irqs.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_IRQ_DEP)" -MT "$@" -o "$@" "$<"
+
 $(KERNEL_IDT_OBJ): kernel/arch/x86/idt.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IDT_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_EXCEPTION_C_OBJ): kernel/arch/x86/exception.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_EXCEPTION_C_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_IRQ_C_OBJ): kernel/arch/x86/irq.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IRQ_C_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
@@ -285,8 +305,14 @@ $(KERNEL_SERIAL_OBJ): kernel/drivers/serial.c | prepare-build-dir
 $(KERNEL_VGA_OBJ): kernel/drivers/vga.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VGA_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_C_OBJECTS)
+$(KERNEL_PIC_OBJ): kernel/drivers/pic.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PIC_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PIT_OBJ): kernel/drivers/pit.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PIT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -307,4 +333,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_C_DEPS)
