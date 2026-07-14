@@ -43,6 +43,14 @@ SECTIONS
         *(.text16.edd)
     } :edd
 
+    __stage2_real_mode_end = .;
+
+    .text32 : ALIGN(16)
+    {
+        KEEP(*(.text32.entry))
+        *(.text32*)
+    } :text
+
     .bss : ALIGN(16)
     {
         *(COMMON)
@@ -50,12 +58,14 @@ SECTIONS
         *(.bss*)
     } :data
 
-    __stage2_real_mode_end = .;
+    __stage2_image_end = .;
 
     ASSERT(stage2_entry == 0x8000,
            "Stage 2 entry must remain at physical address 0x8000")
     ASSERT(__stage2_real_mode_end <= 0x10000,
            "Stage 2 real-mode image exceeds the 16-bit absolute address range")
+    ASSERT(__stage2_image_end <= 0x18000,
+           "Stage 2 image overlaps the E820 buffer")
 
     /DISCARD/ :
     {

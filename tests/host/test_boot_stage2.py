@@ -1,4 +1,4 @@
-"""在 Linux/WSL 中验证 T11 Stage 2 实模式框架。"""
+"""在 Linux/WSL 中验证 Stage 2 实模式接口与 P1 模式切换。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _is_supported_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
-@unittest.skipUnless(_is_supported_linux(), "T11 构建与真实 QEMU 验证只在 Linux 环境执行")
+@unittest.skipUnless(_is_supported_linux(), "Stage 2 构建与真实 QEMU 验证只在 Linux 环境执行")
 class BootStage2Tests(unittest.TestCase):
     temporary_directory: tempfile.TemporaryDirectory[str]
     build_relative: Path
@@ -35,7 +35,7 @@ class BootStage2Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory(
-            prefix=".t11-host-", dir=ROOT
+            prefix=".p1-stage2-host-", dir=ROOT
         )
         temporary_root = Path(cls.temporary_directory.name)
         cls.build_directory = temporary_root / "build"
@@ -44,7 +44,7 @@ class BootStage2Tests(unittest.TestCase):
         result = cls._run_make("-j4", "image", timeout=90)
         if result.returncode != 0:
             raise AssertionError(
-                "T11 正式镜像构建失败：\n"
+                "Stage 2 正式镜像构建失败：\n"
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             )
@@ -149,7 +149,7 @@ class BootStage2Tests(unittest.TestCase):
 
     @classmethod
     def _build_bios_fixture_image(cls) -> Path:
-        fixture_directory = cls.build_directory / "test-fixtures/t11-bios"
+        fixture_directory = cls.build_directory / "test-fixtures/stage2-bios"
         fixture_directory.mkdir(parents=True, exist_ok=True)
         fixture_object = fixture_directory / "fixture.o"
         stage2_object = fixture_directory / "stage2-entry.o"
@@ -213,13 +213,13 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             result = cls._run_tool(command[0], *command[1:], timeout=20)
             if result.returncode != 0:
                 raise AssertionError(
-                    f"T11 BIOS fixture 构建失败：{' '.join(command)}\n"
+                    f"Stage 2 BIOS fixture 构建失败：{' '.join(command)}\n"
                     f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                 )
 
         payload = fixture_binary.read_bytes()
         if not payload or len(payload) > 127 * 512:
-            raise AssertionError(f"T11 BIOS fixture 大小非法：{len(payload)}")
+            raise AssertionError(f"Stage 2 BIOS fixture 大小非法：{len(payload)}")
         shutil.copyfile(cls.image, fixture_image)
         with fixture_image.open("r+b") as image_file:
             image_file.seek(512)
@@ -228,10 +228,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             image_file.write(payload)
         return fixture_image
 
-    def test_source_declares_real_mode_and_public_interfaces(self) -> None:
+    def test_source_declares_both_cpu_modes_and_public_interfaces(self) -> None:
         source = STAGE2_SOURCE.read_text(encoding="utf-8")
         self.assertRegex(source, r"(?im)^\s*BITS\s+16\s*$")
-        self.assertNotRegex(source, r"(?im)^\s*BITS\s+32\s*$")
+        self.assertRegex(source, r"(?im)^\s*BITS\s+32\s*$")
 
         readelf = self._run_tool(
             "i686-elf-readelf", "-sW", str(self.stage2_elf), timeout=15
@@ -239,7 +239,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertEqual(readelf.returncode, 0, readelf.stdout + readelf.stderr)
         for symbol in (
             "stage2_entry",
+            "stage2_protected_entry",
             "stage2_boot_drive",
+            "e820_entry_count",
             "bios_write_char",
             "bios_disk_read_edd",
         ):
@@ -248,6 +250,26 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 rf"(?m)^\s*\d+:\s+[0-9a-fA-F]+\s+\d+\s+\S+\s+GLOBAL\s+\S+\s+\S+\s+{re.escape(symbol)}$",
                 f"{symbol} 必须作为可链接的全局接口导出",
             )
+
+    def test_source_bounds_e820_and_sets_cr0_pe_before_far_jump(self) -> None:
+        source = STAGE2_SOURCE.read_text(encoding="utf-8")
+        required_patterns = {
+            "E820 缓冲地址": r"(?m)^%define E820_BUFFER_SEGMENT\s+0x1800$",
+            "E820 固定条目大小": r"(?m)^%define E820_ENTRY_SIZE\s+24$",
+            "E820 条目上限": r"(?m)^%define E820_MAX_ENTRIES\s+128$",
+            "加载临时 GDT": r"(?m)^\s*lgdt \[gdt_descriptor\]$",
+            "读取 CR0": r"(?m)^\s*mov eax, cr0$",
+            "写回 CR0": r"(?m)^\s*mov cr0, eax$",
+            "远跳保护模式入口": (
+                r"(?m)^\s*jmp dword GDT_CODE_SELECTOR:stage2_protected_entry$"
+            ),
+        }
+        missing = [
+            description
+            for description, pattern in required_patterns.items()
+            if re.search(pattern, source) is None
+        ]
+        self.assertEqual(missing, [], f"Stage 2 模式切换合同缺少：{', '.join(missing)}")
 
     def test_stage2_artifacts_are_elf32_and_bounded_binary(self) -> None:
         payload = self.stage2_binary.read_bytes()
@@ -331,11 +353,16 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         self.assertLess(drive_stores[0], first_call, "必须在任何 BIOS/内部调用前保存 DL")
 
-    def test_stage2_embeds_t11_serial_message_and_drive_prefix(self) -> None:
+    def test_stage2_embeds_boot_progress_and_failure_messages(self) -> None:
         payload = self.stage2_binary.read_bytes()
         for message in (
             b"[S2] loader entered\x00",
             b"[S2] boot drive=0x\x00",
+            b"[S2] A20 enabled\x00",
+            b"[S2] A20 failure\x00",
+            b"[S2] E820 entries=0x\x00",
+            b"[S2] E820 failure\x00",
+            b"[S2] protected mode entered\x00",
         ):
             self.assertEqual(
                 payload.count(message), 1, f"stage2.bin 必须唯一包含 {message!r}"
@@ -445,7 +472,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertEqual(
             result.returncode,
             0,
-            "T11 正式 BIOS 接口动态夹具失败：\n"
+            "Stage 2 正式 BIOS 接口动态夹具失败：\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\nserial:\n{output}",
         )
         self.assertIn("[TEST] case=bios_write_char PASS", output)
@@ -478,25 +505,31 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             timeout=12,
             check=False,
         )
-        self.assertNotEqual(result.returncode, 0, "T11 尚未定义测试 PASS/退出握手")
+        self.assertNotEqual(result.returncode, 0, "P1 尚未定义最终测试 PASS/退出握手")
         self.assertIn("QEMU 超时", result.stderr, "正式 Loader 必须由安全 runner 超时清理")
         output = log.read_text(encoding="utf-8", errors="replace")
         boot_lines = re.findall(r"(?m)^\[(?:S1|S2)\][^\r\n]*", output)
+        self.assertEqual(len(boot_lines), 7, f"启动阶段日志数量异常：\n{output}")
         self.assertEqual(
-            boot_lines,
+            boot_lines[:5],
             [
                 "[S1] boot",
                 "[S1] loader loaded",
                 "[S2] loader entered",
                 "[S2] boot drive=0x80",
+                "[S2] A20 enabled",
             ],
             f"正式启动链未按 S1→S2 合同输出：\n{output}",
         )
-        self.assertNotIn("[TEST]", output, "T11 不得伪造 T03 串口测试 PASS")
-        self.assertIsNone(
-            re.search(r"(?i)\b(?:a20|e820|protected mode|kernel loaded)\b", output),
-            "T11 日志不得提前宣称 T12+ 功能完成",
+        self.assertRegex(
+            boot_lines[5],
+            r"^\[S2\] E820 entries=0x[0-9A-F]{4}$",
+            "E820 成功日志必须包含固定宽度的非零条目数",
         )
+        self.assertNotEqual(boot_lines[5], "[S2] E820 entries=0x0000")
+        self.assertEqual(boot_lines[6], "[S2] protected mode entered")
+        self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
+        self.assertNotIn("kernel loaded", output.lower(), "内核加载未完成前不得提前宣称成功")
 
 
 if __name__ == "__main__":
