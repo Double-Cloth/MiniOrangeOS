@@ -19,7 +19,7 @@
 |---|---|---|
 | P0 工程基础 | 完成 | 历史 T00-T03 已完成：工程骨架、隔离环境、构建镜像、QEMU/GDB 自动化 |
 | P1 启动链 | 完成 | `d8fab7b` 合并；环境 PASS、启动专项 11/11、完整宿主 205/205、真实 QEMU 到达 `[KERN] boot info valid` |
-| P2 内核基础与中断 | 未开始 | 高半入口、日志、panic、GDT/IDT、异常、PIC/PIT、键盘 |
+| P2 内核基础与中断 | 完成 | 分页、控制台/panic、GDT/IDT、异常、PIC/PIT、PS/2 键盘；环境 PASS、启动专项 20/20、全量宿主 214/214、真实按键注入 PASS |
 | P3 内存管理 | 未开始 | PMM、VMM、kernel heap、用户地址空间、usercopy、page fault |
 | P4 进程与系统调用 | 未开始 | PCB、上下文切换、抢占式调度、TSS、Ring 3、`int 0x80` |
 | P5 ELF 用户态与 Shell | 未开始 | 用户 ELF 加载、crt0、最小 libc、init、Shell、基础用户程序 |

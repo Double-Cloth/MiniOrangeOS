@@ -108,6 +108,31 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 
 该节只保留历史 T11 边界；P1 完成证据记录在 `docs/task-reports/P1-boot-chain.md`，不回写覆盖历史产物指纹。
 
+## P2 进行中证据
+
+2026-07-14 在正式 `MiniOrangeOS-Dev` 中完成首个 P2 增量验证：
+
+- 早期分页源码合同覆盖页目录、页表、CR3、CR0.PG、高半入口与 `.bss` 清零；
+- Kernel ELF 保持两个 `PT_LOAD` 段，虚拟地址与物理地址差为 `0xC0000000`；`.boot.paging`、`.boot.stack` 和 `.bss` 均为 NOBITS；
+- `environment/verify.sh`：PASS；全量宿主测试：206/206 PASS；
+- 干净 `make image` 与 `make test-boot-qemu QEMU_TIMEOUT=5`：PASS，启动专项 12/12；真实镜像按序输出 `[KERN] boot info valid`、`[KERN] paging enabled`、`[KERN] bss cleared`，P1 损坏 ELF 负面路径无回退；
+- Kernel ELF 为 10,000 bytes，SHA-256 为 `ad04e3ef94ce989740c7adaeb4c08bdafc51c25db183557b71890d5e746b775a`；镜像为 67,108,864 bytes，SHA-256 为 `28c141a60e252110a735603d650773bc306cc686dd3db785523914fcc4050aa5`。
+
+同日完成第二个 P2 增量的定向验证：
+
+- COM1、VGA、最小格式化器与 panic 源码合同 PASS；构建合同及内核精确增量依赖专项 5/5 PASS；
+- `make test-boot-qemu QEMU_TIMEOUT=5`：13/13 PASS，正式镜像新增输出 `[KERN] console ready hex=c0ffee dec=42 str=ok`，同时证明 `%x`、`%u` 和 `%s` 的运行时路径；
+- 全量宿主测试：207/207 PASS；Kernel ELF 为 10,876 bytes，SHA-256 为 `9e44778414b87db5526abacdde2ecc6f14f27c36047b839acd2959cad6621d34`；镜像为 67,108,864 bytes，SHA-256 为 `c663296fce89f01d3b6d61403815d893be9dc571f5912364647ecef7840a1aff`；
+- panic 的实际触发与 `[PANIC]` 串口可见性将在 CPU 异常负面测试中一并验收，当前只完成编译与源码合同，不将未触发路径记录为运行时 PASS。
+
+同日完成正式 Ring 0 GDT 验证：3 个描述符分别为 null、4 GiB code、4 GiB data，`lgdt` 后重载数据段、`SS` 与 `CS`；正式镜像在既有控制台日志后输出 `[KERN] gdt ready`。启动专项 14/14 PASS，全量宿主测试 208/208 PASS。Kernel ELF 为 11,112 bytes，SHA-256 为 `4587bf4ec6b2edc35e670f1efe7d9f6ba49b955ee5fb62e7a31d388f9519e0e4`；镜像为 67,108,864 bytes，SHA-256 为 `d8fa8fb764c23212e4181907daf80d50f84c56bf378d555285f6e9dd81317b56`。Ring 3 描述符和 TSS 明确保留到 P4，不提前扩大 P2 范围。
+
+同日完成 IDT/CPU 异常验证：正式镜像安装 256 项 IDT 的前 32 个异常门并输出 `[KERN] idt ready`；独立测试镜像执行 `int3`，真实串口输出 `[PANIC] exception vector=3 error=0 eip=0x...`，证明 stub、trap frame、C 分发和 panic 全链路。`KERNEL_TEST_BREAKPOINT` 非 `0/1` 或包含 Make 函数时在产生副作用前拒绝。启动专项 17/17 PASS，全量宿主测试 211/211 PASS。Kernel ELF 为 12,716 bytes，SHA-256 为 `8cbccb08ca50187f6b5c4ad5bb02ecf8e78b68b86c1e9cd841cd29cf115e39df`；镜像为 67,108,864 bytes，SHA-256 为 `e779a2013f3e1066f96930682bd20de46501c3b802a683e45408ebad156d3221`。
+
+同日完成 PIC/PIT 验证：正式镜像将 PIC 重映射到 `0x20/0x28`，安装 16 个 IRQ 门，只放开 IRQ0，并在开启中断后由真实 PIT 依次输出 `[KERN] interrupts enabled` 与 `[KERN] pit tick=5`。启动专项 18/18 PASS，全量宿主测试 212/212 PASS。Kernel ELF 为 13,880 bytes，SHA-256 为 `8a5603dcc5e5728b4e4e8a640276408646dff31ed629f6b0ffc78ac26e53280c`；镜像为 67,108,864 bytes，SHA-256 为 `360e68b8c255ba794a08c4fa5e0afb82b5317717db91babdf9d23c84df81c31c`。
+
+P2 最终键盘验收在正式 `MiniOrangeOS-Dev` 中完成：PS/2 控制器和第一端口自检、set-1 translation、`F4/FA` 扫描启用、IRQ1、Shift/Caps/extended/break 状态与 64-byte 环形缓冲源码合同 PASS；独立真实 QEMU 通过 HMP `sendkey a` 注入按键，串口观察到 `[KERN] keyboard input=a`。环境自检 PASS，启动专项 20/20 PASS，全量宿主测试 214/214 PASS；干净默认构建再次通过。Kernel ELF 为 19,076 bytes，SHA-256 为 `e441273b3035d73940620ab3de666694818437d4f0e20fe5adef6c3f2d151548`；镜像为 67,108,864 bytes，SHA-256 为 `8b5d2726cc6ee0275bc62af4b5f435b5bf2b1b106e88af174b2add58474596ee`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

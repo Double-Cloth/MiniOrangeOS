@@ -25,6 +25,16 @@ SECTIONS
         *(.rodata*)
     } :text
 
+    .boot_paging ALIGN(4096) : AT(ADDR(.boot_paging) - KERNEL_VIRTUAL_BASE)
+    {
+        *(.boot.paging)
+    } :data
+
+    .boot_stack ALIGN(4096) : AT(ADDR(.boot_stack) - KERNEL_VIRTUAL_BASE)
+    {
+        *(.boot.stack)
+    } :data
+
     .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VIRTUAL_BASE)
     {
         *(.data*)
@@ -32,8 +42,10 @@ SECTIONS
 
     .bss ALIGN(4096) : AT(ADDR(.bss) - KERNEL_VIRTUAL_BASE)
     {
+        __bss_start = .;
         *(COMMON)
         *(.bss*)
+        __bss_end = .;
     } :data
 
     __kernel_virtual_start = KERNEL_VIRTUAL_BASE + KERNEL_PHYSICAL_BASE;

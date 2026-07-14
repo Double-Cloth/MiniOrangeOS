@@ -6,16 +6,34 @@ import json
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
+KERNEL_ENTRY_SOURCE = ROOT / "kernel/arch/x86/entry.asm"
+KERNEL_CONSOLE_SOURCE = ROOT / "kernel/core/console.c"
+KERNEL_PANIC_SOURCE = ROOT / "kernel/core/panic.c"
+KERNEL_SERIAL_SOURCE = ROOT / "kernel/drivers/serial.c"
+KERNEL_VGA_SOURCE = ROOT / "kernel/drivers/vga.c"
+KERNEL_GDT_SOURCE = ROOT / "kernel/arch/x86/gdt.c"
+KERNEL_GDT_ASSEMBLY = ROOT / "kernel/arch/x86/gdt.asm"
+KERNEL_IDT_SOURCE = ROOT / "kernel/arch/x86/idt.c"
+KERNEL_EXCEPTION_ASSEMBLY = ROOT / "kernel/arch/x86/exceptions.asm"
+KERNEL_EXCEPTION_SOURCE = ROOT / "kernel/arch/x86/exception.c"
+KERNEL_TRAP_FRAME_HEADER = ROOT / "kernel/include/minios/arch/x86/trap_frame.h"
+KERNEL_IRQ_ASSEMBLY = ROOT / "kernel/arch/x86/irqs.asm"
+KERNEL_IRQ_SOURCE = ROOT / "kernel/arch/x86/irq.c"
+KERNEL_PIC_SOURCE = ROOT / "kernel/drivers/pic.c"
+KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
+KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -341,6 +359,104 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             self.assertGreaterEqual(physical, 0x00100000)
             self.assertEqual(0xC0000000, virtual - physical)
 
+    def test_kernel_entry_declares_early_paging_and_bss_contract(self) -> None:
+        source = KERNEL_ENTRY_SOURCE.read_text(encoding="utf-8")
+        required_patterns = {
+            "页目录": r"(?m)^global boot_page_directory$",
+            "页表": r"(?m)^global boot_page_table$",
+            "加载 CR3": r"(?m)^\s*mov cr3, eax$",
+            "开启分页": r"(?m)^\s*or eax, 0x80000000$",
+            "高半入口": r"(?m)^global kernel_high_entry$",
+            "清零 BSS": r"(?m)^\s*rep stosb$",
+        }
+        missing = [
+            description
+            for description, pattern in required_patterns.items()
+            if re.search(pattern, source) is None
+        ]
+        self.assertEqual(missing, [], f"内核早期分页合同缺少：{', '.join(missing)}")
+
+    def test_kernel_console_and_panic_contract(self) -> None:
+        required_sources = {
+            "控制台": KERNEL_CONSOLE_SOURCE,
+            "panic": KERNEL_PANIC_SOURCE,
+            "COM1": KERNEL_SERIAL_SOURCE,
+            "VGA": KERNEL_VGA_SOURCE,
+        }
+        missing_files = [
+            description
+            for description, source in required_sources.items()
+            if not source.is_file()
+        ]
+        self.assertEqual(missing_files, [], f"内核输出源码缺少：{', '.join(missing_files)}")
+
+        console = KERNEL_CONSOLE_SOURCE.read_text(encoding="utf-8")
+        panic = KERNEL_PANIC_SOURCE.read_text(encoding="utf-8")
+        serial = KERNEL_SERIAL_SOURCE.read_text(encoding="utf-8")
+        vga = KERNEL_VGA_SOURCE.read_text(encoding="utf-8")
+        for specifier in ("%s", "%c", "%u", "%d", "%x", "%p", "%%"):
+            self.assertIn(specifier, console)
+        self.assertIn("_Noreturn void panic", panic)
+        self.assertIn("0x03F8", serial)
+        self.assertIn("0xC00B8000", vga)
+
+    def test_kernel_declares_formal_ring0_gdt_contract(self) -> None:
+        self.assertTrue(KERNEL_GDT_SOURCE.is_file(), "缺少正式 GDT C 实现")
+        self.assertTrue(KERNEL_GDT_ASSEMBLY.is_file(), "缺少正式 GDT 加载入口")
+        source = KERNEL_GDT_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_GDT_ASSEMBLY.read_text(encoding="utf-8")
+        self.assertIn("0x9A", source)
+        self.assertIn("0x92", source)
+        self.assertIn("0xCF", source)
+        self.assertIn("lgdt", assembly)
+        self.assertIn("jmp 0x08:", assembly)
+
+    def test_kernel_declares_idt_and_exception_contract(self) -> None:
+        required = (
+            KERNEL_IDT_SOURCE,
+            KERNEL_EXCEPTION_ASSEMBLY,
+            KERNEL_EXCEPTION_SOURCE,
+            KERNEL_TRAP_FRAME_HEADER,
+        )
+        self.assertEqual([path.name for path in required if not path.is_file()], [])
+        idt = KERNEL_IDT_SOURCE.read_text(encoding="utf-8")
+        stubs = KERNEL_EXCEPTION_ASSEMBLY.read_text(encoding="utf-8")
+        handler = KERNEL_EXCEPTION_SOURCE.read_text(encoding="utf-8")
+        trap_frame = KERNEL_TRAP_FRAME_HEADER.read_text(encoding="utf-8")
+        self.assertIn("IDT_ENTRY_COUNT 256", idt)
+        self.assertIn("IDT_INTERRUPT_GATE 0x8E", idt)
+        self.assertIn("exception_stub_table", stubs)
+        self.assertEqual(len(re.findall(r"(?m)^EXCEPTION_(?:NO_ERROR|ERROR) \d+$", stubs)), 32)
+        self.assertIn("struct trap_frame", trap_frame)
+        self.assertIn("panicf", handler)
+
+    def test_kernel_declares_pic_pit_and_irq_contract(self) -> None:
+        required = (
+            KERNEL_IRQ_ASSEMBLY,
+            KERNEL_IRQ_SOURCE,
+            KERNEL_PIC_SOURCE,
+            KERNEL_PIT_SOURCE,
+        )
+        self.assertEqual([path.name for path in required if not path.is_file()], [])
+        irqs = KERNEL_IRQ_ASSEMBLY.read_text(encoding="utf-8")
+        pic = KERNEL_PIC_SOURCE.read_text(encoding="utf-8")
+        pit = KERNEL_PIT_SOURCE.read_text(encoding="utf-8")
+        self.assertEqual(len(re.findall(r"(?m)^IRQ_STUB \d+$", irqs)), 16)
+        self.assertIn("0x20", pic)
+        self.assertIn("0x28", pic)
+        self.assertIn("pic_send_eoi", pic)
+        self.assertIn("1193182", pit)
+        self.assertIn("[KERN] pit tick=%u", pit)
+
+    def test_kernel_declares_ps2_keyboard_contract(self) -> None:
+        self.assertTrue(KERNEL_KEYBOARD_SOURCE.is_file(), "缺少 PS/2 键盘驱动")
+        source = KERNEL_KEYBOARD_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("0x0060", source)
+        self.assertIn("0x0064", source)
+        self.assertIn("KEYBOARD_BUFFER_SIZE", source)
+        self.assertIn("keyboard_try_read", source)
+        self.assertIn("PS2_POLL_LIMIT", source)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -587,8 +703,173 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             r"^\[S2\] kernel loaded entry=0xC[0-9A-F]{7}$",
         )
         kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
-        self.assertEqual(kernel_lines, ["[KERN] boot info valid"])
+        self.assertEqual(
+            kernel_lines,
+            [
+                "[KERN] boot info valid",
+                "[KERN] paging enabled",
+                "[KERN] bss cleared",
+                "[KERN] console ready hex=c0ffee dec=42 str=ok",
+                "[KERN] gdt ready",
+                "[KERN] idt ready",
+                "[KERN] pic ready",
+                "[KERN] pit ready hz=100",
+                "[KERN] keyboard ready",
+                "[KERN] interrupts enabled",
+                "[KERN] pit tick=5",
+            ],
+        )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
+
+    def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:
+        log = self.build_directory / "test-logs/keyboard-input.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        drive = f"file={self.image},format=raw,if=ide,index=0,media=disk"
+        process = subprocess.Popen(
+            [
+                QEMU,
+                "-machine",
+                "pc,accel=tcg",
+                "-m",
+                "32M",
+                "-drive",
+                drive,
+                "-boot",
+                "c",
+                "-display",
+                "none",
+                "-monitor",
+                "stdio",
+                "-serial",
+                f"file:{log}",
+                "-no-reboot",
+                "-no-shutdown",
+            ],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+                if "[KERN] keyboard ready" in output:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("QEMU 未到达 keyboard ready")
+
+            assert process.stdin is not None
+            process.stdin.write(b"sendkey a\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                output = log.read_text(encoding="utf-8", errors="replace")
+                if "[KERN] keyboard input=a" in output:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"IRQ1 未交付 ASCII：\n{output}")
+        finally:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3)
+            if process.stdin is not None:
+                process.stdin.close()
+            if process.stderr is not None:
+                process.stderr.close()
+
+    def test_real_breakpoint_exception_reaches_panic(self) -> None:
+        test_build = Path(self.temporary_directory.name) / "breakpoint-build"
+        test_build_relative = test_build.relative_to(ROOT)
+        build = subprocess.run(
+            [
+                "bash",
+                "environment/with-env.sh",
+                "make",
+                f"BUILD_DIR={test_build_relative.as_posix()}",
+                "KERNEL_TEST_BREAKPOINT=1",
+                "-j4",
+                "image",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+
+        log = test_build / "test-logs/breakpoint.log"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/qemu_test.py",
+                "--qemu",
+                QEMU,
+                "--image",
+                str(test_build / "miniorangeos.img"),
+                "--log",
+                str(log),
+                "--timeout",
+                "2",
+                "--max-log-bytes",
+                "262144",
+                "--repo",
+                str(ROOT),
+                "--build-dir",
+                test_build_relative.as_posix(),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QEMU 超时", result.stderr)
+        output = log.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("[KERN] idt ready", output)
+        self.assertRegex(
+            output,
+            r"(?m)^\[PANIC\] exception vector=3 error=0 eip=0x[0-9a-f]{8}\r?$",
+        )
+
+    def test_breakpoint_build_toggle_fails_closed(self) -> None:
+        build_relative = (
+            Path(self.temporary_directory.name).relative_to(ROOT) / "invalid"
+        )
+        marker = Path(self.temporary_directory.name) / "must-not-exist"
+        for value in ("2", f"$(shell touch {marker.as_posix()})"):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "environment/with-env.sh",
+                        "make",
+                        f"BUILD_DIR={build_relative.as_posix()}",
+                        f"KERNEL_TEST_BREAKPOINT={value}",
+                        "image",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists(), "非法测试开关不得执行 Make 函数")
 
     def test_corrupted_kernel_elf_is_rejected_before_entry(self) -> None:
         layout = json.loads((ROOT / "config/image-layout.json").read_text(encoding="utf-8"))

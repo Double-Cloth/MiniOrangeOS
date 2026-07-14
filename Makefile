@@ -10,6 +10,7 @@ GDB ?= gdb
 QEMU_TIMEOUT ?= 10
 QEMU_LOG_MAX_BYTES ?= 1048576
 GDB_ENDPOINT ?= tcp:127.0.0.1:1234
+KERNEL_TEST_BREAKPOINT ?= 0
 
 # GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
 # 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
@@ -90,6 +91,14 @@ endif
 ifneq ($(call unsafe_make_value,GDB_ENDPOINT),)
 $(error GDB_ENDPOINT 含危险字符，不支持作为 Make/Shell 变量)
 endif
+ifneq ($(call unsafe_make_value,KERNEL_TEST_BREAKPOINT),)
+$(error KERNEL_TEST_BREAKPOINT 含危险字符)
+endif
+ifneq ($(value KERNEL_TEST_BREAKPOINT),0)
+ifneq ($(value KERNEL_TEST_BREAKPOINT),1)
+$(error KERNEL_TEST_BREAKPOINT 只允许 0 或 1)
+endif
+endif
 
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
@@ -105,6 +114,7 @@ STAGE2_BUILD_DIR := $(BOOT_BUILD_DIR)/stage2
 KERNEL_BUILD_DIR := $(BUILD_ABS)/kernel
 KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
 KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
+KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -117,8 +127,62 @@ STAGE2_SYM := $(BOOT_BUILD_DIR)/stage2.sym
 
 KERNEL_ENTRY_OBJ := $(KERNEL_ARCH_BUILD_DIR)/entry.o
 KERNEL_ENTRY_DEP := $(KERNEL_ARCH_BUILD_DIR)/entry.d
+KERNEL_GDT_LOAD_OBJ := $(KERNEL_ARCH_BUILD_DIR)/gdt_load.o
+KERNEL_GDT_LOAD_DEP := $(KERNEL_ARCH_BUILD_DIR)/gdt_load.d
+KERNEL_GDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/gdt.o
+KERNEL_GDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/gdt.d
+KERNEL_EXCEPTION_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exceptions.o
+KERNEL_EXCEPTION_DEP := $(KERNEL_ARCH_BUILD_DIR)/exceptions.d
+KERNEL_IRQ_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irqs.o
+KERNEL_IRQ_DEP := $(KERNEL_ARCH_BUILD_DIR)/irqs.d
+KERNEL_IDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/idt.o
+KERNEL_IDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/idt.d
+KERNEL_EXCEPTION_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/exception.o
+KERNEL_EXCEPTION_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/exception.d
+KERNEL_IRQ_C_OBJ := $(KERNEL_ARCH_BUILD_DIR)/irq.o
+KERNEL_IRQ_C_DEP := $(KERNEL_ARCH_BUILD_DIR)/irq.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
+KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
+KERNEL_CONSOLE_DEP := $(KERNEL_CORE_BUILD_DIR)/console.d
+KERNEL_PANIC_OBJ := $(KERNEL_CORE_BUILD_DIR)/panic.o
+KERNEL_PANIC_DEP := $(KERNEL_CORE_BUILD_DIR)/panic.d
+KERNEL_SERIAL_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/serial.o
+KERNEL_SERIAL_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/serial.d
+KERNEL_VGA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/vga.o
+KERNEL_VGA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/vga.d
+KERNEL_PIC_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/pic.o
+KERNEL_PIC_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/pic.d
+KERNEL_PIT_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/pit.o
+KERNEL_PIT_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/pit.d
+KERNEL_KEYBOARD_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.o
+KERNEL_KEYBOARD_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.d
+KERNEL_C_OBJECTS := \
+	$(KERNEL_GDT_OBJ) \
+	$(KERNEL_IDT_OBJ) \
+	$(KERNEL_EXCEPTION_C_OBJ) \
+	$(KERNEL_IRQ_C_OBJ) \
+	$(KERNEL_CORE_OBJ) \
+	$(KERNEL_CONSOLE_OBJ) \
+	$(KERNEL_PANIC_OBJ) \
+	$(KERNEL_SERIAL_OBJ) \
+	$(KERNEL_VGA_OBJ) \
+	$(KERNEL_PIC_OBJ) \
+	$(KERNEL_PIT_OBJ) \
+	$(KERNEL_KEYBOARD_OBJ)
+KERNEL_C_DEPS := \
+	$(KERNEL_GDT_DEP) \
+	$(KERNEL_IDT_DEP) \
+	$(KERNEL_EXCEPTION_C_DEP) \
+	$(KERNEL_IRQ_C_DEP) \
+	$(KERNEL_CORE_DEP) \
+	$(KERNEL_CONSOLE_DEP) \
+	$(KERNEL_PANIC_DEP) \
+	$(KERNEL_SERIAL_DEP) \
+	$(KERNEL_VGA_DEP) \
+	$(KERNEL_PIC_DEP) \
+	$(KERNEL_PIT_DEP) \
+	$(KERNEL_KEYBOARD_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -129,6 +193,8 @@ QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 
 KERNEL_CFLAGS := \
+	-I "$(ROOT_DIR)/kernel/include" \
+	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \
@@ -207,11 +273,53 @@ $(STAGE2_SYM): $(STAGE2_ELF) | prepare-build-dir
 $(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm boot/include/boot_info.inc | prepare-build-dir
 	$(NASM) -I "$(BOOT_INCLUDE_DIR)/" -f elf32 -MD "$(KERNEL_ENTRY_DEP)" -MT "$@" -o "$@" "$<"
 
+$(KERNEL_GDT_LOAD_OBJ): kernel/arch/x86/gdt.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_GDT_LOAD_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_GDT_OBJ): kernel/arch/x86/gdt.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_GDT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_EXCEPTION_OBJ): kernel/arch/x86/exceptions.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_EXCEPTION_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_IRQ_OBJ): kernel/arch/x86/irqs.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_IRQ_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_IDT_OBJ): kernel/arch/x86/idt.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IDT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_EXCEPTION_C_OBJ): kernel/arch/x86/exception.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_EXCEPTION_C_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_IRQ_C_OBJ): kernel/arch/x86/irq.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_IRQ_C_DEP)" -MT "$@" -c "$<" -o "$@"
+
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ)
+$(KERNEL_CONSOLE_OBJ): kernel/core/console.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CONSOLE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PANIC_OBJ): kernel/core/panic.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PANIC_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_SERIAL_OBJ): kernel/drivers/serial.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SERIAL_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_VGA_OBJ): kernel/drivers/vga.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VGA_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PIC_OBJ): kernel/drivers/pic.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PIC_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PIT_OBJ): kernel/drivers/pit.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PIT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_KEYBOARD_OBJ): kernel/drivers/keyboard.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_KEYBOARD_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -232,4 +340,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_CORE_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_C_DEPS)
