@@ -353,6 +353,92 @@ int32_t vfs_stat(const char *path, struct minios_stat *status)
     return 0;
 }
 
+int32_t vfs_mkdir(const char *path)
+{
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!vfs_initialized) {
+        return -MINIOS_EIO;
+    }
+    if (!vfs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = minifs_mkdir(path);
+    vfs_release(irq_flags);
+    return result;
+}
+
+int32_t vfs_unlink(const char *path)
+{
+    struct minifs_stat status;
+    uint32_t irq_flags;
+    size_t index;
+    int32_t result;
+
+    if (!vfs_initialized) {
+        return -MINIOS_EIO;
+    }
+    if (!vfs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = minifs_lookup(path, &status);
+    if (result < 0) {
+        goto finish;
+    }
+    for (index = 0U; index < VFS_FILE_LIMIT; ++index) {
+        if (file_table[index].used && file_table[index].inode == status.inode) {
+            result = -MINIOS_EBUSY;
+            goto finish;
+        }
+    }
+    result = minifs_unlink(path);
+
+finish:
+    vfs_release(irq_flags);
+    return result;
+}
+
+int32_t vfs_readdir(int32_t descriptor, struct minios_dirent *entry)
+{
+    struct minifs_dirent minifs_entry;
+    struct vfs_file *file;
+    uint32_t irq_flags;
+    size_t index;
+    int32_t result;
+
+    if (!vfs_initialized || entry == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    if (!vfs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    file = file_from_handle(scheduler_fd_get(descriptor));
+    if (file == NULL || !file_readable(file)) {
+        result = -MINIOS_EBADF;
+        goto finish;
+    }
+    if (file->mode != MINIFS_MODE_DIRECTORY) {
+        result = -MINIOS_ENOTDIR;
+        goto finish;
+    }
+    result = minifs_readdir(file->inode, &file->offset, &minifs_entry);
+    if (result == 1) {
+        entry->inode = minifs_entry.inode;
+        entry->mode = minifs_entry.mode;
+        entry->name_length = minifs_entry.name_length;
+        for (index = 0U; index < sizeof(entry->name); ++index) {
+            entry->name[index] = index <= minifs_entry.name_length ?
+                minifs_entry.name[index] : '\0';
+        }
+        entry->reserved = 0U;
+    }
+
+finish:
+    vfs_release(irq_flags);
+    return result;
+}
+
 void vfs_close_all_current(void)
 {
     int32_t descriptor;
@@ -372,6 +458,7 @@ void vfs_close_all_current(void)
 bool vfs_self_test(void)
 {
     struct minios_stat status;
+    struct minios_dirent entry;
     uint8_t magic[4];
     int32_t first = -1;
     int32_t second = -1;
@@ -409,6 +496,14 @@ bool vfs_self_test(void)
     }
     vfs_close_all_current();
     if (scheduler_fd_get(third) != (uintptr_t)0U) {
+        goto finish;
+    }
+    third = -1;
+    third = vfs_open("/bin", MINIOS_O_RDONLY);
+    if (third < 3 || vfs_readdir(third, &entry) != 1 ||
+        entry.mode != MINIFS_MODE_DIRECTORY || entry.name_length != 1U ||
+        entry.name[0] != '.' || entry.name[1] != '\0' ||
+        vfs_close(third) != 0) {
         goto finish;
     }
     third = -1;

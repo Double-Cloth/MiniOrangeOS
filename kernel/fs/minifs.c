@@ -43,6 +43,13 @@ struct minifs_inode {
     uint32_t modified_tick;
 };
 
+struct minifs_directory_record {
+    uint32_t inode;
+    uint32_t offset;
+    uint8_t type;
+    uint8_t name[MINIFS_DIRECTORY_NAME_BYTES];
+};
+
 static struct minifs_superblock mounted_superblock;
 static uint8_t io_block[MINIFS_BLOCK_SIZE];
 static uint8_t auxiliary_block[MINIFS_BLOCK_SIZE];
@@ -517,6 +524,30 @@ static int32_t free_inode(uint32_t inode_number)
                          inode_number, false);
 }
 
+static int32_t clear_inode_record(uint32_t inode_number)
+{
+    uint32_t table_block;
+    uint32_t inode_index;
+    size_t offset;
+
+    if (inode_number == mounted_superblock.root_inode ||
+        inode_number >= mounted_superblock.total_inodes) {
+        return -MINIOS_EINVAL;
+    }
+    table_block = inode_number / MINIFS_INODES_PER_BLOCK;
+    inode_index = inode_number % MINIFS_INODES_PER_BLOCK;
+    if (table_block >= mounted_superblock.inode_table_blocks ||
+        read_volume_block(mounted_superblock.inode_table_start + table_block) !=
+            0) {
+        return -MINIOS_EIO;
+    }
+    offset = (size_t)inode_index * MINIFS_INODE_SIZE;
+    clear_bytes(&io_block[offset], MINIFS_INODE_SIZE);
+    return write_volume_block_from(
+        mounted_superblock.inode_table_start + table_block, io_block
+    );
+}
+
 static bool data_block_valid(uint32_t block)
 {
     return block >= mounted_superblock.data_start &&
@@ -637,9 +668,23 @@ static bool directory_name_equal(const uint8_t *entry_name,
     return true;
 }
 
-static int32_t directory_find(const struct minifs_inode *directory,
-                              const char *component, size_t length,
-                              uint32_t *result)
+static bool directory_entry_unused(const uint8_t *entry)
+{
+    size_t index;
+
+    for (index = 0U; index < MINIFS_DIRECTORY_ENTRY_SIZE; ++index) {
+        if (entry[index] != 0U) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int32_t directory_find_internal(
+    const struct minifs_inode *directory,
+    const char *component, size_t length,
+    struct minifs_directory_record *result
+)
 {
     uint32_t remaining_entries;
     uint32_t file_block = 0U;
@@ -671,6 +716,12 @@ static int32_t directory_find(const struct minifs_inode *directory,
             uint8_t entry_type = entry[MINIFS_DIRECTORY_TYPE_OFFSET];
             const uint8_t *name = &entry[MINIFS_DIRECTORY_NAME_OFFSET];
 
+            if (entry_type == MINIFS_ENTRY_UNUSED) {
+                if (!directory_entry_unused(entry)) {
+                    return -MINIOS_EIO;
+                }
+                continue;
+            }
             if ((entry_type != MINIFS_ENTRY_REGULAR &&
                  entry_type != MINIFS_ENTRY_DIRECTORY) ||
                 child >= mounted_superblock.total_inodes ||
@@ -680,6 +731,7 @@ static int32_t directory_find(const struct minifs_inode *directory,
             if (directory_name_equal(name, component, length)) {
                 struct minifs_inode child_inode;
 
+                copy_bytes(result->name, name, sizeof(result->name));
                 if (read_inode_internal(child, &child_inode) != 0 ||
                     (entry_type == MINIFS_ENTRY_DIRECTORY &&
                      child_inode.mode != MINIFS_MODE_DIRECTORY) ||
@@ -687,7 +739,11 @@ static int32_t directory_find(const struct minifs_inode *directory,
                      child_inode.mode != MINIFS_MODE_REGULAR)) {
                     return -MINIOS_EIO;
                 }
-                *result = child;
+                result->inode = child;
+                result->offset =
+                    file_block * MINIFS_BLOCK_SIZE +
+                    index * MINIFS_DIRECTORY_ENTRY_SIZE;
+                result->type = entry_type;
                 return 0;
             }
         }
@@ -695,6 +751,23 @@ static int32_t directory_find(const struct minifs_inode *directory,
         ++file_block;
     }
     return -MINIOS_ENOENT;
+}
+
+static int32_t directory_find(const struct minifs_inode *directory,
+                              const char *component, size_t length,
+                              uint32_t *result)
+{
+    struct minifs_directory_record record;
+    int32_t status;
+
+    if (result == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    status = directory_find_internal(directory, component, length, &record);
+    if (status == 0) {
+        *result = record.inode;
+    }
+    return status;
 }
 
 static int32_t bounded_path_length(const char *path, size_t *length)
@@ -855,55 +928,84 @@ static int32_t resolve_parent_locked(const char *path,
     return -MINIOS_EINVAL;
 }
 
+static int32_t write_chunk_locked(uint32_t inode_number,
+                                  struct minifs_inode *inode,
+                                  uint32_t offset, const uint8_t *source,
+                                  size_t length);
+
+static void encode_directory_entry(uint8_t *entry, uint32_t child_number,
+                                   uint8_t entry_type, const char *name,
+                                   size_t name_length)
+{
+    size_t index;
+
+    clear_bytes(entry, MINIFS_DIRECTORY_ENTRY_SIZE);
+    write_le32(&entry[MINIFS_DIRECTORY_INODE_OFFSET], child_number);
+    entry[MINIFS_DIRECTORY_TYPE_OFFSET] = entry_type;
+    for (index = 0U; index < name_length; ++index) {
+        entry[MINIFS_DIRECTORY_NAME_OFFSET + index] = (uint8_t)name[index];
+    }
+}
+
 static int32_t directory_append_locked(uint32_t directory_number,
                                        struct minifs_inode *directory,
                                        uint32_t child_number,
+                                       uint8_t entry_type,
                                        const char *name, size_t name_length)
 {
-    uint32_t entry_offset;
-    uint32_t file_block;
-    uint32_t disk_block;
-    size_t block_offset;
-    size_t index;
+    uint8_t entry[MINIFS_DIRECTORY_ENTRY_SIZE];
+    uint32_t offset;
+    uint16_t old_link_count;
+    bool appended;
+    int32_t result;
 
     if (directory == NULL || name == NULL || name_length == 0U ||
         name_length > MINIFS_NAME_MAX ||
+        (entry_type != MINIFS_ENTRY_REGULAR &&
+         entry_type != MINIFS_ENTRY_DIRECTORY) ||
         directory->size > MINIFS_MAX_FILE_SIZE -
             MINIFS_DIRECTORY_ENTRY_SIZE) {
         return -MINIOS_EINVAL;
     }
-    entry_offset = directory->size;
-    file_block = entry_offset / MINIFS_BLOCK_SIZE;
-    block_offset = (size_t)(entry_offset % MINIFS_BLOCK_SIZE);
-    if (block_offset + MINIFS_DIRECTORY_ENTRY_SIZE > MINIFS_BLOCK_SIZE ||
-        file_block >= divide_round_up(directory->size, MINIFS_BLOCK_SIZE) ||
-        inode_block_at(directory, file_block, &disk_block) != 0 ||
-        read_volume_block(disk_block) != 0) {
-        return -MINIOS_ENOSPC;
-    }
-    for (index = 0U; index < MINIFS_DIRECTORY_ENTRY_SIZE; ++index) {
-        if (io_block[block_offset + index] != 0U) {
+    encode_directory_entry(entry, child_number, entry_type,
+                           name, name_length);
+    offset = 0U;
+    while (offset < directory->size) {
+        uint32_t disk_block;
+        uint32_t file_block = offset / MINIFS_BLOCK_SIZE;
+        size_t block_offset = (size_t)(offset % MINIFS_BLOCK_SIZE);
+
+        if (inode_block_at(directory, file_block, &disk_block) != 0 ||
+            read_volume_block(disk_block) != 0) {
             return -MINIOS_EIO;
         }
+        if (directory_entry_unused(&io_block[block_offset])) {
+            break;
+        }
+        offset += MINIFS_DIRECTORY_ENTRY_SIZE;
     }
-    write_le32(&io_block[block_offset + MINIFS_DIRECTORY_INODE_OFFSET],
-               child_number);
-    io_block[block_offset + MINIFS_DIRECTORY_TYPE_OFFSET] =
-        MINIFS_ENTRY_REGULAR;
-    for (index = 0U; index < name_length; ++index) {
-        io_block[block_offset + MINIFS_DIRECTORY_NAME_OFFSET + index] =
-            (uint8_t)name[index];
+    appended = offset == directory->size;
+    old_link_count = directory->link_count;
+    if (entry_type == MINIFS_ENTRY_DIRECTORY) {
+        if (directory->link_count == UINT16_MAX) {
+            return -MINIOS_ENOSPC;
+        }
+        ++directory->link_count;
     }
-    if (write_volume_block_from(disk_block, io_block) != 0) {
-        return -MINIOS_EIO;
+    result = write_chunk_locked(directory_number, directory, offset,
+                                entry, sizeof(entry));
+    if (result < 0) {
+        directory->link_count = old_link_count;
+        return result;
     }
-    copy_bytes(auxiliary_block, io_block, sizeof(auxiliary_block));
-    directory->size += MINIFS_DIRECTORY_ENTRY_SIZE;
-    if (write_inode_internal(directory_number, directory) != 0) {
-        directory->size -= MINIFS_DIRECTORY_ENTRY_SIZE;
-        clear_bytes(&auxiliary_block[block_offset],
-                    MINIFS_DIRECTORY_ENTRY_SIZE);
-        (void)write_volume_block_from(disk_block, auxiliary_block);
+    if (!appended && entry_type == MINIFS_ENTRY_DIRECTORY &&
+        write_inode_internal(directory_number, directory) != 0) {
+        uint8_t empty[MINIFS_DIRECTORY_ENTRY_SIZE];
+
+        clear_bytes(empty, sizeof(empty));
+        (void)write_chunk_locked(directory_number, directory, offset,
+                                 empty, sizeof(empty));
+        directory->link_count = old_link_count;
         return -MINIOS_EIO;
     }
     return 0;
@@ -911,6 +1013,7 @@ static int32_t directory_append_locked(uint32_t directory_number,
 
 static void rollback_created_inode(uint32_t inode_number)
 {
+    (void)clear_inode_record(inode_number);
     (void)free_inode(inode_number);
 }
 
@@ -946,6 +1049,7 @@ static int32_t create_locked(const char *path, struct minifs_stat *status)
         return -MINIOS_EIO;
     }
     result = directory_append_locked(parent_number, &parent, inode_number,
+                                     MINIFS_ENTRY_REGULAR,
                                      name, name_length);
     if (result < 0) {
         rollback_created_inode(inode_number);
@@ -956,6 +1060,208 @@ static int32_t create_locked(const char *path, struct minifs_stat *status)
     status->link_count = inode.link_count;
     status->size = inode.size;
     return 0;
+}
+
+static int32_t directory_empty_locked(const struct minifs_inode *directory)
+{
+    uint32_t offset;
+
+    if (directory == NULL || directory->mode != MINIFS_MODE_DIRECTORY) {
+        return -MINIOS_ENOTDIR;
+    }
+    for (offset = 0U; offset < directory->size;
+         offset += MINIFS_DIRECTORY_ENTRY_SIZE) {
+        uint32_t disk_block;
+        uint32_t file_block = offset / MINIFS_BLOCK_SIZE;
+        size_t block_offset = (size_t)(offset % MINIFS_BLOCK_SIZE);
+        const uint8_t *entry;
+        const uint8_t *name;
+        uint8_t type;
+
+        if (inode_block_at(directory, file_block, &disk_block) != 0 ||
+            read_volume_block(disk_block) != 0) {
+            return -MINIOS_EIO;
+        }
+        entry = &io_block[block_offset];
+        type = entry[MINIFS_DIRECTORY_TYPE_OFFSET];
+        if (type == MINIFS_ENTRY_UNUSED) {
+            if (!directory_entry_unused(entry)) {
+                return -MINIOS_EIO;
+            }
+            continue;
+        }
+        name = &entry[MINIFS_DIRECTORY_NAME_OFFSET];
+        if ((type != MINIFS_ENTRY_REGULAR &&
+             type != MINIFS_ENTRY_DIRECTORY) ||
+            !directory_name_valid(name)) {
+            return -MINIOS_EIO;
+        }
+        if (!directory_name_equal(name, ".", 1U) &&
+            !directory_name_equal(name, "..", 2U)) {
+            return -MINIOS_ENOTEMPTY;
+        }
+    }
+    return 0;
+}
+
+static int32_t release_inode_locked(uint32_t inode_number,
+                                    const struct minifs_inode *inode)
+{
+    uint32_t blocks;
+    uint32_t index;
+
+    if (inode == NULL) {
+        return -MINIOS_EINVAL;
+    }
+    blocks = divide_round_up(inode->size, MINIFS_BLOCK_SIZE);
+    if (blocks > MINIFS_DIRECT_COUNT &&
+        read_volume_block_into(inode->indirect, compare_buffer) != 0) {
+        return -MINIOS_EIO;
+    }
+    for (index = 0U; index < blocks && index < MINIFS_DIRECT_COUNT; ++index) {
+        if (free_block(inode->direct[index]) != 0) {
+            return -MINIOS_EIO;
+        }
+    }
+    for (index = MINIFS_DIRECT_COUNT; index < blocks; ++index) {
+        uint32_t block = read_le32(
+            &compare_buffer[(index - MINIFS_DIRECT_COUNT) * sizeof(uint32_t)]
+        );
+
+        if (free_block(block) != 0) {
+            return -MINIOS_EIO;
+        }
+    }
+    if (inode->indirect != 0U && free_block(inode->indirect) != 0) {
+        return -MINIOS_EIO;
+    }
+    if (clear_inode_record(inode_number) != 0 ||
+        free_inode(inode_number) != 0) {
+        return -MINIOS_EIO;
+    }
+    return 0;
+}
+
+static int32_t mkdir_locked(const char *path)
+{
+    struct minifs_inode parent;
+    struct minifs_inode inode;
+    const char *name;
+    size_t name_length;
+    uint32_t parent_number;
+    uint32_t inode_number;
+    uint32_t data_block;
+    uint32_t existing;
+    int32_t result = resolve_parent_locked(path, &parent_number, &parent,
+                                           &name, &name_length);
+
+    if (result < 0) {
+        return result;
+    }
+    result = directory_find(&parent, name, name_length, &existing);
+    if (result == 0) {
+        return -MINIOS_EEXIST;
+    }
+    if (result != -MINIOS_ENOENT) {
+        return result;
+    }
+    result = allocate_inode(&inode_number);
+    if (result < 0) {
+        return result;
+    }
+    result = allocate_block(&data_block);
+    if (result < 0) {
+        (void)free_inode(inode_number);
+        return result;
+    }
+    clear_inode(&inode);
+    inode.mode = MINIFS_MODE_DIRECTORY;
+    inode.link_count = 2U;
+    inode.size = 2U * MINIFS_DIRECTORY_ENTRY_SIZE;
+    inode.direct[0] = data_block;
+    clear_bytes(io_block, sizeof(io_block));
+    encode_directory_entry(&io_block[0], inode_number,
+                           MINIFS_ENTRY_DIRECTORY, ".", 1U);
+    encode_directory_entry(&io_block[MINIFS_DIRECTORY_ENTRY_SIZE],
+                           parent_number, MINIFS_ENTRY_DIRECTORY, "..", 2U);
+    if (write_volume_block_from(data_block, io_block) != 0 ||
+        write_inode_internal(inode_number, &inode) != 0) {
+        (void)free_block(data_block);
+        rollback_created_inode(inode_number);
+        return -MINIOS_EIO;
+    }
+    result = directory_append_locked(parent_number, &parent, inode_number,
+                                     MINIFS_ENTRY_DIRECTORY,
+                                     name, name_length);
+    if (result < 0) {
+        (void)free_block(data_block);
+        rollback_created_inode(inode_number);
+        return result;
+    }
+    return 0;
+}
+
+static int32_t unlink_locked(const char *path)
+{
+    struct minifs_inode parent;
+    struct minifs_inode inode;
+    struct minifs_directory_record record;
+    const char *name;
+    size_t name_length;
+    uint32_t parent_number;
+    uint32_t disk_block;
+    uint32_t file_block;
+    size_t block_offset;
+    uint16_t old_link_count;
+    int32_t result = resolve_parent_locked(path, &parent_number, &parent,
+                                           &name, &name_length);
+
+    if (result < 0) {
+        return result;
+    }
+    result = directory_find_internal(&parent, name, name_length, &record);
+    if (result < 0) {
+        return result;
+    }
+    if (record.inode == mounted_superblock.root_inode ||
+        read_inode_internal(record.inode, &inode) != 0) {
+        return -MINIOS_EIO;
+    }
+    if (inode.mode == MINIFS_MODE_DIRECTORY) {
+        result = directory_empty_locked(&inode);
+        if (result < 0) {
+            return result;
+        }
+        if (parent.link_count == 0U) {
+            return -MINIOS_EIO;
+        }
+    }
+    file_block = record.offset / MINIFS_BLOCK_SIZE;
+    block_offset = (size_t)(record.offset % MINIFS_BLOCK_SIZE);
+    if (inode_block_at(&parent, file_block, &disk_block) != 0 ||
+        read_volume_block(disk_block) != 0) {
+        return -MINIOS_EIO;
+    }
+    copy_bytes(auxiliary_block, &io_block[block_offset],
+               MINIFS_DIRECTORY_ENTRY_SIZE);
+    clear_bytes(&io_block[block_offset], MINIFS_DIRECTORY_ENTRY_SIZE);
+    if (write_volume_block_from(disk_block, io_block) != 0) {
+        return -MINIOS_EIO;
+    }
+    old_link_count = parent.link_count;
+    if (inode.mode == MINIFS_MODE_DIRECTORY) {
+        --parent.link_count;
+        if (write_inode_internal(parent_number, &parent) != 0) {
+            if (read_volume_block(disk_block) == 0) {
+                copy_bytes(&io_block[block_offset], auxiliary_block,
+                           MINIFS_DIRECTORY_ENTRY_SIZE);
+                (void)write_volume_block_from(disk_block, io_block);
+            }
+            parent.link_count = old_link_count;
+            return -MINIOS_EIO;
+        }
+    }
+    return release_inode_locked(record.inode, &inode);
 }
 
 int32_t minifs_mount(void)
@@ -1127,6 +1433,125 @@ int32_t minifs_create(const char *path, struct minifs_stat *status)
         return -MINIOS_EAGAIN;
     }
     result = create_locked(path, status);
+    minifs_release(irq_flags);
+    return result;
+}
+
+int32_t minifs_mkdir(const char *path)
+{
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted) {
+        return -MINIOS_EIO;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = mkdir_locked(path);
+    minifs_release(irq_flags);
+    return result;
+}
+
+int32_t minifs_unlink(const char *path)
+{
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted) {
+        return -MINIOS_EIO;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = unlink_locked(path);
+    minifs_release(irq_flags);
+    return result;
+}
+
+int32_t minifs_readdir(uint32_t inode_number, uint32_t *offset,
+                       struct minifs_dirent *entry)
+{
+    struct minifs_inode directory;
+    uint32_t cursor;
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted || offset == NULL || entry == NULL ||
+        *offset % MINIFS_DIRECTORY_ENTRY_SIZE != 0U) {
+        return -MINIOS_EINVAL;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = read_inode_internal(inode_number, &directory);
+    if (result < 0) {
+        goto finish;
+    }
+    if (directory.mode != MINIFS_MODE_DIRECTORY) {
+        result = -MINIOS_ENOTDIR;
+        goto finish;
+    }
+    cursor = *offset;
+    while (cursor < directory.size) {
+        uint8_t raw_entry[MINIFS_DIRECTORY_ENTRY_SIZE];
+        uint32_t disk_block;
+        uint32_t file_block = cursor / MINIFS_BLOCK_SIZE;
+        size_t block_offset = (size_t)(cursor % MINIFS_BLOCK_SIZE);
+        const uint8_t *disk_entry;
+        const uint8_t *name;
+        struct minifs_inode child;
+        uint32_t child_number;
+        uint8_t type;
+        size_t name_length = 0U;
+
+        if (inode_block_at(&directory, file_block, &disk_block) != 0 ||
+            read_volume_block(disk_block) != 0) {
+            result = -MINIOS_EIO;
+            goto finish;
+        }
+        copy_bytes(raw_entry, &io_block[block_offset], sizeof(raw_entry));
+        disk_entry = raw_entry;
+        cursor += MINIFS_DIRECTORY_ENTRY_SIZE;
+        type = disk_entry[MINIFS_DIRECTORY_TYPE_OFFSET];
+        if (type == MINIFS_ENTRY_UNUSED) {
+            if (!directory_entry_unused(disk_entry)) {
+                result = -MINIOS_EIO;
+                goto finish;
+            }
+            continue;
+        }
+        name = &disk_entry[MINIFS_DIRECTORY_NAME_OFFSET];
+        child_number = read_le32(
+            &disk_entry[MINIFS_DIRECTORY_INODE_OFFSET]
+        );
+        if ((type != MINIFS_ENTRY_REGULAR &&
+             type != MINIFS_ENTRY_DIRECTORY) ||
+            !directory_name_valid(name) ||
+            read_inode_internal(child_number, &child) != 0 ||
+            (type == MINIFS_ENTRY_DIRECTORY &&
+             child.mode != MINIFS_MODE_DIRECTORY) ||
+            (type == MINIFS_ENTRY_REGULAR &&
+             child.mode != MINIFS_MODE_REGULAR)) {
+            result = -MINIOS_EIO;
+            goto finish;
+        }
+        while (name_length < MINIFS_NAME_MAX && name[name_length] != 0U) {
+            entry->name[name_length] = (char)name[name_length];
+            ++name_length;
+        }
+        entry->name[name_length] = '\0';
+        entry->inode = child_number;
+        entry->mode = child.mode;
+        entry->name_length = (uint16_t)name_length;
+        *offset = cursor;
+        result = 1;
+        goto finish;
+    }
+    *offset = cursor;
+    result = 0;
+
+finish:
     minifs_release(irq_flags);
     return result;
 }
@@ -1497,6 +1922,88 @@ static bool verify_persistence_file(const struct minifs_stat *status)
                        compare_buffer, 1U) == 0;
 }
 
+#define MINIFS_EXPANSION_FILE_COUNT 65U
+
+static void expansion_file_path(uint32_t index, char *path)
+{
+    static const char prefix[] = "/p6-expand/f";
+    size_t position;
+
+    for (position = 0U; position < sizeof(prefix) - 1U; ++position) {
+        path[position] = prefix[position];
+    }
+    path[position] = (char)('0' + index / 10U);
+    path[position + 1U] = (char)('0' + index % 10U);
+    path[position + 2U] = '\0';
+}
+
+static bool verify_expansion_directory(void)
+{
+    struct minifs_stat status;
+    struct minifs_dirent entry;
+    uint32_t offset = 0U;
+    uint32_t count = 0U;
+    int32_t result;
+
+    if (minifs_lookup("/p6-expand", &status) != 0 ||
+        status.mode != MINIFS_MODE_DIRECTORY ||
+        status.size <= MINIFS_BLOCK_SIZE) {
+        return false;
+    }
+    while ((result = minifs_readdir(status.inode, &offset, &entry)) == 1) {
+        ++count;
+    }
+    return result == 0 && count == MINIFS_EXPANSION_FILE_COUNT + 2U;
+}
+
+static bool create_expansion_directory(void)
+{
+    struct minifs_stat status;
+    char path[32];
+    uint32_t index;
+
+    if (minifs_mkdir("/p6-expand") != 0) {
+        return false;
+    }
+    for (index = 0U; index < MINIFS_EXPANSION_FILE_COUNT; ++index) {
+        expansion_file_path(index, path);
+        if (minifs_create(path, &status) != 0) {
+            return false;
+        }
+    }
+    return verify_expansion_directory();
+}
+
+static bool remove_expansion_directory(void)
+{
+    struct minifs_stat status;
+    struct minifs_dirent entry;
+    char path[32];
+    uint32_t index;
+    uint32_t offset = 0U;
+    uint32_t count = 0U;
+    int32_t result;
+
+    if (!verify_expansion_directory()) {
+        return false;
+    }
+    for (index = 0U; index < MINIFS_EXPANSION_FILE_COUNT; ++index) {
+        expansion_file_path(index, path);
+        if (minifs_unlink(path) != 0) {
+            return false;
+        }
+    }
+    if (minifs_lookup("/p6-expand", &status) != 0) {
+        return false;
+    }
+    while ((result = minifs_readdir(status.inode, &offset, &entry)) == 1) {
+        ++count;
+    }
+    return result == 0 && count == 2U &&
+        minifs_unlink("/p6-expand") == 0 &&
+        minifs_lookup("/p6-expand", &status) == -MINIOS_ENOENT;
+}
+
 enum minifs_persistence_result minifs_persistence_self_test(void)
 {
     const uint32_t full_size =
@@ -1529,14 +2036,16 @@ enum minifs_persistence_result minifs_persistence_self_test(void)
             offset += (uint32_t)chunk;
         }
         if (minifs_lookup("/p6-persist", &status) != 0 ||
-            status.size != full_size || !verify_persistence_file(&status)) {
+            status.size != full_size || !verify_persistence_file(&status) ||
+            !create_expansion_directory()) {
             return MINIFS_PERSISTENCE_FAILED;
         }
         return MINIFS_PERSISTENCE_CREATED;
     }
     if (lookup != 0 ||
         (status.size != full_size && status.size != truncated_size) ||
-        !verify_persistence_file(&status)) {
+        !verify_persistence_file(&status) ||
+        !remove_expansion_directory()) {
         return MINIFS_PERSISTENCE_FAILED;
     }
     if (status.size == full_size &&

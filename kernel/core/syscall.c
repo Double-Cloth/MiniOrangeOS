@@ -157,6 +157,42 @@ static int32_t syscall_create(const char *user_path)
     return descriptor < 0 ? descriptor : vfs_close(descriptor);
 }
 
+static int32_t syscall_unlink(const char *user_path)
+{
+    char path[SYSCALL_PATH_MAX];
+    int32_t result = copy_syscall_path(path, user_path);
+
+    return result < 0 ? result : vfs_unlink(path);
+}
+
+static int32_t syscall_mkdir(const char *user_path)
+{
+    char path[SYSCALL_PATH_MAX];
+    int32_t result = copy_syscall_path(path, user_path);
+
+    return result < 0 ? result : vfs_mkdir(path);
+}
+
+static int32_t syscall_readdir(uint32_t descriptor, void *user_entry,
+                               size_t length)
+{
+    struct minios_dirent entry;
+    int32_t result;
+
+    if (length < sizeof(entry)) {
+        return -MINIOS_EINVAL;
+    }
+    if (!validate_user_range(user_entry, sizeof(entry), USER_ACCESS_WRITE)) {
+        return -MINIOS_EFAULT;
+    }
+    result = vfs_readdir((int32_t)descriptor, &entry);
+    if (result != 1) {
+        return result;
+    }
+    return copy_to_user(user_entry, &entry, sizeof(entry)) == 0 ?
+        1 : -MINIOS_EFAULT;
+}
+
 static int32_t syscall_stat(const char *user_path, void *user_status)
 {
     struct minios_stat status;
@@ -352,6 +388,23 @@ void syscall_dispatch(struct trap_frame *frame)
         case SYS_create:
             result = syscall_create(
                 (const char *)(uintptr_t)frame->ebx
+            );
+            break;
+        case SYS_unlink:
+            result = syscall_unlink(
+                (const char *)(uintptr_t)frame->ebx
+            );
+            break;
+        case SYS_mkdir:
+            result = syscall_mkdir(
+                (const char *)(uintptr_t)frame->ebx
+            );
+            break;
+        case SYS_readdir:
+            result = syscall_readdir(
+                frame->ebx,
+                (void *)(uintptr_t)frame->ecx,
+                (size_t)frame->edx
             );
             break;
         case SYS_spawn:

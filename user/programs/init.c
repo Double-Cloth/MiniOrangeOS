@@ -1,6 +1,7 @@
 #include <minios/user.h>
 #include <minios/string.h>
 #include <minios/abi/errno.h>
+#include <minios/abi/minifs.h>
 
 #include <stdbool.h>
 
@@ -41,6 +42,73 @@ static bool test_file_syscalls(void) {
         (int32_t)(sizeof(pass) - 1U);
 }
 
+static bool test_directory_syscalls(void) {
+    static const char pass[] = "[USER] directory syscall PASS\n";
+    struct minios_dirent entry;
+    struct minios_stat status;
+    int32_t directory = -1;
+    int32_t file = -1;
+    uint32_t entries = 0U;
+    bool saw_current = false;
+    bool saw_parent = false;
+    bool saw_file = false;
+    int32_t result;
+
+    if (minios_mkdir("/p6-user-dir") != 0 ||
+        minios_mkdir("/p6-user-dir") != -MINIOS_EEXIST ||
+        minios_create("/p6-user-dir/file") != 0 ||
+        minios_unlink("/p6-user-dir") != -MINIOS_ENOTEMPTY) {
+        goto fail;
+    }
+    file = minios_open("/p6-user-dir/file", MINIOS_O_RDONLY);
+    if (file < 3 ||
+        minios_unlink("/p6-user-dir/file") != -MINIOS_EBUSY ||
+        minios_readdir(file, &entry, sizeof(entry)) != -MINIOS_ENOTDIR ||
+        minios_close(file) != 0) {
+        goto fail;
+    }
+    file = -1;
+    directory = minios_open("/p6-user-dir", MINIOS_O_RDONLY);
+    if (directory < 3 ||
+        minios_readdir(directory, &entry, sizeof(entry) - 1U) !=
+            -MINIOS_EINVAL) {
+        goto fail;
+    }
+    while ((result = minios_readdir(directory, &entry, sizeof(entry))) == 1) {
+        ++entries;
+        if (minios_streq(entry.name, ".")) {
+            saw_current = entry.mode == MINIFS_MODE_DIRECTORY;
+        } else if (minios_streq(entry.name, "..")) {
+            saw_parent = entry.mode == MINIFS_MODE_DIRECTORY;
+        } else if (minios_streq(entry.name, "file")) {
+            saw_file = entry.mode == MINIFS_MODE_REGULAR;
+        }
+    }
+    if (result != 0 || entries != 3U || !saw_current || !saw_parent ||
+        !saw_file || minios_close(directory) != 0) {
+        goto fail;
+    }
+    directory = -1;
+    if (minios_unlink("/p6-user-dir/file") != 0 ||
+        minios_stat("/p6-user-dir/file", &status) != -MINIOS_ENOENT ||
+        minios_unlink("/p6-user-dir") != 0 ||
+        minios_stat("/p6-user-dir", &status) != -MINIOS_ENOENT ||
+        minios_write(1, pass, sizeof(pass) - 1U) !=
+            (int32_t)(sizeof(pass) - 1U)) {
+        goto fail;
+    }
+    return true;
+
+fail:
+    if (file >= 3) {
+        (void)minios_close(file);
+    }
+    if (directory >= 3) {
+        (void)minios_close(directory);
+    }
+    return false;
+}
+
 int main(int argc, char **argv);
 
 int main(int argc, char **argv) {
@@ -72,7 +140,8 @@ int main(int argc, char **argv) {
     }
     if (argc != 2 || argv == NULL || argv[0] == NULL || argv[1] == NULL ||
         argv[2] != NULL || !minios_streq(argv[0], "/bin/init") ||
-        !minios_streq(argv[1], "--self-test") || !test_file_syscalls()) {
+        !minios_streq(argv[1], "--self-test") || !test_file_syscalls() ||
+        !test_directory_syscalls()) {
         return 2;
     }
     child_pid = minios_spawn("/bin/echo", echo_arguments);

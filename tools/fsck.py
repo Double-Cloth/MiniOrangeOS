@@ -249,6 +249,10 @@ class Checker:
                 child, entry_type, raw_name = minifs.DIRECTORY_ENTRY_STRUCT.unpack_from(
                     content, offset
                 )
+                if entry_type == minifs.ENTRY_UNUSED:
+                    if any(content[offset : offset + minifs.DIRECTORY_ENTRY_SIZE]):
+                        minifs.fail(f"目录 inode {number} 的空闲目录项非零")
+                    continue
                 if entry_type not in {minifs.ENTRY_REGULAR, minifs.ENTRY_DIRECTORY}:
                     minifs.fail(f"目录 inode {number} 包含无效 type")
                 name = self._decode_name(raw_name, number)

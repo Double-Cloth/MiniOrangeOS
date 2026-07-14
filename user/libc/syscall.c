@@ -105,6 +105,24 @@ int32_t minios_create(const char *path) {
     return syscall1(SYS_create, (uint32_t)(uintptr_t)path);
 }
 
+int32_t minios_unlink(const char *path) {
+    return syscall1(SYS_unlink, (uint32_t)(uintptr_t)path);
+}
+
+int32_t minios_mkdir(const char *path) {
+    return syscall1(SYS_mkdir, (uint32_t)(uintptr_t)path);
+}
+
+int32_t minios_readdir(int32_t descriptor, struct minios_dirent *entry,
+                       size_t length) {
+    return syscall3(
+        SYS_readdir,
+        (uint32_t)descriptor,
+        (uint32_t)(uintptr_t)entry,
+        (uint32_t)length
+    );
+}
+
 int32_t minios_stat(const char *path, struct minios_stat *status) {
     return syscall2(
         SYS_stat,

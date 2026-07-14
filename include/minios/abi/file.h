@@ -21,7 +21,17 @@ struct minios_stat {
     uint32_t size;
 };
 
+struct minios_dirent {
+    uint32_t inode;
+    uint16_t mode;
+    uint16_t name_length;
+    char name[59];
+    uint8_t reserved;
+};
+
 _Static_assert(sizeof(struct minios_stat) == 12U,
                "minios_stat ABI must remain 12 bytes");
+_Static_assert(sizeof(struct minios_dirent) == 68U,
+               "minios_dirent ABI must remain 68 bytes");
 
 #endif

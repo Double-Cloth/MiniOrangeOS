@@ -49,7 +49,9 @@
 
 当前实现安装了 vector `0x80`、DPL=3 的 32-bit interrupt gate，入口保存通用寄存器和用户段寄存器，切到 Ring 0 data selector 后把可修改 trap frame 交给 C 分发器。除既有进程调用外，P6 已实现 `SYS_open`、`SYS_close`、`SYS_lseek`、`SYS_create` 和 `SYS_stat`，`SYS_read/SYS_write` 对 fd 3 以上按 128-byte 内核缓冲经 usercopy 分块访问 VFS；单次调用仍限制为 4096 bytes。fd 0 键盘输入及 fd 1/2 控制台输出保留原语义。路径限 256 bytes，flags、fd、长度、完整用户范围与 stat 输出指针均在访问前验证。
 
-`spawn` 在内核栈上限界拷贝最多 16 项、单项 64-byte 的 argv，再通过 VFS `stat/open/read/close` 把磁盘 ELF 读入临时内核缓冲并交给严格 ELF loader；缓冲释放后，Heap 已分配块必须归零，首次 Heap 扩容导致的 PMM 页减少必须与新增映射页严格相等。真实 `/bin/init`、`/bin/echo`、`/bin/sh`、`/bin/ps`、`/bin/memtest` 和 `/bin/fault` 均走该磁盘路径。`ps` 仍以固定 ABI 快照 PCB；`waitpid` 在阻塞前验证可选 status 指针；`sleep` 由 PIT deadline 唤醒。`unlink/mkdir/readdir` 留待目录修改增量。
+`unlink/mkdir` 与其他路径调用共用 256-byte 限界拷贝；`readdir` 要求用户缓冲至少容纳共享的 68-byte `struct minios_dirent`，写入前验证完整可写范围，成功返回 1、目录结束返回 0。对普通文件调用 `readdir` 返回 `-ENOTDIR`，删除非空目录返回 `-ENOTEMPTY`，删除仍打开的 inode 返回 `-EBUSY`。真实 Ring 3 自测覆盖目录创建、重复创建、普通文件目录迭代拒绝、打开文件删除拒绝、`.`/`..`/普通项迭代、空洞跳过和清理后路径不可见。
+
+`spawn` 在内核栈上限界拷贝最多 16 项、单项 64-byte 的 argv，再通过 VFS `stat/open/read/close` 把磁盘 ELF 读入临时内核缓冲并交给严格 ELF loader；缓冲释放后，Heap 已分配块必须归零，首次 Heap 扩容导致的 PMM 页减少必须与新增映射页严格相等。真实 `/bin/init`、`/bin/echo`、`/bin/sh`、`/bin/ps`、`/bin/memtest` 和 `/bin/fault` 均走该磁盘路径。`ps` 仍以固定 ABI 快照 PCB；`waitpid` 在阻塞前验证可选 status 指针；`sleep` 由 PIT deadline 唤醒。
 
 ## 安全边界
 

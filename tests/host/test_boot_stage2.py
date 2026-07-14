@@ -608,6 +608,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("SYS_close", syscall)
         self.assertIn("SYS_lseek", syscall)
         self.assertIn("SYS_create", syscall)
+        self.assertIn("SYS_unlink", syscall)
+        self.assertIn("SYS_mkdir", syscall)
+        self.assertIn("SYS_readdir", syscall)
         self.assertIn("SYS_stat", syscall)
         self.assertIn("SYS_yield", syscall)
         self.assertIn("SYS_exit", syscall)
@@ -676,6 +679,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             "minifs_create",
             "minifs_write",
             "minifs_truncate",
+            "minifs_mkdir",
+            "minifs_unlink",
+            "minifs_readdir",
             "allocate_block",
             "allocate_inode",
             "rollback",
@@ -700,6 +706,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             "vfs_lseek",
             "vfs_close",
             "vfs_stat",
+            "vfs_mkdir",
+            "vfs_unlink",
+            "vfs_readdir",
             "vfs_close_all_current",
             "scheduler_fd_install",
             "scheduler_fd_get",
@@ -1026,6 +1035,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         self.assertIn("[USER] ring3 syscall PASS", output)
         self.assertIn("[USER] file syscall PASS", output)
+        self.assertIn("[USER] directory syscall PASS", output)
         self.assertIn("[USER] elf init PASS", output)
         self.assertIn("[USER] echo child PASS", output)
         self.assertIn("[USER] shell command PASS", output)
@@ -1132,7 +1142,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                     "--log",
                     str(log),
                     "--timeout",
-                    "2",
+                    "15",
                     "--max-log-bytes",
                     "262144",
                     "--repo",
@@ -1145,13 +1155,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=12,
+                timeout=30,
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("QEMU 超时", result.stderr)
             output = log.read_text(encoding="utf-8", errors="replace")
             self.assertIn(expected, output)
+            self.assertIn("[USER] directory syscall PASS", output)
             self.assertNotIn("[PANIC]", output)
             checked = subprocess.run(
                 [
