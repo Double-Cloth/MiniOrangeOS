@@ -89,15 +89,17 @@ int copy_user_string(char *kernel_destination, const char *user_source,
     size_t index;
 
     if (kernel_destination == NULL || maximum_length == 0U ||
-        start >= KERNEL_BASE ||
-        maximum_length > (size_t)(KERNEL_BASE - start)) {
+        start >= KERNEL_BASE) {
         return -MINIOS_EFAULT;
     }
     for (index = 0U; index < maximum_length; ++index) {
-        const char *current =
-            (const char *)(uintptr_t)(start + (uint32_t)index);
+        const char *current;
         char value;
 
+        if (index >= (size_t)(KERNEL_BASE - start)) {
+            return -MINIOS_EFAULT;
+        }
+        current = (const char *)(uintptr_t)(start + (uint32_t)index);
         if (!validate_user_range(current, 1U, USER_ACCESS_READ)) {
             return -MINIOS_EFAULT;
         }
@@ -117,23 +119,28 @@ bool usercopy_self_test(void)
         (volatile char *)(uintptr_t)USERCOPY_TEST_VIRTUAL;
     volatile char *writable_second =
         (volatile char *)(uintptr_t)(USERCOPY_TEST_VIRTUAL + PAGE_SIZE);
+    volatile char *boundary =
+        (volatile char *)(uintptr_t)(KERNEL_BASE - PAGE_SIZE);
     char source[] = {'O', 'S', '\0'};
     char copied[8] = {0};
     char string[8] = {0};
     uint32_t writable_physical = pmm_alloc();
     uint32_t writable_second_physical = pmm_alloc();
     uint32_t readonly_physical = pmm_alloc();
+    uint32_t boundary_physical = pmm_alloc();
     uint32_t unmapped = 0U;
     bool passed;
 
     if (writable_physical == 0U || writable_second_physical == 0U ||
-        readonly_physical == 0U ||
+        readonly_physical == 0U || boundary_physical == 0U ||
         !vmm_map(USERCOPY_TEST_VIRTUAL, writable_physical,
                  VMM_USER | VMM_WRITABLE) ||
         !vmm_map(USERCOPY_TEST_VIRTUAL + PAGE_SIZE,
                  writable_second_physical, VMM_USER | VMM_WRITABLE) ||
         !vmm_map(USERCOPY_TEST_VIRTUAL + 3U * PAGE_SIZE, readonly_physical,
-                 VMM_USER)) {
+                 VMM_USER) ||
+        !vmm_map(KERNEL_BASE - PAGE_SIZE, boundary_physical,
+                 VMM_USER | VMM_WRITABLE)) {
         return false;
     }
     writable[0] = 'o';
@@ -148,6 +155,7 @@ bool usercopy_self_test(void)
     writable_second[0] = 'C';
     writable_second[1] = 'D';
     writable_second[PAGE_SIZE - 1U] = '\0';
+    boundary[PAGE_SIZE - 1U] = '\0';
     passed =
         copy_from_user(copied, (const void *)writable, 7U) == 0 &&
         copied[0] == 'o' && copied[5] == 'e' && copied[6] == '\0' &&
@@ -172,6 +180,9 @@ bool usercopy_self_test(void)
                          (const char *)(uintptr_t)(USERCOPY_TEST_VIRTUAL +
                                                    2U * PAGE_SIZE - 1U),
                          sizeof(string)) == 0 && string[0] == '\0' &&
+        copy_user_string(string,
+                         (const char *)(uintptr_t)(KERNEL_BASE - 1U),
+                         sizeof(string)) == 0 && string[0] == '\0' &&
         copy_to_user((void *)(uintptr_t)(USERCOPY_TEST_VIRTUAL +
                                          3U * PAGE_SIZE),
                      source, sizeof(source)) == -MINIOS_EFAULT &&
@@ -188,7 +199,9 @@ bool usercopy_self_test(void)
         unmapped != writable_second_physical ||
         !pmm_free(writable_second_physical) ||
         !vmm_unmap(USERCOPY_TEST_VIRTUAL + 3U * PAGE_SIZE, &unmapped) ||
-        unmapped != readonly_physical || !pmm_free(readonly_physical)) {
+        unmapped != readonly_physical || !pmm_free(readonly_physical) ||
+        !vmm_unmap(KERNEL_BASE - PAGE_SIZE, &unmapped) ||
+        unmapped != boundary_physical || !pmm_free(boundary_physical)) {
         return false;
     }
     return passed && pmm_get_stats().free_pages == before.free_pages;

@@ -25,7 +25,10 @@ INODE_SIZE = 64
 MODE_REGULAR = 1
 MODE_DIRECTORY = 2
 CHECKSUM_OFFSET = 52
-PROGRAMS = ("init", "echo", "sh", "ps", "memtest", "fault")
+PROGRAMS = (
+    "init", "echo", "sh", "ps", "memtest", "fault",
+    "ls", "cat", "touch", "write", "mkdir", "rm",
+)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "MiniFS 宿主工具只在 Linux/WSL 验证")
@@ -223,7 +226,7 @@ class MiniFsToolTests(unittest.TestCase):
         cases["duplicate-block"] = duplicate
 
         orphan = bytearray(original)
-        orphan_inode = 8
+        orphan_inode = 14
         inode_bitmap = self.fields[7] * BLOCK_SIZE
         orphan[inode_bitmap + orphan_inode // 8] |= 1 << (orphan_inode % 8)
         INODE.pack_into(

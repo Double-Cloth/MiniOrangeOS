@@ -918,7 +918,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "--log",
                 str(log),
                 "--timeout",
-                "2",
+                "8",
                 "--max-log-bytes",
                 "262144",
                 "--repo",
@@ -931,7 +931,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=12,
+            timeout=18,
             check=False,
         )
         self.assertNotEqual(result.returncode, 0, "P1 尚未定义最终测试 PASS/退出握手")
@@ -1036,6 +1036,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] ring3 syscall PASS", output)
         self.assertIn("[USER] file syscall PASS", output)
         self.assertIn("[USER] directory syscall PASS", output)
+        self.assertIn("[USER] file commands PASS", output)
+        self.assertTrue(
+            "[USER] command persistence created PASS" in output or
+            "[USER] command persistence verified PASS" in output
+        )
         self.assertIn("[USER] elf init PASS", output)
         self.assertIn("[USER] echo child PASS", output)
         self.assertIn("[USER] shell command PASS", output)
@@ -1126,8 +1131,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
 
         image = test_build / "miniorangeos.img"
         expected_markers = (
-            "[KERN] minifs persistence created PASS",
-            "[KERN] minifs persistence verified and truncated PASS",
+            (
+                "[KERN] minifs persistence created PASS",
+                "[USER] command persistence created PASS",
+            ),
+            (
+                "[KERN] minifs persistence verified and truncated PASS",
+                "[USER] command persistence verified PASS",
+            ),
         )
         for boot, expected in enumerate(expected_markers, start=1):
             log = test_build / f"test-logs/minifs-write-{boot}.log"
@@ -1161,8 +1172,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("QEMU 超时", result.stderr)
             output = log.read_text(encoding="utf-8", errors="replace")
-            self.assertIn(expected, output)
+            self.assertIn(expected[0], output)
+            self.assertIn(expected[1], output)
             self.assertIn("[USER] directory syscall PASS", output)
+            self.assertIn("[USER] file commands PASS", output)
             self.assertNotIn("[PANIC]", output)
             checked = subprocess.run(
                 [

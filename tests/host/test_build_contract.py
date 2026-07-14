@@ -32,6 +32,12 @@ REQUIRED_BUILD_FILES = (
     "user/programs/ps.c",
     "user/programs/memtest.c",
     "user/programs/fault.c",
+    "user/programs/ls.c",
+    "user/programs/cat.c",
+    "user/programs/touch.c",
+    "user/programs/write.c",
+    "user/programs/mkdir.c",
+    "user/programs/rm.c",
     "user/linker.ld",
     "kernel/include/minios/proc/elf.h",
     "kernel/include/minios/proc/program_registry.h",
@@ -122,6 +128,12 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("USER_PS_ELF", makefile)
         self.assertIn("USER_MEMTEST_ELF", makefile)
         self.assertIn("USER_FAULT_ELF", makefile)
+        self.assertIn("USER_LS_ELF", makefile)
+        self.assertIn("USER_CAT_ELF", makefile)
+        self.assertIn("USER_TOUCH_ELF", makefile)
+        self.assertIn("USER_WRITE_ELF", makefile)
+        self.assertIn("USER_MKDIR_ELF", makefile)
+        self.assertIn("USER_RM_ELF", makefile)
         self.assertIn("user/linker.ld", makefile)
         self.assertIn("-ffreestanding", makefile)
         self.assertIn("-nostdlib", makefile)

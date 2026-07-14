@@ -310,6 +310,36 @@ USER_FAULT_DEP := $(USER_PROGRAMS_BUILD_DIR)/fault.d
 USER_FAULT_ELF := $(USER_BIN_BUILD_DIR)/fault.elf
 USER_FAULT_MAP := $(USER_BIN_BUILD_DIR)/fault.map
 USER_FAULT_SYM := $(USER_BIN_BUILD_DIR)/fault.sym
+USER_LS_OBJ := $(USER_PROGRAMS_BUILD_DIR)/ls.o
+USER_LS_DEP := $(USER_PROGRAMS_BUILD_DIR)/ls.d
+USER_LS_ELF := $(USER_BIN_BUILD_DIR)/ls.elf
+USER_LS_MAP := $(USER_BIN_BUILD_DIR)/ls.map
+USER_LS_SYM := $(USER_BIN_BUILD_DIR)/ls.sym
+USER_CAT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/cat.o
+USER_CAT_DEP := $(USER_PROGRAMS_BUILD_DIR)/cat.d
+USER_CAT_ELF := $(USER_BIN_BUILD_DIR)/cat.elf
+USER_CAT_MAP := $(USER_BIN_BUILD_DIR)/cat.map
+USER_CAT_SYM := $(USER_BIN_BUILD_DIR)/cat.sym
+USER_TOUCH_OBJ := $(USER_PROGRAMS_BUILD_DIR)/touch.o
+USER_TOUCH_DEP := $(USER_PROGRAMS_BUILD_DIR)/touch.d
+USER_TOUCH_ELF := $(USER_BIN_BUILD_DIR)/touch.elf
+USER_TOUCH_MAP := $(USER_BIN_BUILD_DIR)/touch.map
+USER_TOUCH_SYM := $(USER_BIN_BUILD_DIR)/touch.sym
+USER_WRITE_OBJ := $(USER_PROGRAMS_BUILD_DIR)/write.o
+USER_WRITE_DEP := $(USER_PROGRAMS_BUILD_DIR)/write.d
+USER_WRITE_ELF := $(USER_BIN_BUILD_DIR)/write.elf
+USER_WRITE_MAP := $(USER_BIN_BUILD_DIR)/write.map
+USER_WRITE_SYM := $(USER_BIN_BUILD_DIR)/write.sym
+USER_MKDIR_OBJ := $(USER_PROGRAMS_BUILD_DIR)/mkdir.o
+USER_MKDIR_DEP := $(USER_PROGRAMS_BUILD_DIR)/mkdir.d
+USER_MKDIR_ELF := $(USER_BIN_BUILD_DIR)/mkdir.elf
+USER_MKDIR_MAP := $(USER_BIN_BUILD_DIR)/mkdir.map
+USER_MKDIR_SYM := $(USER_BIN_BUILD_DIR)/mkdir.sym
+USER_RM_OBJ := $(USER_PROGRAMS_BUILD_DIR)/rm.o
+USER_RM_DEP := $(USER_PROGRAMS_BUILD_DIR)/rm.d
+USER_RM_ELF := $(USER_BIN_BUILD_DIR)/rm.elf
+USER_RM_MAP := $(USER_BIN_BUILD_DIR)/rm.map
+USER_RM_SYM := $(USER_BIN_BUILD_DIR)/rm.sym
 
 MINIFS_IMAGE := $(FS_BUILD_DIR)/minifs.img
 MINIFS_LAYOUT_HEADER := $(KERNEL_BUILD_DIR)/minifs-layout.h
@@ -393,6 +423,24 @@ ALL_ARTIFACTS := \
 	$(USER_FAULT_ELF) \
 	$(USER_FAULT_MAP) \
 	$(USER_FAULT_SYM) \
+	$(USER_LS_ELF) \
+	$(USER_LS_MAP) \
+	$(USER_LS_SYM) \
+	$(USER_CAT_ELF) \
+	$(USER_CAT_MAP) \
+	$(USER_CAT_SYM) \
+	$(USER_TOUCH_ELF) \
+	$(USER_TOUCH_MAP) \
+	$(USER_TOUCH_SYM) \
+	$(USER_WRITE_ELF) \
+	$(USER_WRITE_MAP) \
+	$(USER_WRITE_SYM) \
+	$(USER_MKDIR_ELF) \
+	$(USER_MKDIR_MAP) \
+	$(USER_MKDIR_SYM) \
+	$(USER_RM_ELF) \
+	$(USER_RM_MAP) \
+	$(USER_RM_SYM) \
 	$(MINIFS_IMAGE)
 
 .PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu test-image
@@ -401,7 +449,7 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
 
-user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) | prepare-build-dir
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) $(USER_PS_ELF) $(USER_PS_MAP) $(USER_PS_SYM) $(USER_MEMTEST_ELF) $(USER_MEMTEST_MAP) $(USER_MEMTEST_SYM) $(USER_FAULT_ELF) $(USER_FAULT_MAP) $(USER_FAULT_SYM) $(USER_LS_ELF) $(USER_LS_MAP) $(USER_LS_SYM) $(USER_CAT_ELF) $(USER_CAT_MAP) $(USER_CAT_SYM) $(USER_TOUCH_ELF) $(USER_TOUCH_MAP) $(USER_TOUCH_SYM) $(USER_WRITE_ELF) $(USER_WRITE_MAP) $(USER_WRITE_SYM) $(USER_MKDIR_ELF) $(USER_MKDIR_MAP) $(USER_MKDIR_SYM) $(USER_RM_ELF) $(USER_RM_MAP) $(USER_RM_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -617,14 +665,74 @@ $(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(U
 $(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
-$(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) | prepare-build-dir
+$(USER_LS_OBJ): user/programs/ls.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_LS_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_LS_ELF) $(USER_LS_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_LS_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_LS_MAP)" -o "$(USER_LS_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_LS_OBJ)
+
+$(USER_LS_SYM): $(USER_LS_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_CAT_OBJ): user/programs/cat.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_CAT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_CAT_ELF) $(USER_CAT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_CAT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_CAT_MAP)" -o "$(USER_CAT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_CAT_OBJ)
+
+$(USER_CAT_SYM): $(USER_CAT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_TOUCH_OBJ): user/programs/touch.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_TOUCH_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_TOUCH_ELF) $(USER_TOUCH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_TOUCH_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_TOUCH_MAP)" -o "$(USER_TOUCH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_TOUCH_OBJ)
+
+$(USER_TOUCH_SYM): $(USER_TOUCH_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_WRITE_OBJ): user/programs/write.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_WRITE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_WRITE_ELF) $(USER_WRITE_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_WRITE_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_WRITE_MAP)" -o "$(USER_WRITE_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_WRITE_OBJ)
+
+$(USER_WRITE_SYM): $(USER_WRITE_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_MKDIR_OBJ): user/programs/mkdir.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_MKDIR_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_MKDIR_ELF) $(USER_MKDIR_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MKDIR_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_MKDIR_MAP)" -o "$(USER_MKDIR_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_MKDIR_OBJ)
+
+$(USER_MKDIR_SYM): $(USER_MKDIR_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_RM_OBJ): user/programs/rm.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_RM_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_RM_ELF) $(USER_RM_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_RM_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_RM_MAP)" -o "$(USER_RM_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_RM_OBJ)
+
+$(USER_RM_SYM): $(USER_RM_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) $(USER_LS_ELF) $(USER_CAT_ELF) $(USER_TOUCH_ELF) $(USER_WRITE_ELF) $(USER_MKDIR_ELF) $(USER_RM_ELF) | prepare-build-dir
 	$(PYTHON) tools/mkfs.py --layout config/image-layout.json --output "$@" \
 		--import "/bin/init=$(USER_INIT_ELF)" \
 		--import "/bin/echo=$(USER_ECHO_ELF)" \
 		--import "/bin/sh=$(USER_SH_ELF)" \
 		--import "/bin/ps=$(USER_PS_ELF)" \
 		--import "/bin/memtest=$(USER_MEMTEST_ELF)" \
-		--import "/bin/fault=$(USER_FAULT_ELF)"
+		--import "/bin/fault=$(USER_FAULT_ELF)" \
+		--import "/bin/ls=$(USER_LS_ELF)" \
+		--import "/bin/cat=$(USER_CAT_ELF)" \
+		--import "/bin/touch=$(USER_TOUCH_ELF)" \
+		--import "/bin/write=$(USER_WRITE_ELF)" \
+		--import "/bin/mkdir=$(USER_MKDIR_ELF)" \
+		--import "/bin/rm=$(USER_RM_ELF)"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
@@ -639,4 +747,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP) $(USER_PS_DEP) $(USER_MEMTEST_DEP) $(USER_FAULT_DEP) $(USER_LS_DEP) $(USER_CAT_DEP) $(USER_TOUCH_DEP) $(USER_WRITE_DEP) $(USER_MKDIR_DEP) $(USER_RM_DEP)

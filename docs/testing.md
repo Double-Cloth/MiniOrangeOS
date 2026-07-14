@@ -181,6 +181,8 @@ VFS/fd 增量加入 32 项 file object 池、每进程 16 项 fd 表、独立 of
 
 目录修改增量实现空闲目录项复用、尾部跨块扩容、`.`/`..` 和 link count、空目录删除、已打开 inode 删除拒绝，以及共享 68-byte dirent 的 fd 迭代。专用双启动镜像第一次创建 65 个文件使目录扩展到第二个数据块，第二次跨重启迭代全部 67 个有效项并删除；两轮用户态目录 syscall 自测和宿主 fsck 均 PASS。`environment/verify.sh` PASS；启动专项 33/33、构建契约与 MiniFS 工具组合 16/16、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 145368 bytes，SHA-256 为 `c8e4ce36317b337388e09876019874c30055e95cc6c031d1c80f74a4cf9c1cd7`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `4a317ca8c201c999a50c6898ff41ecfafe94ed5edcef61c5f7f396326234007d`。
 
+用户文件命令增量把 `ls/cat/touch/write/mkdir/rm` 构建为 6 个独立 ELF，并将确定性 `/bin` 扩展到 12 个程序。Shell 自测经真实磁盘 `spawn/wait` 完成创建、覆盖、读取、列举与删除闭环；`/p6-command-persist` 第一次启动由 `write` 创建，第二次启动由 `cat` 读取并报告 verified。该路径暴露并修复 `copy_user_string` 对用户空间末字节 NUL 的过度预检，新增 `0xBFFFFFFF` 运行时回归。`environment/verify.sh` PASS；构建契约、MiniFS 工具和启动专项组合 49/49、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 145656 bytes，SHA-256 为 `2a0749ff4fb27289c79e1a9f75b186b7dcd66ac0b777a0177ad84734aa87873b`；`minifs.img` 为 66060288 bytes，SHA-256 为 `79fe925f71552cf9b4fd47cedd99ef91b08a3bfc1d97ec0d5c301435156ead2b`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `3c55f18a0a4768d98e8d834a9f783c47adf7d77c88d9576d436f4f35bb0001fe`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

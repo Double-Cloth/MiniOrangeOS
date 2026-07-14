@@ -1,5 +1,7 @@
 #include <minios/string.h>
 #include <minios/user.h>
+#include <minios/abi/errno.h>
+#include <minios/abi/minifs.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -83,7 +85,10 @@ static int run_line(char *line)
         return SHELL_RUN_EXIT;
     }
     if (minios_streq(arguments[0], "help")) {
-        return write_text("builtins: help clear cd pwd exit\n") ? 0 : -1;
+        return write_text(
+            "builtins: help clear cd pwd exit\n"
+            "commands: ls cat touch write mkdir rm echo ps memtest\n"
+        ) ? 0 : -1;
     }
     if (minios_streq(arguments[0], "clear")) {
         return write_text("\x1B[2J\x1B[H") ? 0 : -1;
@@ -116,6 +121,46 @@ static int run_line(char *line)
     return 0;
 }
 
+static bool run_file_command_self_test(void)
+{
+    static const char persistence_payload[] =
+        "[USER] command persistence payload\n";
+    struct minios_stat status;
+    char persistence_write[] =
+        "write /p6-command-persist [USER] command persistence payload";
+    char persistence_cat[] = "cat /p6-command-persist";
+    char mkdir_line[] = "mkdir /p6-command-dir";
+    char touch_line[] = "touch /p6-command-dir/file";
+    char write_line[] = "write /p6-command-dir/file file command data";
+    char cat_line[] = "cat /p6-command-dir/file";
+    char ls_line[] = "ls /p6-command-dir";
+    char rm_file_line[] = "rm /p6-command-dir/file";
+    char rm_directory_line[] = "rm /p6-command-dir";
+    int32_t result = minios_stat("/p6-command-persist", &status);
+
+    if (result == -MINIOS_ENOENT ||
+        (result == 0 && status.mode == MINIFS_MODE_REGULAR &&
+         status.size != sizeof(persistence_payload) - 1U)) {
+        if (run_line(persistence_write) != 0 ||
+            !write_text("[USER] command persistence created PASS\n")) {
+            return false;
+        }
+    } else if (result == 0 && status.mode == MINIFS_MODE_REGULAR &&
+               status.size == sizeof(persistence_payload) - 1U) {
+        if (run_line(persistence_cat) != 0 ||
+            !write_text("[USER] command persistence verified PASS\n")) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    return run_line(mkdir_line) == 0 && run_line(touch_line) == 0 &&
+        run_line(write_line) == 0 && run_line(cat_line) == 0 &&
+        run_line(ls_line) == 0 && run_line(rm_file_line) == 0 &&
+        run_line(rm_directory_line) == 0 &&
+        write_text("[USER] file commands PASS\n");
+}
+
 static int run_self_test(void)
 {
     char help_line[] = "help";
@@ -125,6 +170,7 @@ static int run_self_test(void)
 
     if (run_line(help_line) != 0 || run_line(command_line) != 0 ||
         run_line(ps_line) != 0 || run_line(memtest_line) != 0 ||
+        !run_file_command_self_test() ||
         !write_text("[USER] shell self-test PASS\n")) {
         return 1;
     }

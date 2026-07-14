@@ -51,7 +51,7 @@
 
 `unlink/mkdir` 与其他路径调用共用 256-byte 限界拷贝；`readdir` 要求用户缓冲至少容纳共享的 68-byte `struct minios_dirent`，写入前验证完整可写范围，成功返回 1、目录结束返回 0。对普通文件调用 `readdir` 返回 `-ENOTDIR`，删除非空目录返回 `-ENOTEMPTY`，删除仍打开的 inode 返回 `-EBUSY`。真实 Ring 3 自测覆盖目录创建、重复创建、普通文件目录迭代拒绝、打开文件删除拒绝、`.`/`..`/普通项迭代、空洞跳过和清理后路径不可见。
 
-`spawn` 在内核栈上限界拷贝最多 16 项、单项 64-byte 的 argv，再通过 VFS `stat/open/read/close` 把磁盘 ELF 读入临时内核缓冲并交给严格 ELF loader；缓冲释放后，Heap 已分配块必须归零，首次 Heap 扩容导致的 PMM 页减少必须与新增映射页严格相等。真实 `/bin/init`、`/bin/echo`、`/bin/sh`、`/bin/ps`、`/bin/memtest` 和 `/bin/fault` 均走该磁盘路径。`ps` 仍以固定 ABI 快照 PCB；`waitpid` 在阻塞前验证可选 status 指针；`sleep` 由 PIT deadline 唤醒。
+`spawn` 在内核栈上限界拷贝最多 16 项、单项 64-byte 的 argv，再通过 VFS `stat/open/read/close` 把磁盘 ELF 读入临时内核缓冲并交给严格 ELF loader；缓冲释放后，Heap 已分配块必须归零，首次 Heap 扩容导致的 PMM 页减少必须与新增映射页严格相等。真实 `/bin/init`、`/bin/echo`、`/bin/sh`、`/bin/ps`、`/bin/memtest`、`/bin/fault` 及 6 个文件命令均走该磁盘路径。`ps` 仍以固定 ABI 快照 PCB；`waitpid` 在阻塞前验证可选 status 指针；`sleep` 由 PIT deadline 唤醒。
 
 ## 安全边界
 
@@ -72,6 +72,8 @@
 4. 写方向检查页可写。
 5. 字符串使用最大长度限制。
 6. 拷贝到内核缓冲后再解析。
+
+字符串拷贝只要求起始地址位于用户空间，随后逐字节验证映射并在到达 NUL 时立即成功；不得因为调用方给出的最大扫描上限会越过 `0xC0000000`，就拒绝实际已在用户空间末字节终止的字符串。运行时自检在 `0xBFFFFFFF` 放置 NUL，覆盖用户栈顶 argv 作为路径参数的边界。
 
 路径最大长度建议：
 

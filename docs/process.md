@@ -151,6 +151,8 @@ P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin
 
 诊断程序集合现包含 `/bin/ps`、`/bin/memtest` 与 `/bin/fault`。`ps` 只接收共享 ABI 中的定长进程快照，不暴露内核地址；`memtest` 检查新地址空间 BSS 初值、私有页写入与 PID；`fault` 写入未映射用户地址，由 page-fault 隔离路径转为 `-EFAULT` ZOMBIE。Shell 自检实际执行 ps/memtest，init 则启动 fault 并核对预期异常退出后内核仍继续运行。
 
+P6 新增 `/bin/ls`、`/bin/cat`、`/bin/touch`、`/bin/write`、`/bin/mkdir` 和 `/bin/rm` 六个独立静态 ELF。`ls` 通过目录 fd 迭代并跳过 `.`/`..`，目录名追加 `/`；`cat` 以 128-byte 缓冲流式复制到 stdout；`write` 使用 `O_CREAT|O_TRUNC` 并以空格连接文本参数、末尾写入换行；其余命令直接映射创建或删除语义。Shell 自测通过正常分词、spawn 和 wait 路径完成目录创建、文件创建/覆盖、读取、列举和反向清理，并保留 `/p6-command-persist`。下一次启动先由 `cat` 读取该文件后才报告持久化验证 PASS。
+
 ## 用户程序最低集合
 
 | 程序 | 功能 |
