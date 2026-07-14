@@ -49,6 +49,8 @@ wait_node
 - `fd_table` 由 VFS 引用计数管理；
 - PCB 状态转换必须在关中断或调度锁保护下完成。
 
+当前 fd 3-15 保存经 VFS 验证的 file object handle；标准 fd 不继承普通文件对象，新 `spawn` 进程仅获得保留的 0/1/2 语义。`exit` 在进入 ZOMBIE 前调用 VFS 关闭全部普通 fd，因此 ZOMBIE 不持有 file object 引用。
+
 ## 状态机
 
 ```mermaid
@@ -148,6 +150,8 @@ P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin
 注册表随后加入 `/bin/sh`。Shell 使用 128-byte 行缓冲和最多 16 项 argv，就地分割空格/Tab，支持 `help`、`clear`、`cd`、`pwd`、`exit` 内建；非内建命令补全 `/bin/` 路径后执行 spawn/waitpid。交互模式通过 `SYS_read(fd=0)` 做逐字符输入、退格与提示符；启动自检模式解析并执行 `echo [USER] shell command PASS`，因此 QEMU 验收覆盖的是同一条分词、外部命令与等待路径，而非直接伪造 PASS 文本。文件系统尚未实现时，`cd`/`pwd` 仅承认根目录。
 
 诊断程序集合现包含 `/bin/ps`、`/bin/memtest` 与 `/bin/fault`。`ps` 只接收共享 ABI 中的定长进程快照，不暴露内核地址；`memtest` 检查新地址空间 BSS 初值、私有页写入与 PID；`fault` 写入未映射用户地址，由 page-fault 隔离路径转为 `-EFAULT` ZOMBIE。Shell 自检实际执行 ps/memtest，init 则启动 fault 并核对预期异常退出后内核仍继续运行。
+
+P6 新增 `/bin/ls`、`/bin/cat`、`/bin/touch`、`/bin/write`、`/bin/mkdir` 和 `/bin/rm` 六个独立静态 ELF。`ls` 通过目录 fd 迭代并跳过 `.`/`..`，目录名追加 `/`；`cat` 以 128-byte 缓冲流式复制到 stdout；`write` 使用 `O_CREAT|O_TRUNC` 并以空格连接文本参数、末尾写入换行；其余命令直接映射创建或删除语义。Shell 自测通过正常分词、spawn 和 wait 路径完成目录创建、文件创建/覆盖、读取、列举和反向清理，并保留 `/p6-command-persist`。下一次启动先由 `cat` 读取该文件后才报告持久化验证 PASS。
 
 ## 用户程序最低集合
 

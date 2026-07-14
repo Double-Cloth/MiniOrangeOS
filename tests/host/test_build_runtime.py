@@ -58,6 +58,25 @@ EXPECTED_FINAL_ARTIFACTS = (
     "user/bin/fault.elf",
     "user/bin/fault.map",
     "user/bin/fault.sym",
+    "user/bin/ls.elf",
+    "user/bin/ls.map",
+    "user/bin/ls.sym",
+    "user/bin/cat.elf",
+    "user/bin/cat.map",
+    "user/bin/cat.sym",
+    "user/bin/touch.elf",
+    "user/bin/touch.map",
+    "user/bin/touch.sym",
+    "user/bin/write.elf",
+    "user/bin/write.map",
+    "user/bin/write.sym",
+    "user/bin/mkdir.elf",
+    "user/bin/mkdir.map",
+    "user/bin/mkdir.sym",
+    "user/bin/rm.elf",
+    "user/bin/rm.map",
+    "user/bin/rm.sym",
+    "fs/minifs.img",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
@@ -67,6 +86,10 @@ EXPECTED_DEPFILES = (
     "kernel/proc/elf.d",
     "kernel/proc/program_registry.d",
     "kernel/proc/embedded_programs.d",
+    "kernel/drivers/ata.d",
+    "kernel/block/block.d",
+    "kernel/fs/minifs.d",
+    "kernel/fs/vfs.d",
     "user/crt/start.d",
     "user/libc/syscall.d",
     "user/libc/string.d",
@@ -76,6 +99,12 @@ EXPECTED_DEPFILES = (
     "user/programs/ps.d",
     "user/programs/memtest.d",
     "user/programs/fault.d",
+    "user/programs/ls.d",
+    "user/programs/cat.d",
+    "user/programs/touch.d",
+    "user/programs/write.d",
+    "user/programs/mkdir.d",
+    "user/programs/rm.d",
 )
 KERNEL_C_FLAGS = {
     "-std=c11",
@@ -698,7 +727,11 @@ class BuildRuntimeTests(unittest.TestCase):
                     continue
                 self.assertEqual(b"\0" * sector_size, image[offset : offset + sector_size])
                 checked += 1
-            self.assertGreaterEqual(checked, 3, "镜像未占用区域抽样不足")
+            self.assertGreaterEqual(
+                checked,
+                2,
+                "MiniFS 占满镜像尾部后仍应抽样 Stage 2 与 Kernel 预留区",
+            )
 
             independent_outputs = (
                 workspace / "independent-one.img",

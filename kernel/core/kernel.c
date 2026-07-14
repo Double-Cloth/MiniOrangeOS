@@ -2,11 +2,15 @@
 #include <minios/arch/x86/idt.h>
 #include <minios/arch/x86/irq.h>
 #include <minios/arch/x86/page_fault.h>
+#include <minios/block/block.h>
 #include <minios/boot_info.h>
 #include <minios/console.h>
+#include <minios/drivers/ata.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
+#include <minios/fs/minifs.h>
+#include <minios/fs/vfs.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/pmm.h>
@@ -72,6 +76,50 @@ void kernel_main(const struct boot_info *boot_info)
         panic("scheduler self-test failed");
     }
     console_printf("[KERN] scheduler self-test PASS\n");
+    if (ata_init() != 0) {
+        panic("ATA initialization failed");
+    }
+    console_printf("[KERN] ata ready sectors=%u\n", ata_sector_count());
+    if (block_init() != 0) {
+        panic("block initialization failed");
+    }
+    console_printf("[KERN] block ready blocks=%u\n", block_count());
+    if (!block_self_test()) {
+        panic("block self-test failed");
+    }
+    console_printf("[KERN] block self-test PASS\n");
+    if (minifs_mount() != 0) {
+        panic("MiniFS mount failed");
+    }
+    console_printf("[KERN] minifs mounted blocks=%u inodes=%u\n",
+                   minifs_total_blocks(), minifs_total_inodes());
+    if (!minifs_self_test()) {
+        panic("MiniFS self-test failed");
+    }
+    console_printf("[KERN] minifs self-test PASS\n");
+    vfs_init();
+    console_printf("[KERN] vfs ready\n");
+    if (!vfs_self_test()) {
+        panic("VFS self-test failed");
+    }
+    console_printf("[KERN] vfs self-test PASS\n");
+#if MINIOS_TEST_MINIFS_WRITE == 1
+    {
+        enum minifs_persistence_result persistence =
+            minifs_persistence_self_test();
+
+        if (persistence == MINIFS_PERSISTENCE_CREATED) {
+            console_printf("[KERN] minifs persistence created PASS\n");
+        } else if (persistence ==
+                   MINIFS_PERSISTENCE_VERIFIED_AND_TRUNCATED) {
+            console_printf(
+                "[KERN] minifs persistence verified and truncated PASS\n"
+            );
+        } else {
+            panic("MiniFS persistence self-test failed");
+        }
+    }
+#endif
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

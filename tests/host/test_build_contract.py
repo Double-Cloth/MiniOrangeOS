@@ -32,12 +32,32 @@ REQUIRED_BUILD_FILES = (
     "user/programs/ps.c",
     "user/programs/memtest.c",
     "user/programs/fault.c",
+    "user/programs/ls.c",
+    "user/programs/cat.c",
+    "user/programs/touch.c",
+    "user/programs/write.c",
+    "user/programs/mkdir.c",
+    "user/programs/rm.c",
     "user/linker.ld",
     "kernel/include/minios/proc/elf.h",
     "kernel/include/minios/proc/program_registry.h",
     "kernel/proc/elf.c",
     "kernel/proc/program_registry.c",
     "kernel/proc/embedded_programs.asm",
+    "kernel/include/minios/drivers/ata.h",
+    "kernel/include/minios/block/block.h",
+    "kernel/drivers/ata.c",
+    "kernel/block/block.c",
+    "include/minios/abi/minifs.h",
+    "include/minios/abi/file.h",
+    "tools/minifs.py",
+    "tools/mkfs.py",
+    "tools/fsck.py",
+    "kernel/include/minios/fs/minifs.h",
+    "kernel/fs/minifs.c",
+    "kernel/include/minios/fs/vfs.h",
+    "kernel/fs/vfs.c",
+    "tools/generate_minifs_layout.py",
 )
 
 GENERATED_SUFFIXES = {
@@ -54,6 +74,7 @@ EXPECTED_COMPONENTS = {
     "stage1": ("boot/stage1.bin", 0, 1),
     "stage2": ("boot/stage2.bin", 1, 127),
     "kernel": ("kernel/kernel.elf", 128, 1920),
+    "minifs": ("fs/minifs.img", 2048, 129024),
 }
 
 
@@ -107,6 +128,12 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("USER_PS_ELF", makefile)
         self.assertIn("USER_MEMTEST_ELF", makefile)
         self.assertIn("USER_FAULT_ELF", makefile)
+        self.assertIn("USER_LS_ELF", makefile)
+        self.assertIn("USER_CAT_ELF", makefile)
+        self.assertIn("USER_TOUCH_ELF", makefile)
+        self.assertIn("USER_WRITE_ELF", makefile)
+        self.assertIn("USER_MKDIR_ELF", makefile)
+        self.assertIn("USER_RM_ELF", makefile)
         self.assertIn("user/linker.ld", makefile)
         self.assertIn("-ffreestanding", makefile)
         self.assertIn("-nostdlib", makefile)
@@ -148,6 +175,29 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("BUILD_IDENTITY_STABILIZE_SECONDS", guard)
         self.assertIn("status.st_ino != 0", guard)
         self.assertIn("_stable_created_status", guard)
+
+    def test_kernel_build_declares_ata_and_block_layers(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("KERNEL_ATA_OBJ", makefile)
+        self.assertIn("KERNEL_BLOCK_OBJ", makefile)
+        self.assertIn('(\"kernel\", \"block\")', guard)
+
+    def test_build_declares_minifs_image_and_fsck(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("MINIFS_IMAGE", makefile)
+        self.assertIn("tools/mkfs.py", makefile)
+        self.assertIn("tools/fsck.py", makefile)
+        self.assertIn("test-image", makefile)
+
+    def test_kernel_build_declares_minifs_mount(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("KERNEL_MINIFS_OBJ", makefile)
+        self.assertIn("KERNEL_VFS_OBJ", makefile)
+        self.assertIn("MINIFS_LAYOUT_HEADER", makefile)
+        self.assertIn("tools/generate_minifs_layout.py", makefile)
+        self.assertIn('(\"kernel\", \"fs\")', guard)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

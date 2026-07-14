@@ -167,6 +167,24 @@ P4 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environm
 
 P5 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environment/verify.sh` PASS，`make clean` 后 `make -j4 image` PASS，启动专项 28/28 PASS，全量宿主回归 225/225 PASS（463.969 秒）。正式产品从只读注册表加载真实静态 ELF32 init/sh/基础命令；Shell 脚本实际解析并执行 echo、ps、memtest，init 另行核对 fault 的 `-EFAULT` 后继续运行，既有 kernel #PF、`int3` 与 HMP 键盘注入回归继续通过。最终 `kernel.elf` 为 113,984 bytes，SHA-256 为 `19a3a72d575ba65a4d2a65143ddf42f6de3cd5f7fc49191a31037441faf97dd0`；`miniorangeos.img` 为 67,108,864 bytes，SHA-256 为 `aa63d1cacdfa00ecfb3d023113d34e7b345e9ca0409ecb6d4c4bf779d8d1be06`。完整证据见 `docs/task-reports/P5-user-shell.md`。
 
+## P6 完成证据
+
+ATA/block 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：主 IDE 主盘通过 `IDENTIFY` 报告 131072 个扇区，LBA28 PIO 具备多扇区读写、BSY/DRQ/ERR/DF、超时、cache flush、容量边界和关中断串行化；4 KiB block 层在真实 QEMU 只读核对 Boot Sector 签名和 Kernel ELF 魔数。环境验证、干净镜像构建、真实产品启动均 PASS；构建契约 8/8、运行时构建回归 21/21 PASS。
+
+MiniFS 宿主工具增量固定 LBA 2048 起始、16128 个 4 KiB 块、1024 个 64-byte inode、64-byte 目录项与 CRC32 Superblock ABI。确定性 mkfs 导入 6 个真实用户 ELF，`make_image.py` 逐字节装配 63 MiB 卷；只读 fsck 同时检查独立卷和整盘，并拒绝坏 magic、坏 CRC、bitmap 不一致、重复块和孤儿 inode。环境验证与干净镜像构建 PASS，MiniFS 工具 6/6、构建契约和真实产品启动组合 10/10、完整运行时构建回归 21/21 PASS（360.246 秒）。`minifs.img` SHA-256 为 `9d9c90bed5bc17c8781082d90ab4b27712bd9796bfe70bcf84c7c27413a5f415`；`kernel.elf` SHA-256 为 `1f7bb6bfe7346fc0b2c783c11862a86f9774499dc70739124677a990ad025965`；`miniorangeos.img` SHA-256 为 `13ec99ac8fac702ccd896c85ede839086e9064397d928326dcf58c2f1b7253af`。
+
+内核只读 MiniFS 增量从统一 JSON 生成卷起点/容量 C 头，挂载时校验设备范围、完整 CRC32、连续几何、元数据与 root bitmap；inode 和目录读取验证分配状态、direct/indirect 形状、数据块范围及类型一致性。绝对路径覆盖重复 `/`、`.`、`..`、尾随 `/`、不存在组件和中间普通文件；真实 QEMU 将磁盘 `/bin` 的 6 个 ELF 与 P5 嵌入副本逐字节比对。产品启动 PASS，坏 magic 与坏 CRC 临时镜像均在 PIC/用户态前失败关闭；相关构建/MiniFS 组合回归 18/18 PASS。干净镜像构建与完整启动专项 31/31 PASS；`kernel.elf` SHA-256 为 `78068413234f37e8c8bc0c36137af1cc791fa8147c68399b2d225349c75a9030`，`miniorangeos.img` SHA-256 为 `d7eee480f1ec3efa6d9e33b6ab8cd2c5f9286b3c5d552e73f0698bd6dbf17f3f`。
+
+MiniFS 首个可写增量实现 inode/block bitmap 分配与回收、普通文件目录项追加、无稀疏写入、direct 到一级 indirect 扩展及缩小截断。专用 `KERNEL_TEST_MINIFS_WRITE=1` 构建只操作临时镜像：第一次真实 QEMU 启动创建 `/p6-persist` 并写入 45179 bytes，第二次启动逐字节验证后截断为 4113 bytes；两次启动后的宿主只读 fsck 均 PASS，默认产品镜像不执行写入自测。`environment/verify.sh` PASS；启动专项 32/32、构建契约与 MiniFS 工具组合 16/16、完整运行时构建回归 21/21 PASS（369.119 秒）；独立干净构建及 `make test-image` PASS。`kernel.elf` 为 129508 bytes，SHA-256 为 `ed35963f2243622ac182d1fa66dd5587a26a7ceef107eaaa569474116c37b62c`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `23748e21cd125cc7e4f5859c66f43bafdded82e216e07e0a9514a9a6495a47f8`。
+
+VFS/fd 增量加入 32 项 file object 池、每进程 16 项 fd 表、独立 offset、flags/refcount/ops 和退出清理。Ring 3 `/bin/init` 实际验证 `stat/open/read/lseek/close`、ELF 魔数、未知路径/flags 与 close 后 `-EBADF`，并故意遗留一个 fd 由 exit 自动关闭；回到启动进程后 VFS 池完整性复验 PASS。`spawn` 已从注册表切换为 VFS，初始 init 和全部子程序均由磁盘 ELF 创建。启动专项 33/33、构建契约与 MiniFS 工具 16/16、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 135700 bytes，SHA-256 为 `ce8a638a27134dd6a639311187a32bf96cfb158fc14ca4affb2fa154bebed263`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `32adf6d3e55607e5392ecf52aa73b077d6396ae22d46f1652f3f796bf712b7b8`。
+
+目录修改增量实现空闲目录项复用、尾部跨块扩容、`.`/`..` 和 link count、空目录删除、已打开 inode 删除拒绝，以及共享 68-byte dirent 的 fd 迭代。专用双启动镜像第一次创建 65 个文件使目录扩展到第二个数据块，第二次跨重启迭代全部 67 个有效项并删除；两轮用户态目录 syscall 自测和宿主 fsck 均 PASS。`environment/verify.sh` PASS；启动专项 33/33、构建契约与 MiniFS 工具组合 16/16、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 145368 bytes，SHA-256 为 `c8e4ce36317b337388e09876019874c30055e95cc6c031d1c80f74a4cf9c1cd7`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `4a317ca8c201c999a50c6898ff41ecfafe94ed5edcef61c5f7f396326234007d`。
+
+用户文件命令增量把 `ls/cat/touch/write/mkdir/rm` 构建为 6 个独立 ELF，并将确定性 `/bin` 扩展到 12 个程序。Shell 自测经真实磁盘 `spawn/wait` 完成创建、覆盖、读取、列举与删除闭环；`/p6-command-persist` 第一次启动由 `write` 创建，第二次启动由 `cat` 读取并报告 verified。该路径暴露并修复 `copy_user_string` 对用户空间末字节 NUL 的过度预检，新增 `0xBFFFFFFF` 运行时回归。`environment/verify.sh` PASS；构建契约、MiniFS 工具和启动专项组合 49/49、运行时构建受影响专项 2/2、独立干净构建与 `make test-image` PASS。`kernel.elf` 为 145656 bytes，SHA-256 为 `2a0749ff4fb27289c79e1a9f75b186b7dcd66ac0b777a0177ad84734aa87873b`；`minifs.img` 为 66060288 bytes，SHA-256 为 `79fe925f71552cf9b4fd47cedd99ef91b08a3bfc1d97ec0d5c301435156ead2b`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `3c55f18a0a4768d98e8d834a9f783c47adf7d77c88d9576d436f4f35bb0001fe`。
+
+P6 最终验收在正式 `MiniOrangeOS-Dev` 中执行：环境验证 PASS，构建契约、MiniFS 工具与启动专项组合 49/49 PASS，受影响运行时构建专项 2/2 PASS，独立干净镜像构建及 `make test-image` PASS，全量宿主回归 239/239 PASS（565.244 秒）。专用双启动镜像在每轮 QEMU 后均由宿主 fsck 复核，产品路径完成用户命令创建、读取和跨重启持久化闭环。最终产物及哈希沿用上一段记录；完整证据见 `docs/task-reports/P6-disk-minifs.md`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

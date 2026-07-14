@@ -23,7 +23,7 @@
 | P3 内存管理 | 完成 | `54d7cf3` 合并；E820 PMM、正式 VMM、first-fit heap、用户页目录、usercopy/page fault；环境 PASS、启动专项 25/25、全量宿主 219/219、真实 kernel #PF/断点/按键回归 PASS |
 | P4 进程与系统调用 | 完成 | `29a2c7d` 合并；Ring 3/TSS、PCB/16 KiB 内核栈、三线程 PIT 抢占、用户页目录、用户 #PF 隔离、sleep/waitpid、PID 复用、IRQ-safe Heap 与 7 个 `int 0x80` 调用；环境/干净构建 PASS、启动专项 28/28、全量宿主 222/222 |
 | P5 ELF 用户态与 Shell | 完成 | `f4363cb` 合并；静态 ELF32 loader、共享 ABI、crt0/最小 libc、init/Shell、echo/ps/memtest/fault；环境/干净构建 PASS、启动专项 28/28、全量宿主 225/225 |
-| P6 磁盘与 MiniFS | 未开始 | ATA、block、mkfs、MiniFS、VFS、fd、文件命令、持久化 |
+| P6 磁盘与 MiniFS | 完成（待合并） | ATA/block、确定性 mkfs/fsck/装配、可写 MiniFS 文件/目录、VFS/file object/进程 fd、完整最低文件调用及 ls/cat/touch/write/mkdir/rm；12 个用户 ELF 均从磁盘加载；双启动覆盖跨 direct/indirect 文件、65 项目录和用户命令持久化，逐轮 fsck PASS；环境/干净构建 PASS、组合专项 49/49、全量宿主 239/239；阶段报告已完成，分支可本地合并 |
 | P7 CI、文档和答辩版本 | 未开始 | `make test` 收敛、Linux CI、文档校准、演示脚本、release checklist |
 
 ## 记录规则
