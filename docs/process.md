@@ -120,7 +120,7 @@ EIP=elf_entry
 
 GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 时使用的 `ss0` 和 `esp0`。
 
-当前 P4 已由 `enter_user_mode` 构造 `SS:ESP/EFLAGS/CS:EIP` 并真实执行 `iret`；用户代码在 IF=1 的 Ring 3 中运行，系统调用或硬件中断依靠 TSS 切到该进程 16 KiB 内核栈。内嵌程序仅用于 P4 机制自检，P5 仍将以 ELF32 loader 替换原始代码页复制。
+当前实现由 `enter_user_mode` 构造 `SS:ESP/EFLAGS/CS:EIP` 并真实执行 `iret`；用户代码在 IF=1 的 Ring 3 中运行，系统调用或硬件中断依靠 TSS 切到该进程 16 KiB 内核栈。P4 内嵌机器码仅保留为机制自检，正式用户进程均由 ELF32 loader 创建。
 
 调度器在初始化时注册用户 page-fault handler。只有 error code U/S=1、trap frame CS 为 CPL3 且当前 PCB 拥有用户页目录时才接管；处理器记录 PID、CR2、error code 和 EIP，把退出码设为 `-EFAULT` 并将当前进程转为 ZOMBIE 后调度父进程。内核 #PF、无当前用户进程或来源不一致仍由异常层 panic。真实 Ring 3 自检读取未映射 `0x0BADF000`，确认仅回收故障进程且内核继续运行。
 
@@ -145,9 +145,9 @@ P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin
 
 当前 P5 首个增量已经建立静态用户 ELF 构建链，并把 `/bin/init` 的完整 `ET_EXEC` 文件通过只读 `INCBIN` 注册表链入内核。加载器限制为 ELF32 little-endian i386，先完整校验 ELF/program header、文件范围、地址溢出、段重叠、入口所属可执行段和用户/内核边界，再分配并清零用户页、复制跨页内容、合并页级 R/W 权限。初始栈在单页映射内按 `argc, argv[], NULL, strings` 构造，下方一页保持未映射作为保护页。真实 QEMU 自检使用 `argc=2` 启动该 ELF，用户程序同时验证 argv、BSS 清零与 RW 数据页，退出后核对页目录、物理页和内核栈全部回收；另有内核内畸形样本覆盖非 `ET_EXEC`、`filesz > memsz` 与越过 `KERNEL_BASE` 的拒绝路径。
 
-创建入口现已暴露为 `spawn` syscall。注册表包含 `/bin/init` 与 `/bin/echo`，真实 Ring 3 的 init 会 spawn echo、阻塞 waitpid，并核对子进程退出状态；这也验证了从用户父进程上下文创建并激活子页目录。后续 P5 工作将在保持加载器接口不变的前提下继续扩展用户程序集合和 Shell。
+创建入口暴露为 `spawn` syscall。当前 `/bin/init` 与全部子程序均从 MiniFS 经 VFS 读取 ELF，真实 Ring 3 的 init 会 spawn Shell/诊断程序、阻塞 waitpid 并核对子进程退出状态；这也验证了从用户父进程上下文创建并激活子页目录。P5 的 6 项只读注册表副本只用于启动期逐字节迁移校验，不参与运行时路径解析。
 
-注册表随后加入 `/bin/sh`。Shell 使用 128-byte 行缓冲和最多 16 项 argv，就地分割空格/Tab，支持 `help`、`clear`、`cd`、`pwd`、`exit` 内建；非内建命令补全 `/bin/` 路径后执行 spawn/waitpid。交互模式通过 `SYS_read(fd=0)` 做逐字符输入、退格与提示符；启动自检模式解析并执行 `echo [USER] shell command PASS`，因此 QEMU 验收覆盖的是同一条分词、外部命令与等待路径，而非直接伪造 PASS 文本。文件系统尚未实现时，`cd`/`pwd` 仅承认根目录。
+Shell 使用 128-byte 行缓冲和最多 16 项 argv，就地分割空格/Tab，支持 `help`、`clear`、`cd`、`pwd`、`exit` 内建；非内建命令补全 `/bin/` 路径后执行 spawn/waitpid。交互模式通过 `SYS_read(fd=0)` 做逐字符输入、退格与提示符；启动自检模式解析并执行 `echo [USER] shell command PASS`，因此 QEMU 验收覆盖的是同一条分词、外部命令与等待路径，而非直接伪造 PASS 文本。MiniFS 已支持多级绝对路径，但 Shell 尚无 cwd syscall，因此 `cd`/`pwd` 仍只承认根目录。
 
 诊断程序集合现包含 `/bin/ps`、`/bin/memtest` 与 `/bin/fault`。`ps` 只接收共享 ABI 中的定长进程快照，不暴露内核地址；`memtest` 检查新地址空间 BSS 初值、私有页写入与 PID；`fault` 写入未映射用户地址，由 page-fault 隔离路径转为 `-EFAULT` ZOMBIE。Shell 自检实际执行 ps/memtest，init 则启动 fault 并核对预期异常退出后内核仍继续运行。
 

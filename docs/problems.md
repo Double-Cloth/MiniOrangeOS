@@ -1,6 +1,6 @@
 # 风险、问题与降级记录
 
-> 状态：前置风险清单。后续调试、降级和环境清理演练必须追加到本文件。
+> 状态：持续维护。下表保留风险模型，后文记录已发生问题、修复证据和仍需外部验证的边界。
 
 ## 风险处理原则
 
@@ -132,3 +132,12 @@
 - 单次从物理 `0x8000` 读取 127 扇区会跨 64 KiB DMA 边界；最终拆成 64+63 两个 DAP，并把 Loader 保留区统一为 `0x8000–0x17FFF`、E820 缓冲移至 `0x18000`。
 - 初版真实测试只看到 Stage 1 自报成功，无法证明跳转；最终用 16 位 fixture 核验交接寄存器和 debug-exit，同时用 floppy 路径验证错误停机与进程清理。
 - 布局生成器最终绑定 T02 marker/目录 FD，拒绝特殊文件、重复键、非有限数和含歧义路径，失败不覆盖已有 include，也不在源码树生成 bytecode。
+
+## 2026-07-14 / P7 聚合测试与容器工作副本
+
+任务：P7
+
+- 首版 `make test BUILD_DIR=.p7-aggregate` 把命令行 `BUILD_DIR` 经 GNU Make 环境传播到 Python 测试内部的独立工作区，导致 build marker 身份不匹配。最终 `test-host` 在启动 Python 前清除 Make 递归状态、`BUILD_DIR` 和内核故障注入变量，并以伪造 `MAKEFLAGS/BUILD_DIR` 的真实构建专项验证隔离。
+- 全量顺序还暴露 DrvFS 公开 QEMU 用例隐式依赖默认 `build` 父目录：前序构建用例会在清理后删除空父目录。用例现显式创建、验证并只在自己创建时回收该父目录，单项及最终全量均 PASS。
+- OCI `run.sh` 原先只读挂载仓库却直接在 `/workspace` 执行，使文档中的 `run.sh make test` 无法生成产物。P7 改为 `/source:ro` 挂载，由受保守 Shell 策略检查的 `run-inside.sh` 复制到容器临时可写目录并保持 argv 边界执行，容器退出时随 `--rm` 回收。
+- 最终 WSL 聚合入口 243/243 PASS（898.861 秒）。GitHub workflow 已固定 runner、容器输入、checkout SHA 和最小权限，但分支尚未推送，不能把本地 WSL/合同测试表述为原生 Linux CI PASS。
