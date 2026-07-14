@@ -23,6 +23,9 @@ KERNEL_SERIAL_SOURCE = ROOT / "kernel/drivers/serial.c"
 KERNEL_VGA_SOURCE = ROOT / "kernel/drivers/vga.c"
 KERNEL_GDT_SOURCE = ROOT / "kernel/arch/x86/gdt.c"
 KERNEL_GDT_ASSEMBLY = ROOT / "kernel/arch/x86/gdt.asm"
+KERNEL_IDT_SOURCE = ROOT / "kernel/arch/x86/idt.c"
+KERNEL_EXCEPTION_ASSEMBLY = ROOT / "kernel/arch/x86/exceptions.asm"
+KERNEL_EXCEPTION_SOURCE = ROOT / "kernel/arch/x86/exception.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -400,6 +403,23 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("lgdt", assembly)
         self.assertIn("jmp 0x08:", assembly)
 
+    def test_kernel_declares_idt_and_exception_contract(self) -> None:
+        required = (
+            KERNEL_IDT_SOURCE,
+            KERNEL_EXCEPTION_ASSEMBLY,
+            KERNEL_EXCEPTION_SOURCE,
+        )
+        self.assertEqual([path.name for path in required if not path.is_file()], [])
+        idt = KERNEL_IDT_SOURCE.read_text(encoding="utf-8")
+        stubs = KERNEL_EXCEPTION_ASSEMBLY.read_text(encoding="utf-8")
+        handler = KERNEL_EXCEPTION_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("IDT_ENTRY_COUNT 256", idt)
+        self.assertIn("IDT_INTERRUPT_GATE 0x8E", idt)
+        self.assertIn("exception_stub_table", stubs)
+        self.assertEqual(len(re.findall(r"(?m)^EXCEPTION_(?:NO_ERROR|ERROR) \d+$", stubs)), 32)
+        self.assertIn("struct trap_frame", handler)
+        self.assertIn("panicf", handler)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -654,9 +674,97 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] bss cleared",
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
                 "[KERN] gdt ready",
+                "[KERN] idt ready",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
+
+    def test_real_breakpoint_exception_reaches_panic(self) -> None:
+        test_build = Path(self.temporary_directory.name) / "breakpoint-build"
+        test_build_relative = test_build.relative_to(ROOT)
+        build = subprocess.run(
+            [
+                "bash",
+                "environment/with-env.sh",
+                "make",
+                f"BUILD_DIR={test_build_relative.as_posix()}",
+                "KERNEL_TEST_BREAKPOINT=1",
+                "-j4",
+                "image",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+
+        log = test_build / "test-logs/breakpoint.log"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/qemu_test.py",
+                "--qemu",
+                QEMU,
+                "--image",
+                str(test_build / "miniorangeos.img"),
+                "--log",
+                str(log),
+                "--timeout",
+                "2",
+                "--max-log-bytes",
+                "262144",
+                "--repo",
+                str(ROOT),
+                "--build-dir",
+                test_build_relative.as_posix(),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QEMU 超时", result.stderr)
+        output = log.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("[KERN] idt ready", output)
+        self.assertRegex(
+            output,
+            r"(?m)^\[PANIC\] exception vector=3 error=0 eip=0x[0-9a-f]{8}\r?$",
+        )
+
+    def test_breakpoint_build_toggle_fails_closed(self) -> None:
+        build_relative = (
+            Path(self.temporary_directory.name).relative_to(ROOT) / "invalid"
+        )
+        marker = Path(self.temporary_directory.name) / "must-not-exist"
+        for value in ("2", f"$(shell touch {marker.as_posix()})"):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "environment/with-env.sh",
+                        "make",
+                        f"BUILD_DIR={build_relative.as_posix()}",
+                        f"KERNEL_TEST_BREAKPOINT={value}",
+                        "image",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists(), "非法测试开关不得执行 Make 函数")
 
     def test_corrupted_kernel_elf_is_rejected_before_entry(self) -> None:
         layout = json.loads((ROOT / "config/image-layout.json").read_text(encoding="utf-8"))
