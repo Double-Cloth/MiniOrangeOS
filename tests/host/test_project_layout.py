@@ -16,7 +16,6 @@ REQUIRED_DIRECTORIES = (
     "kernel/core",
     "kernel/mm",
     "kernel/proc",
-    "kernel/syscall",
     "kernel/drivers",
     "kernel/block",
     "kernel/fs",
@@ -26,12 +25,9 @@ REQUIRED_DIRECTORIES = (
     "user/programs",
     "tools",
     "tests/host",
-    "tests/qemu",
     "tests/fixtures",
     "environment/wsl",
     "environment/ubuntu",
-    "docs/decisions",
-    "docs/task-reports",
 )
 
 REQUIRED_FILES = (
@@ -39,13 +35,9 @@ REQUIRED_FILES = (
     ".gitattributes",
     "LICENSE",
     "README.md",
-    "CONTRIBUTING.md",
-    "PROJECT_PLAN.md",
-    "docs/coding-standards.md",
-    "docs/progress.md",
-    "docs/review-notes.md",
-    "docs/decisions/0001-windows-worktree-wsl-tests.md",
-    "environment/README.md",
+    "docs/PROJECT.md",
+    "docs/DEVELOPMENT.md",
+    "docs/HISTORY.md",
 )
 
 REQUIRED_IGNORE_RULES = {
@@ -161,28 +153,31 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn("environment/ubuntu/create.sh", content)
         self.assertIn("environment/ubuntu/run.sh", content)
         self.assertIn("environment/ubuntu/destroy.sh --all", content)
-        self.assertIn("T01 完成后可用", content)
+        self.assertIn("无参数只预览且不删除任何资源", content)
 
-    def test_project_plan_has_stable_name(self) -> None:
-        self.assertTrue((ROOT / "PROJECT_PLAN.md").is_file())
-        self.assertFalse((ROOT / "MiniOrangeOS_Codex_Project_Plan_v1.1.md").exists())
+    def test_documentation_is_consolidated(self) -> None:
+        self.assertTrue((ROOT / "docs/PROJECT.md").is_file())
+        self.assertTrue((ROOT / "docs/DEVELOPMENT.md").is_file())
+        self.assertTrue((ROOT / "docs/HISTORY.md").is_file())
+        self.assertFalse((ROOT / "PROJECT_PLAN.md").exists())
+        self.assertFalse((ROOT / "CONTRIBUTING.md").exists())
 
-    def test_project_plan_records_current_worktree_and_phase_contract(self) -> None:
-        path = ROOT / "PROJECT_PLAN.md"
-        self.assertTrue(path.is_file(), "缺少文件：PROJECT_PLAN.md")
+    def test_development_guide_records_current_worktree_and_phase_contract(self) -> None:
+        path = ROOT / "docs/DEVELOPMENT.md"
+        self.assertTrue(path.is_file(), "缺少文件：docs/DEVELOPMENT.md")
         content = path.read_text(encoding="utf-8")
 
         self.assertIn("D:\\DC\\program-projects\\OTHER\\MiniOrangeOS", content)
         self.assertIn("MiniOrangeOS-Dev", content)
-        self.assertIn("Git 只在 Windows 侧操作", content)
-        self.assertIn("WSL 只负责 Linux 构建、QEMU、GDB 和测试", content)
-        self.assertIn("禁止在 Windows 安装项目专用 GCC", content)
-        for phase in range(1, 8):
-            self.assertIn(f"### P{phase}：", content)
+        self.assertIn("Git 只由 Windows 执行", content)
+        self.assertIn("只负责 Linux 构建、QEMU、GDB 和测试", content)
+        self.assertIn("Windows 不安装项目专用 GCC", content)
+        for target in ("image", "run-curses", "test", "demo-persistence"):
+            self.assertIn(f"`{target}`", content)
 
     def test_development_workflow_records_commit_contract(self) -> None:
-        path = ROOT / "docs/development-workflow.md"
-        self.assertTrue(path.is_file(), "缺少文件：docs/development-workflow.md")
+        path = ROOT / "docs/DEVELOPMENT.md"
+        self.assertTrue(path.is_file(), "缺少文件：docs/DEVELOPMENT.md")
         content = path.read_text(encoding="utf-8")
         self.assertIn("type(scope): summary", content)
         self.assertNotIn("<type>: <summary>", content)
@@ -190,8 +185,8 @@ class ProjectLayoutTests(unittest.TestCase):
             self.assertIn(f"`{commit_type}`", content)
 
     def test_environment_records_t01_script_contract(self) -> None:
-        path = ROOT / "docs/environment.md"
-        self.assertTrue(path.is_file(), "缺少文件：docs/environment.md")
+        path = ROOT / "docs/DEVELOPMENT.md"
+        self.assertTrue(path.is_file(), "缺少文件：docs/DEVELOPMENT.md")
         content = path.read_text(encoding="utf-8")
         required_scripts = (
             "environment/wsl/create.ps1",

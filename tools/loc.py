@@ -77,7 +77,7 @@ def add_paths(
 
 def build_report(repo: Path) -> dict[str, object]:
     repo = repo.resolve(strict=True)
-    if not (repo / "Makefile").is_file() or not (repo / "PROJECT_PLAN.md").is_file():
+    if not (repo / "Makefile").is_file() or not (repo / "docs/PROJECT.md").is_file():
         raise ValueError(f"不是 MiniOrangeOS 仓库根目录：{repo}")
 
     report = {name: Metrics() for name in CATEGORY_LABELS}
@@ -114,8 +114,6 @@ def build_report(repo: Path) -> dict[str, object]:
         path
         for path in (
             repo / "README.md",
-            repo / "PROJECT_PLAN.md",
-            repo / "CONTRIBUTING.md",
             repo / "LICENSE",
         )
         if path.is_file()

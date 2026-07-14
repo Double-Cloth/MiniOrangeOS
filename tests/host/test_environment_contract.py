@@ -1129,12 +1129,12 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                 self.assertRegex(content, r"(?:state_)?container_builder")
 
     def test_environment_documentation_lists_public_interfaces(self) -> None:
-        content = self._read_required("docs/environment.md")
+        content = self._read_required("docs/DEVELOPMENT.md")
         for relative_path in PUBLIC_T01_FILES:
             with self.subTest(path=relative_path):
                 self.assertIn(relative_path, content)
         self.assertIn("environment/ubuntu/destroy.sh --all", content)
-        for relative_path in ("docs/environment.md", "environment/README.md"):
+        for relative_path in ("README.md", "docs/DEVELOPMENT.md"):
             with self.subTest(path=relative_path):
                 lifecycle_docs = self._read_required(relative_path)
                 self.assertIn("无参数只预览且不删除任何资源", lifecycle_docs)
@@ -1142,7 +1142,7 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
 
     def test_public_environment_docs_exclude_tool_output_metadata(self) -> None:
         metadata = re.compile(r"^(?:Exit code:|Wall time:|Output:)(?:\s|$)", re.MULTILINE)
-        for relative_path in ("docs/environment.md", "docs/testing.md"):
+        for relative_path in ("README.md", "docs/DEVELOPMENT.md"):
             with self.subTest(path=relative_path):
                 content = self._read_required(relative_path)
                 self.assertIsNone(metadata.search(content))
@@ -1150,8 +1150,8 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
     def test_docs_record_wsl_only_rootless_podman_evidence_boundary(self) -> None:
         docs = "\n".join(
             (
-                self._read_required("docs/environment.md"),
-                self._read_required("docs/testing.md"),
+                self._read_required("docs/DEVELOPMENT.md"),
+                self._read_required("docs/HISTORY.md"),
             )
         )
         self.assertIn("MiniOrangeOS-Dev-Test-ContainerHost", docs)

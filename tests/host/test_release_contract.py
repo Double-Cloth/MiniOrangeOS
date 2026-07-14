@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = ROOT / "Makefile"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 CI_RUNNER = ROOT / "environment/ubuntu/ci-run.sh"
-CHECKLIST = ROOT / "docs/release-checklist.md"
+CHECKLIST = ROOT / "docs/DEVELOPMENT.md"
+HISTORY = ROOT / "docs/HISTORY.md"
 LOC_TOOL = ROOT / "tools/loc.py"
 DEMO_TOOL = ROOT / "tools/demo_persistence.py"
 
@@ -195,13 +196,17 @@ class ReleaseContractTests(unittest.TestCase):
 
         checklist = CHECKLIST.read_text(encoding="utf-8")
         for heading in (
-            "环境与来源",
-            "构建与测试",
-            "演示闭环",
-            "文档与交付",
-            "已知限制",
+            "CI 与失败证据",
+            "来源与自主实现边界",
+            "发布检查",
+            "当前发布基线",
         ):
             self.assertIn(f"## {heading}", checklist)
+        for phrase in ("环境与来源", "构建与测试", "文档与交付", "demo-persistence"):
+            self.assertIn(phrase, checklist)
+
+        history = HISTORY.read_text(encoding="utf-8")
+        self.assertIn("## 当前已知限制与后续方向", history)
 
 
 if __name__ == "__main__":
