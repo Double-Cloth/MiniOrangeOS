@@ -1,0 +1,42 @@
+name: Linux CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: miniorangeos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Build pinned development image
+        run: docker build --file environment/Containerfile --tag miniorangeos-ci:${{ github.sha }} .
+
+      - name: Verify environment and run complete suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --name "miniorangeos-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --volume "$GITHUB_WORKSPACE:/source:ro" \
+            --workdir /source \
+            "miniorangeos-ci:${GITHUB_SHA}" \
+            bash -c '
+              set -euo pipefail
+              workspace="$(mktemp -d /tmp/miniorangeos-ci.XXXXXX)"
+              cp -a /source/. "$workspace/"
+              cd "$workspace"
+              ./environment/verify.sh
+              ./environment/with-env.sh make test
+            '

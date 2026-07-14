@@ -18,6 +18,7 @@ PUBLIC_T01_FILES = (
     "environment/Containerfile",
     "environment/ubuntu/create.sh",
     "environment/ubuntu/run.sh",
+    "environment/ubuntu/run-inside.sh",
     "environment/ubuntu/destroy.sh",
     "environment/bootstrap-inside.sh",
     "environment/with-env.sh",

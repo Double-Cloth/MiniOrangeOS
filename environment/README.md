@@ -13,6 +13,7 @@
 
 - wsl：创建、进入、备份和定向销毁专用 WSL2 发行版。
 - ubuntu：真实 Ubuntu 上的 rootless OCI 复验入口。
+- ubuntu/run-inside.sh：容器内部只读源码到临时可写副本的固定执行入口，不直接作为宿主命令使用。
 - 仓库根层脚本：版本清单、临时环境注入、依赖引导和环境验证。
 
 ## 常用入口
@@ -43,6 +44,8 @@ Linux/WSL：
 ./environment/ubuntu/run.sh ./environment/verify.sh
 ./environment/ubuntu/destroy.sh --all
 ```
+
+`ubuntu/run.sh` 始终把权威工作树只读挂载到 `/source`，再在容器临时根文件系统中复制一份可写工作副本后执行命令；因此 `make test` 不会把 Linux CI/容器产物写回 Windows 工作树，容器退出时副本随 `--rm` 一并清理。
 
 `create.ps1 -SkipBootstrap` 仍会校验 Lxss 名称、BasePath、reparse point 和 WSL2 注册版本，并 provision/validate root-owned 实例身份；它绝不运行 apt 或工具链 bootstrap。`enter.ps1 -Command '<command>'` 按单个 `bash -lc` 命令字符串执行，多值调用会被拒绝。
 

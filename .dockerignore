@@ -1,0 +1,13 @@
+.git
+.github
+build
+.p*-*
+.minios-*
+**/__pycache__
+*.img
+*.elf
+*.o
+*.d
+*.map
+*.sym
+*.log

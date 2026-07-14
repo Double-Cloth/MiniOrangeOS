@@ -17,11 +17,18 @@
 
 最低总入口：
 
-```text
-make test
+```bash
+./environment/with-env.sh make test
 ```
 
-应依次执行环境检查、构建检查、宿主测试、QEMU 测试和镜像测试。
+聚合入口先执行 `environment/verify.sh`，再以 `make check` 完成完整镜像构建、链接断言与 fsck，最后由 `make test-host` 执行 `tests/host` 全量发现。当前宿主套件中的启动链 fixture 同时拥有真实 QEMU、用户态和持久化镜像集成测试，因此聚合入口不再重复调用 `test-qemu`、`test-boot-qemu` 与 `test-image`；这些目标保留为局部定位入口。
+
+最终持久化演示与代码量统计使用：
+
+```bash
+./environment/with-env.sh make demo-persistence
+./environment/with-env.sh make loc
+```
 
 ## 有效证据边界
 

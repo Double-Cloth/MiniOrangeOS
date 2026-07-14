@@ -1085,6 +1085,10 @@ class QemuRuntimeTests(unittest.TestCase):
         if filesystem.returncode != 0 or filesystem.stdout.strip() != "v9fs":
             self.skipTest("仅在 WSL DrvFS/v9fs 权威工作树验证提交可见性")
 
+        build_parent = ROOT / "build"
+        parent_created = not build_parent.exists()
+        build_parent.mkdir(exist_ok=True)
+        self.assertTrue(build_parent.is_dir() and not build_parent.is_symlink())
         build_dir = f"build/t03-drvfs-public-{os.getpid()}-{time.time_ns()}"
         command = [
             "bash",
@@ -1127,6 +1131,8 @@ class QemuRuntimeTests(unittest.TestCase):
                 cleanup.returncode,
                 "DrvFS 测试构建目录清理失败：" + cleanup.stdout + cleanup.stderr,
             )
+            if parent_created:
+                build_parent.rmdir()
 
     def test_real_fixture_completes_debug_exit_handshake_without_runner_kill(self) -> None:
         fixture = self.workspace / "build/test-fixtures/protocol-pass.img"

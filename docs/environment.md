@@ -94,6 +94,7 @@ rm -rf ~/.local/share
 | `environment/Containerfile` | 定义真实 Ubuntu 复验容器 |
 | `environment/ubuntu/create.sh` | 创建带项目标签的真实 Ubuntu rootless OCI 复验环境 |
 | `environment/ubuntu/run.sh` | 在已创建的复验环境中运行项目命令 |
+| `environment/ubuntu/run-inside.sh` | 在容器内把只读源码复制到临时可写工作区，并保持 argv 边界执行命令 |
 | `environment/ubuntu/destroy.sh` | 无参数只预览且不删除任何资源；`--all` 才定向删除经 ownership 验证的项目资源 |
 | `environment/bootstrap-inside.sh` | 在隔离 Linux 环境中安装固定版本依赖，不写入宿主 `/usr/local` |
 | `environment/with-env.sh` | 临时注入项目工具链和 venv 后执行命令，不修改全局环境 |
@@ -123,6 +124,8 @@ environment/wsl/create.ps1 -DistroName MiniOrangeOS-Dev -AuthorizedRoot D:\Appli
 ./environment/ubuntu/run.sh ./environment/verify.sh
 ./environment/ubuntu/destroy.sh --all
 ```
+
+`environment/ubuntu/run.sh` 将权威仓库以 `/source:ro` 挂载，并在容器临时根文件系统创建可写副本后保持原始 argv 边界执行命令。这样既可运行会生成构建产物的 `make test`，又不会让容器直接修改权威工作树；容器退出后临时副本随 `--rm` 回收。
 
 `create.ps1 -SkipBootstrap` 仍执行精确 Lxss ownership、BasePath、reparse point、WSL2 `Version=2` 和 root-owned 实例身份 provision/validation，但不运行 apt 或工具链。`enter.ps1 -Command '<command>'` 只接受一个命令字符串，并通过 `bash -lc` 保持 Shell 语义；默认无命令时进入交互 Shell。
 
