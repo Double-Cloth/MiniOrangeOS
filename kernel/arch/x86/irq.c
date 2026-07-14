@@ -33,3 +33,26 @@ void irq_enable(void)
 {
     __asm__ volatile("sti");
 }
+
+uint32_t irq_read_flags(void)
+{
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0" : "=r"(flags));
+    return flags;
+}
+
+uint32_t irq_save_disable(void)
+{
+    uint32_t flags = irq_read_flags();
+    __asm__ volatile("cli" : : : "memory");
+    return flags;
+}
+
+void irq_restore(uint32_t flags)
+{
+    if ((flags & 0x00000200U) != 0U) {
+        __asm__ volatile("sti" : : : "memory");
+    } else {
+        __asm__ volatile("cli" : : : "memory");
+    }
+}

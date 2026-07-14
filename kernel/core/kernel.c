@@ -13,6 +13,7 @@
 #include <minios/mm/usercopy.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
+#include <minios/proc/scheduler.h>
 
 #include <stdint.h>
 
@@ -65,6 +66,12 @@ void kernel_main(const struct boot_info *boot_info)
         panic("user memory self-test failed");
     }
     console_printf("[KERN] user memory self-test PASS\n");
+    scheduler_init();
+    console_printf("[KERN] scheduler ready\n");
+    if (!scheduler_self_test()) {
+        panic("scheduler self-test failed");
+    }
+    console_printf("[KERN] scheduler self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

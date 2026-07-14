@@ -147,6 +147,8 @@ P3 最终用户内存增量同日在 `MiniOrangeOS-Dev` 中完成验证：离线
 
 Ring 3 GDT/TSS 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：GDT 扩为 null、Ring 0 code/data、Ring 3 code/data 与 available 32-bit TSS 共 6 项；TSS 设置 `ss0`、启动 `esp0` 与越过 descriptor limit 的 I/O bitmap offset，`lgdt` 后执行 `ltr`。正式产品输出 `[KERN] tss ready` 并继续完成全部内存/中断初始化；启动专项 26/26 PASS，真实 kernel #PF、断点与 HMP 键盘回归继续通过。Kernel ELF 为 35,408 bytes，SHA-256 为 `03a1df54dcaf1e3f67ccc0308b17c353629e580be8b0abeb7a228034d0a28f0f`；镜像为 67,108,864 bytes，SHA-256 为 `3f4f74c81284cd957f9c78ef0e64b6833bc04c5ac36e88f5a770b8c4928eade3`。
 
+协作式内核线程增量同日在 `MiniOrangeOS-Dev` 中完成验证：启动线程作为 PID 0，测试线程各有静态 PCB 与 16 KiB Heap 栈；汇编上下文切换保存 callee-saved 寄存器/ESP，调度选择在关中断区间完成并更新 TSS `esp0`。三个线程两轮 yield 严格产生 `1,2,3,1,2,3`，随后进入 ZOMBIE 并由启动线程回收全部栈块。启动专项 27/27 PASS，正式产品输出 scheduler ready/self-test PASS 后继续到达 PIT tick，真实 kernel #PF、断点和 HMP 键盘回归继续通过。Kernel ELF 为 36,472 bytes，SHA-256 为 `62af2e9ff2e1578e54058cc1e87d5b89cace216a042d106e2608b007f57d2ace`；镜像为 67,108,864 bytes，SHA-256 为 `f7c8f2b4092a5812fdd3be272bbda2519489acafcf6f6f36014ee26ae5dc1768`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

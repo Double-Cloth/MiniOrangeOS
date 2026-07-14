@@ -93,3 +93,5 @@ M0 已完成并验证以下能力：
 
 - TSS descriptor 与普通代码/数据描述符不能共享 4 KiB granularity/32-bit segment flags；TSS 使用 byte granularity、limit=`sizeof(TSS)-1`，并把 I/O bitmap offset 放到 limit 之外以拒绝用户 I/O。
 - `ltr` 只负责装载 TSS selector；每次切换到不同进程前仍必须更新 `esp0`，否则 Ring 3 中断会落到旧进程的内核栈。
+- 首次线程没有真实的 C caller，必须人工构造与汇编 pop/ret 顺序完全一致的初始栈，并保留一个伪返回地址满足 C 栈入口形状；trampoline 自身不得正常返回。
+- 关中断后切到新线程时，旧线程的 `irq_restore` 尚未执行；因此首次 trampoline 必须按创建时保存的 IF 状态恢复中断，不能无条件 `sti`。

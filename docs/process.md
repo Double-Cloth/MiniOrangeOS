@@ -75,6 +75,10 @@ stateDiagram-v2
 
 内核线程切换保存通用寄存器、栈指针和返回地址。用户进程从中断或系统调用返回时，依赖中断帧恢复用户态寄存器。
 
+当前 P4 协作式内核线程实现使用 16 项静态 PCB 表，slot 0 接管启动线程，其他线程从 Heap 获得 16 KiB 独立内核栈。汇编 `context_switch` 保存 EBP/EBX/ESI/EDI 与 ESP；首次栈返回到 C trampoline，既有线程则返回原 `scheduler_yield` 调用点。状态选择与切换在保存 EFLAGS 后关中断执行，每次切换同步 TSS `esp0`。三线程自检严格验证 `1,2,3,1,2,3` round-robin 轨迹、ZOMBIE 退出和所有栈块回收。
+
+该增量尚未声称抢占式完成：当前 PIT 只计数，时间片耗尽接入 IRQ 尾部属于下一步。PID 当前单调分配；达到 `UINT32_MAX` 后的已回收 PID 扫描复用也需在 P4 完成前补齐。
+
 切换进程时必须：
 
 1. 选择下一个 READY 进程。

@@ -40,6 +40,8 @@ KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
 KERNEL_HEAP_SOURCE = ROOT / "kernel/mm/heap.c"
 KERNEL_ADDRESS_SPACE_SOURCE = ROOT / "kernel/mm/address_space.c"
 KERNEL_USERCOPY_SOURCE = ROOT / "kernel/mm/usercopy.c"
+KERNEL_SCHEDULER_SOURCE = ROOT / "kernel/proc/scheduler.c"
+KERNEL_CONTEXT_ASSEMBLY = ROOT / "kernel/arch/x86/context_switch.asm"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -533,6 +535,33 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("PAGE_FAULT_USER", exception)
         self.assertIn("user_page_fault_handler", exception)
 
+    def test_kernel_declares_cooperative_thread_scheduler_contract(self) -> None:
+        self.assertTrue(KERNEL_SCHEDULER_SOURCE.is_file(), "缺少调度器实现")
+        self.assertTrue(KERNEL_CONTEXT_ASSEMBLY.is_file(), "缺少上下文切换入口")
+        source = KERNEL_SCHEDULER_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_CONTEXT_ASSEMBLY.read_text(encoding="utf-8")
+        for field in (
+            "pid",
+            "state",
+            "name[32]",
+            "saved_stack",
+            "kernel_stack_top",
+            "page_directory",
+            "exit_code",
+            "parent_pid",
+            "wake_tick",
+            "time_slice",
+            "fd_table",
+        ):
+            self.assertIn(field, source)
+        self.assertIn("PROCESS_READY", source)
+        self.assertIn("PROCESS_RUNNING", source)
+        self.assertIn("PROCESS_ZOMBIE", source)
+        self.assertIn("scheduler_yield", source)
+        self.assertIn("context_switch", source)
+        self.assertIn("push ebp", assembly)
+        self.assertIn("mov esp, edx", assembly)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -811,14 +840,16 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertEqual(
-            kernel_lines[13:15],
+            kernel_lines[13:17],
             [
                 "[KERN] user memory ready",
                 "[KERN] user memory self-test PASS",
+                "[KERN] scheduler ready",
+                "[KERN] scheduler self-test PASS",
             ],
         )
         self.assertEqual(
-            kernel_lines[15:],
+            kernel_lines[17:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
