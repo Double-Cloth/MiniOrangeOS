@@ -3,6 +3,7 @@
 #include <minios/arch/x86/page_fault.h>
 #include <minios/arch/x86/user_mode.h>
 #include <minios/errno.h>
+#include <minios/drivers/pit.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/pmm.h>
@@ -32,6 +33,8 @@
 #define USER_FAULT_TEST_ADDRESS 0x0BADF000U
 #define PAGE_FAULT_USER_FLAG 0x04U
 #define USER_PRIVILEGE_LEVEL 3U
+#define PID_MAXIMUM 0x7FFFFFFFU
+#define SLEEP_MAXIMUM_TICKS 0x7FFFFFFFU
 
 enum process_state {
     PROCESS_UNUSED = 0,
@@ -150,6 +153,27 @@ static struct process *find_process_by_pid(uint32_t pid)
     return NULL;
 }
 
+static bool allocate_pid(uint32_t *pid)
+{
+    uint32_t candidate;
+
+    if (pid == NULL) {
+        return false;
+    }
+    if (next_pid != 0U) {
+        *pid = next_pid;
+        next_pid = next_pid == PID_MAXIMUM ? 0U : next_pid + 1U;
+        return true;
+    }
+    for (candidate = 1U; candidate <= PID_MAXIMUM; ++candidate) {
+        if (find_process_by_pid(candidate) == NULL) {
+            *pid = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 static struct process *find_next_ready(const struct process *after)
 {
     size_t start = process_index(after);
@@ -184,6 +208,22 @@ static void switch_to(struct process *next)
     context_switch(&previous->saved_stack, next->saved_stack);
 }
 
+static void wake_waiting_parent(const struct process *child)
+{
+    size_t index;
+
+    for (index = 0U; index < PROCESS_LIMIT; ++index) {
+        struct process *parent = &process_table[index];
+
+        if (parent->state == PROCESS_BLOCKED &&
+            parent->pid == child->parent_pid &&
+            (parent->wait_node == child || parent->wait_node == parent)) {
+            parent->wait_node = NULL;
+            parent->state = PROCESS_READY;
+        }
+    }
+}
+
 _Noreturn void scheduler_exit_current(int32_t exit_code)
 {
     uint32_t flags = irq_save_disable();
@@ -192,6 +232,7 @@ _Noreturn void scheduler_exit_current(int32_t exit_code)
     (void)flags;
     current_process->exit_code = exit_code;
     current_process->state = PROCESS_ZOMBIE;
+    wake_waiting_parent(current_process);
     next = find_next_ready(current_process);
     if (next == NULL) {
         panic("last kernel thread exited");
@@ -262,13 +303,14 @@ int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
     uint32_t *stack;
     void *allocation;
     uint32_t flags;
+    uint32_t pid;
 
     if (name == NULL || name[0] == '\0' || entry == NULL) {
         return -1;
     }
     flags = irq_save_disable();
     process = find_unused_process();
-    if (process == NULL || next_pid == UINT32_MAX) {
+    if (process == NULL) {
         irq_restore(flags);
         return -1;
     }
@@ -277,9 +319,15 @@ int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
         irq_restore(flags);
         return -1;
     }
+    if (!allocate_pid(&pid)) {
+        if (!kfree(allocation)) {
+            panic("kernel thread PID rollback failed");
+        }
+        irq_restore(flags);
+        return -1;
+    }
     clear_process(process);
-    process->pid = next_pid;
-    ++next_pid;
+    process->pid = pid;
     process->state = PROCESS_NEW;
     set_process_name(process, name);
     process->kernel_stack_allocation = allocation;
@@ -346,6 +394,7 @@ static int32_t user_process_create(const char *name, const uint8_t *image,
     uint32_t stack_physical = 0U;
     uint32_t *stack;
     uint32_t flags;
+    uint32_t pid;
 
     if (name == NULL || name[0] == '\0' || image == NULL ||
         image_size == 0U || image_size > PAGE_SIZE) {
@@ -353,7 +402,7 @@ static int32_t user_process_create(const char *name, const uint8_t *image,
     }
     flags = irq_save_disable();
     process = find_unused_process();
-    if (process == NULL || next_pid == UINT32_MAX ||
+    if (process == NULL ||
         current_process->page_directory != 0U ||
         vmm_current_page_directory() != vmm_kernel_page_directory()) {
         irq_restore(flags);
@@ -377,10 +426,12 @@ static int32_t user_process_create(const char *name, const uint8_t *image,
         goto rollback;
     }
     stack_physical = 0U;
+    if (!allocate_pid(&pid)) {
+        goto rollback;
+    }
 
     clear_process(process);
-    process->pid = next_pid;
-    ++next_pid;
+    process->pid = pid;
     process->state = PROCESS_NEW;
     set_process_name(process, name);
     process->kernel_stack_allocation = kernel_stack;
@@ -419,19 +470,21 @@ rollback:
     return -1;
 }
 
-static bool reap_user_process(struct process *process)
+static bool reap_process(struct process *process)
 {
-    struct vmm_address_space address_space;
+    struct vmm_address_space address_space = {0U};
 
     if (process == NULL || process->state != PROCESS_ZOMBIE ||
-        process->page_directory == 0U) {
+        process == current_process || process->kernel_stack_allocation == NULL) {
         return false;
     }
-    address_space.page_directory_physical = process->page_directory;
-    if (!vmm_address_space_destroy(&address_space)) {
-        return false;
+    if (process->page_directory != 0U) {
+        address_space.page_directory_physical = process->page_directory;
+        if (!vmm_address_space_destroy(&address_space)) {
+            return false;
+        }
+        process->page_directory = 0U;
     }
-    process->page_directory = 0U;
     if (!kfree(process->kernel_stack_allocation)) {
         return false;
     }
@@ -456,9 +509,113 @@ void scheduler_yield(void)
     irq_restore(flags);
 }
 
+bool scheduler_sleep_current(uint32_t ticks)
+{
+    uint32_t flags;
+    struct process *next;
+
+    if (ticks == 0U) {
+        scheduler_yield();
+        return true;
+    }
+    if (ticks > SLEEP_MAXIMUM_TICKS) {
+        return false;
+    }
+    flags = irq_save_disable();
+    next = find_next_ready(current_process);
+    if (next == NULL) {
+        irq_restore(flags);
+        return false;
+    }
+    current_process->wake_tick = pit_ticks() + ticks;
+    current_process->wait_node = NULL;
+    current_process->state = PROCESS_BLOCKED;
+    switch_to(next);
+    irq_restore(flags);
+    return true;
+}
+
+static struct process *find_child(const struct process *parent,
+                                  int32_t requested_pid, bool zombie_only)
+{
+    size_t index;
+
+    for (index = 1U; index < PROCESS_LIMIT; ++index) {
+        struct process *child = &process_table[index];
+
+        if (child->state == PROCESS_UNUSED ||
+            child->state == PROCESS_REAPED ||
+            child->parent_pid != parent->pid ||
+            (requested_pid != -1 &&
+             child->pid != (uint32_t)requested_pid) ||
+            (zombie_only && child->state != PROCESS_ZOMBIE)) {
+            continue;
+        }
+        return child;
+    }
+    return NULL;
+}
+
+int32_t scheduler_waitpid(int32_t pid, int32_t *exit_code)
+{
+    uint32_t flags;
+    struct process *parent;
+
+    if (pid == 0 || pid < -1) {
+        return -MINIOS_EINVAL;
+    }
+    flags = irq_save_disable();
+    parent = current_process;
+    for (;;) {
+        struct process *child = find_child(parent, pid, true);
+
+        if (child != NULL) {
+            int32_t result = (int32_t)child->pid;
+            int32_t status = child->exit_code;
+
+            if (!reap_process(child)) {
+                panic("waitpid could not reap child");
+            }
+            if (exit_code != NULL) {
+                *exit_code = status;
+            }
+            irq_restore(flags);
+            return result;
+        }
+        child = find_child(parent, pid, false);
+        if (child == NULL) {
+            irq_restore(flags);
+            return -MINIOS_ECHILD;
+        }
+        parent->state = PROCESS_BLOCKED;
+        parent->wait_node = pid == -1 ? parent : child;
+        child = find_next_ready(parent);
+        if (child == NULL) {
+            parent->wait_node = NULL;
+            parent->state = PROCESS_RUNNING;
+            irq_restore(flags);
+            return -MINIOS_ECHILD;
+        }
+        switch_to(child);
+    }
+}
+
 void scheduler_on_tick(void)
 {
     struct process *next;
+    uint32_t now = pit_ticks();
+    size_t index;
+
+    for (index = 1U; index < PROCESS_LIMIT; ++index) {
+        struct process *process = &process_table[index];
+
+        if (process->state == PROCESS_BLOCKED &&
+            process->wait_node == NULL &&
+            (int32_t)(now - process->wake_tick) >= 0) {
+            process->wake_tick = 0U;
+            process->state = PROCESS_READY;
+        }
+    }
 
     if (current_process == NULL ||
         current_process->state != PROCESS_RUNNING) {
@@ -615,6 +772,58 @@ bool scheduler_preemption_self_test(void)
            current_process->state == PROCESS_RUNNING;
 }
 
+static void scheduler_lifecycle_child(void *argument)
+{
+    scheduler_exit_current((int32_t)(uintptr_t)argument);
+}
+
+static bool pid_allocator_self_test(void)
+{
+    uint32_t flags = irq_save_disable();
+    uint32_t saved_next_pid = next_pid;
+    struct process *temporary = find_unused_process();
+    uint32_t final_pid = 0U;
+    uint32_t reused_pid = 0U;
+    bool passed = false;
+
+    if (temporary != NULL) {
+        next_pid = PID_MAXIMUM;
+        if (allocate_pid(&final_pid) && final_pid == PID_MAXIMUM) {
+            clear_process(temporary);
+            temporary->pid = final_pid;
+            temporary->state = PROCESS_NEW;
+            passed = allocate_pid(&reused_pid) && reused_pid != 0U &&
+                reused_pid != final_pid &&
+                find_process_by_pid(reused_pid) == NULL;
+            clear_process(temporary);
+        }
+    }
+    next_pid = saved_next_pid;
+    irq_restore(flags);
+    return passed;
+}
+
+bool scheduler_lifecycle_self_test(void)
+{
+    struct heap_stats before = heap_get_stats();
+    int32_t status = 0;
+    int32_t pid = kernel_thread_create(
+        "wait-child", scheduler_lifecycle_child,
+        (void *)(uintptr_t)37U
+    );
+
+    if (pid < 1 || scheduler_waitpid(pid, &status) != pid || status != 37 ||
+        scheduler_waitpid(pid, NULL) != -MINIOS_ECHILD ||
+        scheduler_waitpid(0, NULL) != -MINIOS_EINVAL ||
+        !pid_allocator_self_test()) {
+        return false;
+    }
+    return current_process == &process_table[0] &&
+        current_process->state == PROCESS_RUNNING &&
+        heap_get_stats().allocated_blocks == before.allocated_blocks &&
+        heap_get_stats().allocated_bytes == before.allocated_bytes;
+}
+
 bool user_process_self_test(void)
 {
     struct heap_stats before = heap_get_stats();
@@ -634,12 +843,15 @@ bool user_process_self_test(void)
            yields < USER_SELF_TEST_YIELD_LIMIT) {
         ++yields;
         scheduler_yield();
+        if (process->state != PROCESS_ZOMBIE) {
+            __asm__ volatile("hlt");
+        }
     }
     passed = process->state == PROCESS_ZOMBIE && process->exit_code == 0 &&
         current_process == &process_table[0] &&
         current_process->state == PROCESS_RUNNING &&
         vmm_current_page_directory() == vmm_kernel_page_directory();
-    if (!reap_user_process(process)) {
+    if (!reap_process(process)) {
         return false;
     }
     return passed && heap_get_stats().allocated_blocks ==
@@ -681,7 +893,7 @@ bool user_page_fault_self_test(void)
         current_process == &process_table[0] &&
         current_process->state == PROCESS_RUNNING &&
         vmm_current_page_directory() == vmm_kernel_page_directory();
-    if (!reap_user_process(process)) {
+    if (!reap_process(process)) {
         return false;
     }
     return passed && heap_get_stats().allocated_blocks ==

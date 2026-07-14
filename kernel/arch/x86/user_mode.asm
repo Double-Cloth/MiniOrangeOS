@@ -108,6 +108,27 @@ user_test_start:
     cmp eax, -22
     jne user_test_fail
 
+    mov eax, 11
+    mov ebx, -1
+    xor ecx, ecx
+    int 0x80
+    cmp eax, -10
+    jne user_test_fail
+
+    mov eax, 17
+    int 0x80
+    mov edi, eax
+    mov eax, 14
+    mov ebx, 2
+    int 0x80
+    test eax, eax
+    jne user_test_fail
+    mov eax, 17
+    int 0x80
+    sub eax, edi
+    cmp eax, 2
+    jb user_test_fail
+
     mov eax, 1
     mov ebx, 1
     mov ecx, USER_TEST_VIRTUAL + user_test_message - user_test_start

@@ -567,6 +567,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("PROCESS_ZOMBIE", source)
         self.assertIn("scheduler_yield", source)
         self.assertIn("scheduler_on_tick", source)
+        self.assertIn("scheduler_sleep_current", source)
+        self.assertIn("scheduler_waitpid", source)
+        self.assertIn("allocate_pid", source)
+        self.assertIn("scheduler_lifecycle_self_test", source)
         self.assertIn("scheduler_preemption_self_test", source)
         self.assertIn("context_switch", source)
         self.assertIn("push ebp", assembly)
@@ -590,6 +594,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("SYS_write", syscall)
         self.assertIn("SYS_yield", syscall)
         self.assertIn("SYS_exit", syscall)
+        self.assertIn("SYS_waitpid", syscall)
+        self.assertIn("SYS_sleep", syscall)
+        self.assertIn("SYS_getticks", syscall)
         self.assertIn("vmm_address_space_activate", scheduler)
         self.assertIn("user_process_self_test", scheduler)
         self.assertIn("page_fault_set_user_handler", scheduler)
@@ -890,6 +897,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] interrupts enabled",
                 "[KERN] pit tick=5",
                 "[KERN] scheduler preemption PASS",
+                "[KERN] process lifecycle self-test PASS",
                 "[KERN] ring3 syscall self-test PASS",
                 "[KERN] user fault isolation PASS",
             ],

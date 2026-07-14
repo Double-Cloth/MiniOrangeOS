@@ -86,6 +86,10 @@ void kernel_main(const struct boot_info *boot_info)
         panic("scheduler preemption self-test failed");
     }
     console_printf("[KERN] scheduler preemption PASS\n");
+    if (!scheduler_lifecycle_self_test()) {
+        panic("process lifecycle self-test failed");
+    }
+    console_printf("[KERN] process lifecycle self-test PASS\n");
     if (!user_process_self_test()) {
         panic("Ring 3 syscall self-test failed");
     }
