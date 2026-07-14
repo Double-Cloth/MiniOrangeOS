@@ -101,3 +101,4 @@ M0 已完成并验证以下能力：
 - Ring 3 的 `int 0x80` 不只多压入 EIP/CS/EFLAGS，还因 CPL 变化压入用户 ESP/SS；syscall stub 必须在 `pushad` 之后另存段寄存器，才能保持 C trap frame 的通用寄存器/vector/error/EIP 布局，并在 `iretd` 前恢复用户段。
 - IRQ/异常入口也必须保存用户 DS/ES/FS/GS 并加载 Ring 0 data selector；否则从 CPL3 进入的 C 处理器会沿用用户段，且在异常路径切到另一个内核线程时把该段状态泄漏给新上下文。段保存区放在 `pushad` 之后时，传给 C 的 trap frame 指针需跳过这 16 bytes。
 - `waitpid` 不能在子进程 exit 时立即释放其 PCB：父进程必须先读取 ZOMBIE 的 exit code，再负责地址空间和内核栈回收。等待任意子进程可用 `wait_node == parent` 作为单 CPU 哨兵，等待指定子进程则直接指向 child；exit 路径据此唤醒父进程。
+- Heap 的 first-fit 遍历、split/coalesce 与按页扩展是同一个元数据事务；只保护链表写入仍会让抢占线程观察到半更新状态。单 CPU 当前方案保存 IF 后覆盖整个公开操作，嵌套于调度器关中断路径时必须恢复“原状态”而非无条件 `sti`。

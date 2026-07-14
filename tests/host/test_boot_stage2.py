@@ -517,6 +517,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("void *kmalloc", source)
         self.assertIn("bool kfree", source)
         self.assertIn("vmm_map", source)
+        self.assertIn("#include <minios/arch/x86/irq.h>", source)
+        self.assertIn("irq_save_disable", source)
+        self.assertIn("irq_restore", source)
 
     def test_kernel_declares_user_memory_safety_contract(self) -> None:
         self.assertTrue(KERNEL_USERCOPY_SOURCE.is_file(), "缺少 usercopy 实现")

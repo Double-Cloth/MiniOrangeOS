@@ -120,7 +120,7 @@ magic
 
 当前 P3 内核堆位于 `0xD1000000` 起始的独立 16 MiB 高半窗口，初始化映射一页，后续按需从 PMM 取页并通过 VMM 连续扩展。扩展只有在全部页面映射成功后才更新堆边界；中途失败会逆序解除映射并归还物理页。分配使用 8 字节对齐的 first-fit，剩余空间能容纳块头和最小 payload 时才拆分；释放同时合并前后相邻空闲块。
 
-块头保存 magic、size、双向链表和 free/allocated 状态。遍历会校验块边界、相邻地址、前后链接、magic 与尾块边界；元数据损坏进入 panic，`kfree` 对 `NULL` 成功返回，对非块首地址和 double free 返回 false。当前实现不收缩已扩展的堆页，也尚未提供多 CPU 或可抢占环境下的锁；在 P4 引入调度前必须补齐并发策略。
+块头保存 magic、size、双向链表和 free/allocated 状态。遍历会校验块边界、相邻地址、前后链接、magic 与尾块边界；元数据损坏进入 panic，`kfree` 对 `NULL` 成功返回，对非块首地址和 double free 返回 false。当前实现不收缩已扩展的堆页。P4 在单 CPU 抢占模型下为 `kmalloc`、`kfree`、`heap_get_stats` 保存 EFLAGS 并关中断，临界区覆盖元数据遍历、拆分/合并及 PMM/VMM 扩展，退出时按原 IF 状态恢复；这同时支持调度器已关中断路径的嵌套调用。多 CPU 锁仍不在当前范围。
 
 启动自检覆盖 first-fit 原地址复用、前后合并、64 个不同尺寸小块的交错释放、跨页大块、真实首尾字节写入、double free 拒绝和超过 16 MiB 上限的耗尽返回。自检结束后要求零 allocated block 且所有空闲块重新合并为一个块。
 

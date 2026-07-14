@@ -1,3 +1,4 @@
+#include <minios/arch/x86/irq.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/pmm.h>
 #include <minios/mm/vmm.h>
@@ -305,14 +306,16 @@ void *kmalloc(size_t size)
 {
     struct heap_block *block;
     uint32_t aligned;
+    uint32_t flags = irq_save_disable();
+    void *result = NULL;
 
     if (!heap_initialized || !align_request(size, &aligned)) {
-        return NULL;
+        goto done;
     }
     block = find_first_fit(aligned);
     if (block == NULL) {
         if (!grow_heap(aligned)) {
-            return NULL;
+            goto done;
         }
         block = find_first_fit(aligned);
         if (block == NULL) {
@@ -321,47 +324,60 @@ void *kmalloc(size_t size)
     }
     split_block(block, aligned);
     block->state = HEAP_STATE_ALLOCATED;
-    return (void *)(uintptr_t)payload_address(block);
+    result = (void *)(uintptr_t)payload_address(block);
+
+done:
+    irq_restore(flags);
+    return result;
 }
 
 bool kfree(void *pointer)
 {
     struct heap_block *block;
     uint32_t address;
+    uint32_t flags = irq_save_disable();
+    bool result = false;
 
     if (pointer == NULL) {
-        return true;
+        result = true;
+        goto done;
     }
     if (!heap_initialized) {
-        return false;
+        goto done;
     }
     address = (uint32_t)(uintptr_t)pointer;
     if (address < HEAP_VIRTUAL_START + (uint32_t)sizeof(struct heap_block) ||
         address >= heap_end || (address & (HEAP_ALIGNMENT - 1U)) != 0U) {
-        return false;
+        goto done;
     }
     block = heap_head;
     while (block != NULL) {
         validate_block(block);
         if (payload_address(block) == address) {
             if (block->state != HEAP_STATE_ALLOCATED) {
-                return false;
+                goto done;
             }
             block->state = HEAP_STATE_FREE;
             (void)coalesce(block);
-            return true;
+            result = true;
+            goto done;
         }
         block = block->next;
     }
-    return false;
+
+done:
+    irq_restore(flags);
+    return result;
 }
 
 struct heap_stats heap_get_stats(void)
 {
     struct heap_stats stats = {0U, 0U, 0U, 0U, 0U};
     struct heap_block *block;
+    uint32_t flags = irq_save_disable();
 
     if (!heap_initialized) {
+        irq_restore(flags);
         return stats;
     }
     stats.mapped_pages = heap_mapped_pages;
@@ -377,6 +393,7 @@ struct heap_stats heap_get_stats(void)
         }
         block = block->next;
     }
+    irq_restore(flags);
     return stats;
 }
 
