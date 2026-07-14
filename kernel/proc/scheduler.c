@@ -1,6 +1,8 @@
 #include <minios/arch/x86/gdt.h>
 #include <minios/arch/x86/irq.h>
+#include <minios/arch/x86/page_fault.h>
 #include <minios/arch/x86/user_mode.h>
+#include <minios/errno.h>
 #include <minios/mm/address_space.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/pmm.h>
@@ -27,6 +29,9 @@
 #define USER_STACK_TOP 0xC0000000U
 #define USER_PAGE_LOAD_WINDOW 0xD0C00000U
 #define USER_SELF_TEST_YIELD_LIMIT 8U
+#define USER_FAULT_TEST_ADDRESS 0x0BADF000U
+#define PAGE_FAULT_USER_FLAG 0x04U
+#define USER_PRIVILEGE_LEVEL 3U
 
 enum process_state {
     PROCESS_UNUSED = 0,
@@ -67,6 +72,10 @@ static uint32_t self_test_trace[SELF_TEST_TRACE_LENGTH];
 static uint32_t self_test_trace_count;
 static volatile uint32_t preemption_mask;
 static volatile uint32_t preemption_busy_count;
+static uint32_t last_user_fault_pid;
+static uint32_t last_user_fault_address;
+static uint32_t last_user_fault_error;
+static uint32_t last_user_fault_eip;
 
 void context_switch(uint32_t **old_saved_stack, uint32_t *new_saved_stack);
 extern uint8_t boot_stack_top[];
@@ -207,6 +216,21 @@ static _Noreturn void user_process_trampoline(void)
                     current_process->user_stack_top);
 }
 
+static bool scheduler_user_page_fault(uint32_t address, uint32_t error_code,
+                                      const struct trap_frame *frame)
+{
+    if (current_process == NULL || current_process->page_directory == 0U ||
+        frame == NULL || (frame->cs & USER_PRIVILEGE_LEVEL) !=
+        USER_PRIVILEGE_LEVEL) {
+        return false;
+    }
+    last_user_fault_pid = current_process->pid;
+    last_user_fault_address = address;
+    last_user_fault_error = error_code;
+    last_user_fault_eip = frame->eip;
+    scheduler_exit_current(-MINIOS_EFAULT);
+}
+
 static _Noreturn void thread_returned(void)
 {
     panic("kernel thread returned past trampoline");
@@ -228,6 +252,7 @@ void scheduler_init(void)
     current_process->time_slice = DEFAULT_TIME_SLICE;
     current_process->initial_eflags = irq_read_flags();
     next_pid = 1U;
+    page_fault_set_user_handler(scheduler_user_page_fault);
 }
 
 int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
@@ -611,6 +636,48 @@ bool user_process_self_test(void)
         scheduler_yield();
     }
     passed = process->state == PROCESS_ZOMBIE && process->exit_code == 0 &&
+        current_process == &process_table[0] &&
+        current_process->state == PROCESS_RUNNING &&
+        vmm_current_page_directory() == vmm_kernel_page_directory();
+    if (!reap_user_process(process)) {
+        return false;
+    }
+    return passed && heap_get_stats().allocated_blocks ==
+        before.allocated_blocks && heap_get_stats().allocated_bytes ==
+        before.allocated_bytes;
+}
+
+bool user_page_fault_self_test(void)
+{
+    struct heap_stats before = heap_get_stats();
+    size_t image_size = (size_t)((uintptr_t)user_fault_test_end -
+                                 (uintptr_t)user_fault_test_start);
+    int32_t pid;
+    struct process *process;
+    uint32_t yields = 0U;
+    bool passed;
+
+    last_user_fault_pid = 0U;
+    last_user_fault_address = 0U;
+    last_user_fault_error = 0U;
+    last_user_fault_eip = 0U;
+    pid = user_process_create("user-fault-test", user_fault_test_start,
+                              image_size);
+    process = pid < 1 ? NULL : find_process_by_pid((uint32_t)pid);
+    if (process == NULL) {
+        return false;
+    }
+    while (process->state != PROCESS_ZOMBIE &&
+           yields < USER_SELF_TEST_YIELD_LIMIT) {
+        ++yields;
+        scheduler_yield();
+    }
+    passed = process->state == PROCESS_ZOMBIE &&
+        process->exit_code == -MINIOS_EFAULT &&
+        last_user_fault_pid == (uint32_t)pid &&
+        last_user_fault_address == USER_FAULT_TEST_ADDRESS &&
+        last_user_fault_error == PAGE_FAULT_USER_FLAG &&
+        last_user_fault_eip == USER_CODE_VIRTUAL &&
         current_process == &process_table[0] &&
         current_process->state == PROCESS_RUNNING &&
         vmm_current_page_directory() == vmm_kernel_page_directory();

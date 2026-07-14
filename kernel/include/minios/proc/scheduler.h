@@ -16,5 +16,6 @@ _Noreturn void scheduler_exit_current(int32_t exit_code);
 bool scheduler_self_test(void);
 bool scheduler_preemption_self_test(void);
 bool user_process_self_test(void);
+bool user_page_fault_self_test(void);
 
 #endif

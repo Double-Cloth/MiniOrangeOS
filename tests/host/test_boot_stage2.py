@@ -584,6 +584,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("enter_user_mode", user_mode)
         self.assertIn("iretd", user_mode)
         self.assertIn("int 0x80", user_mode)
+        self.assertIn("user_fault_test_start", user_mode)
         self.assertIn("syscall_dispatch", syscall)
         self.assertIn("SYS_getpid", syscall)
         self.assertIn("SYS_write", syscall)
@@ -591,6 +592,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("SYS_exit", syscall)
         self.assertIn("vmm_address_space_activate", scheduler)
         self.assertIn("user_process_self_test", scheduler)
+        self.assertIn("page_fault_set_user_handler", scheduler)
+        self.assertIn("user_page_fault_self_test", scheduler)
 
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
@@ -888,9 +891,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] pit tick=5",
                 "[KERN] scheduler preemption PASS",
                 "[KERN] ring3 syscall self-test PASS",
+                "[KERN] user fault isolation PASS",
             ],
         )
         self.assertIn("[USER] ring3 syscall PASS", output)
+        self.assertNotIn("[PANIC]", output)
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")
 
     def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:

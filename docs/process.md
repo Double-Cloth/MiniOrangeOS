@@ -118,6 +118,8 @@ GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 
 
 当前 P4 已由 `enter_user_mode` 构造 `SS:ESP/EFLAGS/CS:EIP` 并真实执行 `iret`；用户代码在 IF=1 的 Ring 3 中运行，系统调用或硬件中断依靠 TSS 切到该进程 16 KiB 内核栈。内嵌程序仅用于 P4 机制自检，P5 仍将以 ELF32 loader 替换原始代码页复制。
 
+调度器在初始化时注册用户 page-fault handler。只有 error code U/S=1、trap frame CS 为 CPL3 且当前 PCB 拥有用户页目录时才接管；处理器记录 PID、CR2、error code 和 EIP，把退出码设为 `-EFAULT` 并将当前进程转为 ZOMBIE 后调度父进程。内核 #PF、无当前用户进程或来源不一致仍由异常层 panic。真实 Ring 3 自检读取未映射 `0x0BADF000`，确认仅回收故障进程且内核继续运行。
+
 ## ELF 用户程序加载
 
 只支持静态 ELF32 `ET_EXEC`。加载器必须：

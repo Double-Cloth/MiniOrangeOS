@@ -136,3 +136,15 @@ user_test_message:
     db "[USER] ring3 syscall PASS", 10
 user_test_message_end:
 user_test_end:
+
+align 16
+global user_fault_test_start
+global user_fault_test_end
+
+user_fault_test_start:
+    mov eax, [0x0BADF000]
+    mov eax, 0
+    mov ebx, 1
+    int 0x80
+    ud2
+user_fault_test_end:

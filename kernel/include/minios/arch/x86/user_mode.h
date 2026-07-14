@@ -7,5 +7,7 @@ _Noreturn void enter_user_mode(uint32_t entry, uint32_t stack_top);
 
 extern const uint8_t user_test_start[];
 extern const uint8_t user_test_end[];
+extern const uint8_t user_fault_test_start[];
+extern const uint8_t user_fault_test_end[];
 
 #endif

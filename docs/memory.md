@@ -170,4 +170,4 @@ validate_user_range(user_ptr, len, access)
 
 当前 P3 `validate_user_range` 检查加法边界及范围内每一页的有效 PDE/PTE U/S 权限，写入还要求有效 R/W。`copy_from_user`、`copy_to_user` 在复制前验证完整缓冲区；`copy_user_string` 验证地址上限后逐页检查到 NUL，未映射、只读写入、跨越高半或在 `max_len` 内无 NUL 均返回 `-MINIOS_EFAULT`。自检覆盖真实跨页读写、页尾 NUL 后的未映射页、只读页和高半越界。
 
-vector 14 分发读取 CR2，并按 page-fault error code 的 U/S 位区分用户与内核来源。内核故障始终 panic；用户故障仅在 P4 注册的进程级处理器明确接管时返回，否则同样 fail-closed panic。独立测试镜像已由 CPU 真实触发 kernel #PF，并验证 CR2、error code 与 EIP 串口上下文。
+vector 14 分发读取 CR2，并按 page-fault error code 的 U/S 位区分用户与内核来源。内核故障始终 panic；P4 进程级处理器只接管与当前用户 PCB/CPL3 一致的用户故障，将该进程置为 ZOMBIE 并切走，其他来源仍 fail-closed panic。独立测试镜像已由 CPU 真实触发 kernel #PF 并验证 panic 上下文；正式镜像另由真实 Ring 3 读取未映射 `0x0BADF000`，验证 CR2/error/EIP 后只终止故障进程并继续运行。
