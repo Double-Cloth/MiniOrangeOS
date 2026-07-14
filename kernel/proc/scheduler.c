@@ -712,7 +712,7 @@ static void scheduler_preemption_thread(void *argument)
     preemption_mask |= 1U << (identifier - 1U);
     if (identifier == 1U) {
         preemption_busy_count = 1U;
-        while (preemption_mask != 3U) {
+        while (preemption_mask != 7U) {
             ++preemption_busy_count;
         }
     }
@@ -723,8 +723,10 @@ bool scheduler_preemption_self_test(void)
     uint32_t flags;
     int32_t first_pid;
     int32_t second_pid;
+    int32_t third_pid;
     struct process *first;
     struct process *second;
+    struct process *third;
 
     if ((irq_read_flags() & EFLAGS_INTERRUPT_ENABLE) == 0U) {
         return false;
@@ -740,34 +742,47 @@ bool scheduler_preemption_self_test(void)
         "preempt-two", scheduler_preemption_thread,
         (void *)(uintptr_t)2U
     );
+    third_pid = kernel_thread_create(
+        "preempt-three", scheduler_preemption_thread,
+        (void *)(uintptr_t)3U
+    );
     first = first_pid < 1 ? NULL : find_process_by_pid((uint32_t)first_pid);
     second = second_pid < 1 ? NULL : find_process_by_pid((uint32_t)second_pid);
+    third = third_pid < 1 ? NULL : find_process_by_pid((uint32_t)third_pid);
     if (first != NULL) {
         first->initial_eflags = flags & EFLAGS_INTERRUPT_ENABLE;
     }
     if (second != NULL) {
         second->initial_eflags = flags & EFLAGS_INTERRUPT_ENABLE;
     }
+    if (third != NULL) {
+        third->initial_eflags = flags & EFLAGS_INTERRUPT_ENABLE;
+    }
     irq_restore(flags);
-    if (first == NULL || second == NULL) {
+    if (first == NULL || second == NULL || third == NULL) {
         return false;
     }
 
     scheduler_yield();
     while (first->state != PROCESS_ZOMBIE ||
-           second->state != PROCESS_ZOMBIE) {
+           second->state != PROCESS_ZOMBIE ||
+           third->state != PROCESS_ZOMBIE) {
         scheduler_yield();
     }
-    if (preemption_mask != 3U || preemption_busy_count == 0U ||
+    if (preemption_mask != 7U || preemption_busy_count == 0U ||
         first->exit_code != 0 || second->exit_code != 0 ||
+        third->exit_code != 0 ||
         !kfree(first->kernel_stack_allocation) ||
-        !kfree(second->kernel_stack_allocation)) {
+        !kfree(second->kernel_stack_allocation) ||
+        !kfree(third->kernel_stack_allocation)) {
         return false;
     }
     first->state = PROCESS_REAPED;
     second->state = PROCESS_REAPED;
+    third->state = PROCESS_REAPED;
     clear_process(first);
     clear_process(second);
+    clear_process(third);
     return current_process == &process_table[0] &&
            current_process->state == PROCESS_RUNNING;
 }

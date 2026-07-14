@@ -77,7 +77,7 @@ stateDiagram-v2
 
 当前 P4 协作式内核线程实现使用 16 项静态 PCB 表，slot 0 接管启动线程，其他线程从 Heap 获得 16 KiB 独立内核栈。汇编 `context_switch` 保存 EBP/EBX/ESI/EDI 与 ESP；首次栈返回到 C trampoline，既有线程则返回原 `scheduler_yield` 调用点。状态选择与切换在保存 EFLAGS 后关中断执行，每次切换同步 TSS `esp0`。三线程自检严格验证 `1,2,3,1,2,3` round-robin 轨迹、ZOMBIE 退出和所有栈块回收。
 
-PIT IRQ0 在设备处理和 EOI 完成后调用调度 tick；时间片耗尽时把当前 RUNNING 线程转回 READY，并可在仍保留完整 IRQ 栈的情况下切到下一线程。抢占自检让线程 1 在不调用 `yield` 的忙等中等待线程 2，只有真实 PIT 抢占能运行线程 2 并解除忙等。PID 在有符号 syscall 返回范围内从 1 单调分配到 `INT32_MAX`，耗尽后扫描当前 PCB 表并复用已回收 PID；自检覆盖最大 PID 到扫描模式的转换。
+PIT IRQ0 在设备处理和 EOI 完成后调用调度 tick；时间片耗尽时把当前 RUNNING 线程转回 READY，并可在仍保留完整 IRQ 栈的情况下切到下一线程。最终抢占自检让线程 1 在不调用 `yield` 的忙等中等待线程 2/3 都设置标志，只有真实 PIT round-robin 依次运行另外两个线程才能解除忙等；三个线程随后全部退出并回收栈。PID 在有符号 syscall 返回范围内从 1 单调分配到 `INT32_MAX`，耗尽后扫描当前 PCB 表并复用已回收 PID；自检覆盖最大 PID 到扫描模式的转换。
 
 `sleep(ticks)` 把当前进程置为 BLOCKED，并由 PIT 使用无符号回绕安全的 deadline 比较唤醒；0 ticks 退化为 yield，超过 `INT32_MAX` 的距离被拒绝。`waitpid(pid)` 只匹配直接子进程，支持正 PID 与 -1；活跃子进程使父进程 BLOCKED，子进程退出时唤醒匹配父进程，随后父进程读取 exit code 并把 ZOMBIE 的用户地址空间/内核栈回收到 REAPED/UNUSED。内核生命周期自检验证阻塞 wait、exit code、重复 wait 的 `-ECHILD` 和 PID 耗尽复用；Ring 3 自检以 `getticks` 验证 sleep 至少跨越两个真实 PIT tick，并验证无子进程 wait 返回 `-ECHILD`。
 
