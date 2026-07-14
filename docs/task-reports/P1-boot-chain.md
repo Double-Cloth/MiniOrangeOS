@@ -8,6 +8,8 @@
 
 - `414a5e7`：`feat(boot): enter protected mode with e820 map`
 - `8bdb7be`：`feat(boot): load high-half kernel from ata`
+- `1916ea5`：`docs(p1): record completed boot chain`
+- `d8fab7b`：`merge: complete P1 boot chain`
 
 ## 修改文件
 
