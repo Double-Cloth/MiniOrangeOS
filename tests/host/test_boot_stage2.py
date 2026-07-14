@@ -417,6 +417,22 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("lgdt", assembly)
         self.assertIn("jmp 0x08:", assembly)
 
+    def test_kernel_declares_ring3_segments_and_tss_contract(self) -> None:
+        source = KERNEL_GDT_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_GDT_ASSEMBLY.read_text(encoding="utf-8")
+        header = (ROOT / "kernel/include/minios/arch/x86/gdt.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("GDT_ENTRY_COUNT 6U", source)
+        self.assertIn("GDT_USER_CODE_ACCESS 0xFAU", source)
+        self.assertIn("GDT_USER_DATA_ACCESS 0xF2U", source)
+        self.assertIn("GDT_TSS_ACCESS 0x89U", source)
+        self.assertIn("struct task_state_segment", source)
+        self.assertIn("io_map_base", source)
+        self.assertIn("tss_load", source)
+        self.assertIn("ltr", assembly)
+        self.assertIn("gdt_set_kernel_stack", header)
+
     def test_kernel_declares_idt_and_exception_contract(self) -> None:
         required = (
             KERNEL_IDT_SOURCE,
@@ -764,29 +780,30 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
         self.assertEqual(
-            kernel_lines[:6],
+            kernel_lines[:7],
             [
                 "[KERN] boot info valid",
                 "[KERN] paging enabled",
                 "[KERN] bss cleared",
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
                 "[KERN] gdt ready",
+                "[KERN] tss ready",
                 "[KERN] idt ready",
             ],
         )
         self.assertRegex(
-            kernel_lines[6],
+            kernel_lines[7],
             r"^\[KERN\] pmm pages total=[1-9][0-9]* free=[1-9][0-9]* reserved=[1-9][0-9]*$",
         )
         self.assertEqual(
-            kernel_lines[7:9],
+            kernel_lines[8:10],
             [
                 "[KERN] pmm self-test PASS",
                 "[KERN] vmm ready identity=off wp=on",
             ],
         )
         self.assertEqual(
-            kernel_lines[9:12],
+            kernel_lines[10:13],
             [
                 "[KERN] vmm self-test PASS",
                 "[KERN] heap ready",
@@ -794,14 +811,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             ],
         )
         self.assertEqual(
-            kernel_lines[12:14],
+            kernel_lines[13:15],
             [
                 "[KERN] user memory ready",
                 "[KERN] user memory self-test PASS",
             ],
         )
         self.assertEqual(
-            kernel_lines[14:],
+            kernel_lines[15:],
             [
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",

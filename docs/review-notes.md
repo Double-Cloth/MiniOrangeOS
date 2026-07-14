@@ -88,3 +88,8 @@ M0 已完成并验证以下能力：
 - 构造非当前用户页目录时需要临时映射其物理页；复制高半 PDE 必须排除临时工作窗口，否则新页目录会保留指向已回收工作页表的悬空引用。
 - usercopy 不能只检查首地址和末地址：每一页的 PDE/PTE 有效 U/S、R/W 权限都必须满足；字符串则逐页验证到 NUL，不能因 `max_len` 之后的未访问页未映射而误拒绝。
 - page fault 的 U/S 错误码位提供故障来源边界；P3 只为用户故障提供可注册接管点，P4 才能在具备当前进程和调度器后实现“只终止当前进程”。
+
+## P4 心得
+
+- TSS descriptor 与普通代码/数据描述符不能共享 4 KiB granularity/32-bit segment flags；TSS 使用 byte granularity、limit=`sizeof(TSS)-1`，并把 I/O bitmap offset 放到 limit 之外以拒绝用户 I/O。
+- `ltr` 只负责装载 TSS selector；每次切换到不同进程前仍必须更新 `esp0`，否则 Ring 3 中断会落到旧进程的内核栈。

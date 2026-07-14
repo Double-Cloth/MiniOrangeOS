@@ -24,6 +24,7 @@ void kernel_main(const struct boot_info *boot_info)
     console_printf("[KERN] console ready hex=%x dec=%u str=%s\n", 0xC0FFEEU, 42U, "ok");
     gdt_init();
     console_printf("[KERN] gdt ready\n");
+    console_printf("[KERN] tss ready\n");
     idt_init();
     console_printf("[KERN] idt ready\n");
 #if MINIOS_TEST_BREAKPOINT == 1
