@@ -6,6 +6,7 @@
 
 _Noreturn void minios_exit(int32_t status);
 int32_t minios_write(int32_t descriptor, const void *buffer, size_t count);
+int32_t minios_read(int32_t descriptor, void *buffer, size_t count);
 int32_t minios_spawn(const char *path, char *const argv[]);
 int32_t minios_waitpid(int32_t pid, int32_t *status);
 int32_t minios_getpid(void);

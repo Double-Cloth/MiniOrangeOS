@@ -75,6 +75,15 @@ int32_t minios_write(int32_t descriptor, const void *buffer, size_t count) {
     );
 }
 
+int32_t minios_read(int32_t descriptor, void *buffer, size_t count) {
+    return syscall3(
+        SYS_read,
+        (uint32_t)descriptor,
+        (uint32_t)(uintptr_t)buffer,
+        (uint32_t)count
+    );
+}
+
 int32_t minios_spawn(const char *path, char *const argv[]) {
     return syscall2(
         SYS_spawn,

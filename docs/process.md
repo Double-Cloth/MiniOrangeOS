@@ -145,6 +145,8 @@ P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin
 
 创建入口现已暴露为 `spawn` syscall。注册表包含 `/bin/init` 与 `/bin/echo`，真实 Ring 3 的 init 会 spawn echo、阻塞 waitpid，并核对子进程退出状态；这也验证了从用户父进程上下文创建并激活子页目录。后续 P5 工作将在保持加载器接口不变的前提下继续扩展用户程序集合和 Shell。
 
+注册表随后加入 `/bin/sh`。Shell 使用 128-byte 行缓冲和最多 16 项 argv，就地分割空格/Tab，支持 `help`、`clear`、`cd`、`pwd`、`exit` 内建；非内建命令补全 `/bin/` 路径后执行 spawn/waitpid。交互模式通过 `SYS_read(fd=0)` 做逐字符输入、退格与提示符；启动自检模式解析并执行 `echo [USER] shell command PASS`，因此 QEMU 验收覆盖的是同一条分词、外部命令与等待路径，而非直接伪造 PASS 文本。文件系统尚未实现时，`cd`/`pwd` 仅承认根目录。
+
 ## 用户程序最低集合
 
 | 程序 | 功能 |

@@ -1,5 +1,7 @@
 #include <minios/console.h>
+#include <minios/arch/x86/irq.h>
 #include <minios/errno.h>
+#include <minios/drivers/keyboard.h>
 #include <minios/drivers/pit.h>
 #include <minios/mm/usercopy.h>
 #include <minios/panic.h>
@@ -54,6 +56,34 @@ static int32_t syscall_write(uint32_t descriptor, const void *user_buffer,
         offset += chunk;
     }
     return (int32_t)length;
+}
+
+static int32_t syscall_read(uint32_t descriptor, void *user_buffer,
+                            size_t length)
+{
+    char character;
+
+    if (descriptor != 0U) {
+        return -MINIOS_EBADF;
+    }
+    if (length > SYSCALL_WRITE_MAX) {
+        return -MINIOS_EINVAL;
+    }
+    if (!validate_user_range(user_buffer, length, USER_ACCESS_WRITE)) {
+        return -MINIOS_EFAULT;
+    }
+    if (length == 0U) {
+        return 0;
+    }
+    while (!keyboard_try_read(&character)) {
+        irq_enable();
+        __asm__ volatile("hlt");
+        (void)irq_save_disable();
+    }
+    if (copy_to_user(user_buffer, &character, 1U) != 0) {
+        return -MINIOS_EFAULT;
+    }
+    return 1;
 }
 
 static size_t bounded_length(const char *value, size_t limit)
@@ -148,6 +178,13 @@ void syscall_dispatch(struct trap_frame *frame)
             result = syscall_write(
                 frame->ebx,
                 (const void *)(uintptr_t)frame->ecx,
+                (size_t)frame->edx
+            );
+            break;
+        case SYS_read:
+            result = syscall_read(
+                frame->ebx,
+                (void *)(uintptr_t)frame->ecx,
                 (size_t)frame->edx
             );
             break;

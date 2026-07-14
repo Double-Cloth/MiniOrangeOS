@@ -262,6 +262,11 @@ USER_ECHO_DEP := $(USER_PROGRAMS_BUILD_DIR)/echo.d
 USER_ECHO_ELF := $(USER_BIN_BUILD_DIR)/echo.elf
 USER_ECHO_MAP := $(USER_BIN_BUILD_DIR)/echo.map
 USER_ECHO_SYM := $(USER_BIN_BUILD_DIR)/echo.sym
+USER_SH_OBJ := $(USER_PROGRAMS_BUILD_DIR)/sh.o
+USER_SH_DEP := $(USER_PROGRAMS_BUILD_DIR)/sh.d
+USER_SH_ELF := $(USER_BIN_BUILD_DIR)/sh.elf
+USER_SH_MAP := $(USER_BIN_BUILD_DIR)/sh.map
+USER_SH_SYM := $(USER_BIN_BUILD_DIR)/sh.sym
 
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
@@ -328,7 +333,10 @@ ALL_ARTIFACTS := \
 	$(USER_INIT_SYM) \
 	$(USER_ECHO_ELF) \
 	$(USER_ECHO_MAP) \
-	$(USER_ECHO_SYM)
+	$(USER_ECHO_SYM) \
+	$(USER_SH_ELF) \
+	$(USER_SH_MAP) \
+	$(USER_SH_SYM)
 
 .PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
@@ -336,7 +344,7 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
 
-user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) | prepare-build-dir
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) $(USER_SH_ELF) $(USER_SH_MAP) $(USER_SH_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -458,7 +466,7 @@ $(KERNEL_ELF_LOADER_OBJ): kernel/proc/elf.c | prepare-build-dir
 $(KERNEL_PROGRAM_REGISTRY_OBJ): kernel/proc/program_registry.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PROGRAM_REGISTRY_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) | prepare-build-dir
+$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) | prepare-build-dir
 	$(NASM) -I "$(USER_BIN_BUILD_DIR)/" -f elf32 -MD "$(KERNEL_EMBEDDED_PROGRAMS_DEP)" -MT "$@" -o "$@" "$<"
 
 $(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_EMBEDDED_PROGRAMS_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
@@ -497,6 +505,15 @@ $(USER_ECHO_ELF) $(USER_ECHO_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USE
 $(USER_ECHO_SYM): $(USER_ECHO_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
+$(USER_SH_OBJ): user/programs/sh.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SH_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_SH_ELF) $(USER_SH_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_SH_MAP)" -o "$(USER_SH_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_SH_OBJ)
+
+$(USER_SH_SYM): $(USER_SH_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
 
@@ -510,4 +527,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP) $(USER_SH_DEP)

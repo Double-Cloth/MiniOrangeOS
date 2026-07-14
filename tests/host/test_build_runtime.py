@@ -46,6 +46,9 @@ EXPECTED_FINAL_ARTIFACTS = (
     "user/bin/echo.elf",
     "user/bin/echo.map",
     "user/bin/echo.sym",
+    "user/bin/sh.elf",
+    "user/bin/sh.map",
+    "user/bin/sh.sym",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
@@ -60,6 +63,7 @@ EXPECTED_DEPFILES = (
     "user/libc/string.d",
     "user/programs/init.d",
     "user/programs/echo.d",
+    "user/programs/sh.d",
 )
 KERNEL_C_FLAGS = {
     "-std=c11",

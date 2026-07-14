@@ -15,6 +15,11 @@ int main(int argc, char **argv) {
         "PASS",
         NULL
     };
+    static char *const shell_arguments[] = {
+        "/bin/sh",
+        "--self-test",
+        NULL
+    };
     int32_t written;
     int32_t child_status = -1;
     int32_t child_pid;
@@ -31,6 +36,12 @@ int main(int argc, char **argv) {
     if (child_pid < 1 || minios_waitpid(child_pid, &child_status) != child_pid ||
         child_status != 0) {
         return 4;
+    }
+    child_status = -1;
+    child_pid = minios_spawn("/bin/sh", shell_arguments);
+    if (child_pid < 1 || minios_waitpid(child_pid, &child_status) != child_pid ||
+        child_status != 0) {
+        return 5;
     }
     written = minios_write(1, message, sizeof(message) - 1U);
     init_status = written == (int32_t)(sizeof(message) - 1U) ? 0 : 1;
