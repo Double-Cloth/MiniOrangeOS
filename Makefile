@@ -160,6 +160,8 @@ KERNEL_KEYBOARD_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.o
 KERNEL_KEYBOARD_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.d
 KERNEL_PMM_OBJ := $(KERNEL_MM_BUILD_DIR)/pmm.o
 KERNEL_PMM_DEP := $(KERNEL_MM_BUILD_DIR)/pmm.d
+KERNEL_VMM_OBJ := $(KERNEL_MM_BUILD_DIR)/vmm.o
+KERNEL_VMM_DEP := $(KERNEL_MM_BUILD_DIR)/vmm.d
 KERNEL_C_OBJECTS := \
 	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_IDT_OBJ) \
@@ -173,7 +175,8 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_PIC_OBJ) \
 	$(KERNEL_PIT_OBJ) \
 	$(KERNEL_KEYBOARD_OBJ) \
-	$(KERNEL_PMM_OBJ)
+	$(KERNEL_PMM_OBJ) \
+	$(KERNEL_VMM_OBJ)
 KERNEL_C_DEPS := \
 	$(KERNEL_GDT_DEP) \
 	$(KERNEL_IDT_DEP) \
@@ -187,7 +190,8 @@ KERNEL_C_DEPS := \
 	$(KERNEL_PIC_DEP) \
 	$(KERNEL_PIT_DEP) \
 	$(KERNEL_KEYBOARD_DEP) \
-	$(KERNEL_PMM_DEP)
+	$(KERNEL_PMM_DEP) \
+	$(KERNEL_VMM_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -325,6 +329,9 @@ $(KERNEL_KEYBOARD_OBJ): kernel/drivers/keyboard.c | prepare-build-dir
 
 $(KERNEL_PMM_OBJ): kernel/mm/pmm.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PMM_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_VMM_OBJ): kernel/mm/vmm.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VMM_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
 	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_C_OBJECTS)

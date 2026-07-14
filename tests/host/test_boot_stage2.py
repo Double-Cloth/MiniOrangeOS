@@ -36,6 +36,7 @@ KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
 KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
 KERNEL_BOOT_INFO_HEADER = ROOT / "kernel/include/minios/boot_info.h"
 KERNEL_PMM_SOURCE = ROOT / "kernel/mm/pmm.c"
+KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -471,6 +472,17 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("bool pmm_free", pmm)
         self.assertIn("e820_entries", pmm)
 
+    def test_kernel_declares_formal_vmm_contract(self) -> None:
+        self.assertTrue(KERNEL_VMM_SOURCE.is_file(), "缺少正式 VMM 实现")
+        source = KERNEL_VMM_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("RECURSIVE_PAGE_TABLES 0xFFC00000U", source)
+        self.assertIn("RECURSIVE_PAGE_DIRECTORY 0xFFFFF000U", source)
+        self.assertIn("CR0_WRITE_PROTECT 0x00010000U", source)
+        self.assertIn("invlpg", source)
+        self.assertIn("bool vmm_map", source)
+        self.assertIn("bool vmm_unmap", source)
+        self.assertIn("page_directory[0] = 0U", source)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -733,9 +745,16 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             r"^\[KERN\] pmm pages total=[1-9][0-9]* free=[1-9][0-9]* reserved=[1-9][0-9]*$",
         )
         self.assertEqual(
-            kernel_lines[7:],
+            kernel_lines[7:9],
             [
                 "[KERN] pmm self-test PASS",
+                "[KERN] vmm ready identity=off wp=on",
+            ],
+        )
+        self.assertEqual(
+            kernel_lines[9:],
+            [
+                "[KERN] vmm self-test PASS",
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
                 "[KERN] keyboard ready",

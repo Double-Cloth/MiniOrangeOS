@@ -7,6 +7,7 @@
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
 #include <minios/mm/pmm.h>
+#include <minios/mm/vmm.h>
 #include <minios/panic.h>
 
 void kernel_main(const struct boot_info *boot_info);
@@ -36,6 +37,12 @@ void kernel_main(const struct boot_info *boot_info)
         panic("PMM self-test failed");
     }
     console_printf("[KERN] pmm self-test PASS\n");
+    vmm_init(boot_info);
+    console_printf("[KERN] vmm ready identity=off wp=on\n");
+    if (!vmm_self_test()) {
+        panic("VMM self-test failed");
+    }
+    console_printf("[KERN] vmm self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

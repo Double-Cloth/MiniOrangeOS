@@ -17,12 +17,16 @@ SECTIONS
 
     .text ALIGN(4096) : AT(ADDR(.text) - KERNEL_VIRTUAL_BASE)
     {
+        __text_start = .;
         *(.text*)
+        __text_end = .;
     } :text
 
     .rodata ALIGN(4096) : AT(ADDR(.rodata) - KERNEL_VIRTUAL_BASE)
     {
+        __rodata_start = .;
         *(.rodata*)
+        __rodata_end = .;
     } :text
 
     .boot_paging ALIGN(4096) : AT(ADDR(.boot_paging) - KERNEL_VIRTUAL_BASE)
@@ -37,7 +41,9 @@ SECTIONS
 
     .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VIRTUAL_BASE)
     {
+        __data_start = .;
         *(.data*)
+        __data_end = .;
     } :data
 
     .bss ALIGN(4096) : AT(ADDR(.bss) - KERNEL_VIRTUAL_BASE)
@@ -53,6 +59,8 @@ SECTIONS
 
     ASSERT(kernel_entry >= 0xC0000000,
            "Kernel entry must be linked in the high half")
+    ASSERT(__kernel_virtual_end <= KERNEL_VIRTUAL_BASE + 0x00400000,
+           "Kernel exceeds the 4 MiB early paging window")
 
     /DISCARD/ :
     {
