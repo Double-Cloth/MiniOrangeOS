@@ -105,6 +105,7 @@ STAGE2_BUILD_DIR := $(BOOT_BUILD_DIR)/stage2
 KERNEL_BUILD_DIR := $(BUILD_ABS)/kernel
 KERNEL_ARCH_BUILD_DIR := $(KERNEL_BUILD_DIR)/arch/x86
 KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
+KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -119,6 +120,26 @@ KERNEL_ENTRY_OBJ := $(KERNEL_ARCH_BUILD_DIR)/entry.o
 KERNEL_ENTRY_DEP := $(KERNEL_ARCH_BUILD_DIR)/entry.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
+KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
+KERNEL_CONSOLE_DEP := $(KERNEL_CORE_BUILD_DIR)/console.d
+KERNEL_PANIC_OBJ := $(KERNEL_CORE_BUILD_DIR)/panic.o
+KERNEL_PANIC_DEP := $(KERNEL_CORE_BUILD_DIR)/panic.d
+KERNEL_SERIAL_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/serial.o
+KERNEL_SERIAL_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/serial.d
+KERNEL_VGA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/vga.o
+KERNEL_VGA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/vga.d
+KERNEL_C_OBJECTS := \
+	$(KERNEL_CORE_OBJ) \
+	$(KERNEL_CONSOLE_OBJ) \
+	$(KERNEL_PANIC_OBJ) \
+	$(KERNEL_SERIAL_OBJ) \
+	$(KERNEL_VGA_OBJ)
+KERNEL_C_DEPS := \
+	$(KERNEL_CORE_DEP) \
+	$(KERNEL_CONSOLE_DEP) \
+	$(KERNEL_PANIC_DEP) \
+	$(KERNEL_SERIAL_DEP) \
+	$(KERNEL_VGA_DEP)
 KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
@@ -129,6 +150,7 @@ QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 
 KERNEL_CFLAGS := \
+	-I "$(ROOT_DIR)/kernel/include" \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \
@@ -210,8 +232,20 @@ $(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm boot/include/boot_info.inc | prep
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_CORE_OBJ)
+$(KERNEL_CONSOLE_OBJ): kernel/core/console.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CONSOLE_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_PANIC_OBJ): kernel/core/panic.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PANIC_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_SERIAL_OBJ): kernel/drivers/serial.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_SERIAL_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_VGA_OBJ): kernel/drivers/vga.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VGA_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -232,4 +266,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_CORE_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_C_DEPS)

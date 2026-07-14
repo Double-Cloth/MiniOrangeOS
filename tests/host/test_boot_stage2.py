@@ -17,6 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 STAGE2_SOURCE = ROOT / "boot/stage2/entry.asm"
 KERNEL_ENTRY_SOURCE = ROOT / "kernel/arch/x86/entry.asm"
+KERNEL_CONSOLE_SOURCE = ROOT / "kernel/core/console.c"
+KERNEL_PANIC_SOURCE = ROOT / "kernel/core/panic.c"
+KERNEL_SERIAL_SOURCE = ROOT / "kernel/drivers/serial.c"
+KERNEL_VGA_SOURCE = ROOT / "kernel/drivers/vga.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -359,6 +363,30 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         ]
         self.assertEqual(missing, [], f"内核早期分页合同缺少：{', '.join(missing)}")
 
+    def test_kernel_console_and_panic_contract(self) -> None:
+        required_sources = {
+            "控制台": KERNEL_CONSOLE_SOURCE,
+            "panic": KERNEL_PANIC_SOURCE,
+            "COM1": KERNEL_SERIAL_SOURCE,
+            "VGA": KERNEL_VGA_SOURCE,
+        }
+        missing_files = [
+            description
+            for description, source in required_sources.items()
+            if not source.is_file()
+        ]
+        self.assertEqual(missing_files, [], f"内核输出源码缺少：{', '.join(missing_files)}")
+
+        console = KERNEL_CONSOLE_SOURCE.read_text(encoding="utf-8")
+        panic = KERNEL_PANIC_SOURCE.read_text(encoding="utf-8")
+        serial = KERNEL_SERIAL_SOURCE.read_text(encoding="utf-8")
+        vga = KERNEL_VGA_SOURCE.read_text(encoding="utf-8")
+        for specifier in ("%s", "%c", "%u", "%d", "%x", "%p", "%%"):
+            self.assertIn(specifier, console)
+        self.assertIn("_Noreturn void panic", panic)
+        self.assertIn("0x03F8", serial)
+        self.assertIn("0xC00B8000", vga)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -611,6 +639,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] boot info valid",
                 "[KERN] paging enabled",
                 "[KERN] bss cleared",
+                "[KERN] console ready hex=c0ffee dec=42 str=ok",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")

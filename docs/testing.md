@@ -118,6 +118,13 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 - 干净 `make image` 与 `make test-boot-qemu QEMU_TIMEOUT=5`：PASS，启动专项 12/12；真实镜像按序输出 `[KERN] boot info valid`、`[KERN] paging enabled`、`[KERN] bss cleared`，P1 损坏 ELF 负面路径无回退；
 - Kernel ELF 为 10,000 bytes，SHA-256 为 `ad04e3ef94ce989740c7adaeb4c08bdafc51c25db183557b71890d5e746b775a`；镜像为 67,108,864 bytes，SHA-256 为 `28c141a60e252110a735603d650773bc306cc686dd3db785523914fcc4050aa5`。
 
+同日完成第二个 P2 增量的定向验证：
+
+- COM1、VGA、最小格式化器与 panic 源码合同 PASS；构建合同及内核精确增量依赖专项 5/5 PASS；
+- `make test-boot-qemu QEMU_TIMEOUT=5`：13/13 PASS，正式镜像新增输出 `[KERN] console ready hex=c0ffee dec=42 str=ok`，同时证明 `%x`、`%u` 和 `%s` 的运行时路径；
+- 全量宿主测试：207/207 PASS；Kernel ELF 为 10,876 bytes，SHA-256 为 `9e44778414b87db5526abacdde2ecc6f14f27c36047b839acd2959cad6621d34`；镜像为 67,108,864 bytes，SHA-256 为 `c663296fce89f01d3b6d61403815d893be9dc571f5912364647ecef7840a1aff`；
+- panic 的实际触发与 `[PANIC]` 串口可见性将在 CPU 异常负面测试中一并验收，当前只完成编译与源码合同，不将未触发路径记录为运行时 PASS。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
