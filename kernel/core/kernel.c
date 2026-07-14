@@ -17,11 +17,27 @@
 #include <minios/mm/usercopy.h>
 #include <minios/mm/vmm.h>
 #include <minios/panic.h>
+#include <minios/proc/program_registry.h>
 #include <minios/proc/scheduler.h>
 
 #include <stdint.h>
 
 void kernel_main(const struct boot_info *boot_info);
+
+static void start_interactive_shell(void)
+{
+    static const char *const arguments[] = {
+        "/bin/sh",
+        NULL
+    };
+    const uint8_t *image;
+    size_t image_size;
+
+    if (!program_registry_lookup("/bin/sh", &image, &image_size) ||
+        scheduler_spawn_image("sh", image, image_size, arguments) < 1) {
+        panic("could not start interactive shell");
+    }
+}
 
 void kernel_main(const struct boot_info *boot_info)
 {
@@ -150,6 +166,7 @@ void kernel_main(const struct boot_info *boot_info)
         panic("user page-fault isolation self-test failed");
     }
     console_printf("[KERN] user fault isolation PASS\n");
+    start_interactive_shell();
     for (;;) {
         __asm__ volatile("hlt");
     }

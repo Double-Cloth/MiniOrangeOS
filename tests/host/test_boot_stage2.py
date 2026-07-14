@@ -1200,7 +1200,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 checked.stdout + checked.stderr,
             )
 
-    def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:
+    def test_real_qemu_keyboard_input_executes_shell_command(self) -> None:
         log = self.build_directory / "test-logs/keyboard-input.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         drive = f"file={self.image},format=raw,if=ide,index=0,media=disk"
@@ -1231,26 +1231,33 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + 8.0
+            deadline = time.monotonic() + 15.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-                if "[KERN] keyboard ready" in output:
+                if "MiniOrangeOS shell\n$ " in output:
                     break
                 time.sleep(0.05)
             else:
-                self.fail("QEMU 未到达 keyboard ready")
+                self.fail("QEMU 未到达 Shell 提示符")
 
             assert process.stdin is not None
-            process.stdin.write(b"sendkey a\n")
-            process.stdin.flush()
+            for key in (b"h", b"e", b"l", b"p", b"ret"):
+                process.stdin.write(b"sendkey " + key + b"\n")
+                process.stdin.flush()
+                time.sleep(0.1)
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace")
-                if "[KERN] keyboard input=a" in output:
+                if "builtins: help clear cd pwd exit" in output:
                     break
                 time.sleep(0.05)
             else:
-                self.fail(f"IRQ1 未交付 ASCII：\n{output}")
+                self.fail(f"键盘输入未执行 help 命令：\n{output}")
+            self.assertNotIn(
+                "[KERN] keyboard input=",
+                output,
+                "键盘 IRQ 不得把每次按键作为内核日志写入终端",
+            )
         finally:
             os.killpg(process.pid, signal.SIGTERM)
             try:

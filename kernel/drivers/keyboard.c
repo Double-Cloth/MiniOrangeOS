@@ -1,5 +1,4 @@
 #include <minios/arch/x86/io.h>
-#include <minios/console.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/panic.h>
 
@@ -133,7 +132,6 @@ static void keyboard_buffer_push(char character)
     input_buffer[input_head] = character;
     __asm__ volatile("" : : : "memory");
     input_head = next;
-    console_printf("[KERN] keyboard input=%c\n", character);
 }
 
 void keyboard_init(void)
