@@ -16,8 +16,6 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      CI_ARTIFACT_DIR: ${{ runner.temp }}/miniorangeos-ci-artifacts
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -26,6 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_ARTIFACT_DIR="$RUNNER_TEMP/miniorangeos-ci-artifacts"
           mkdir -p "$CI_ARTIFACT_DIR"
           docker build \
             --file environment/Containerfile \
@@ -36,6 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_ARTIFACT_DIR="$RUNNER_TEMP/miniorangeos-ci-artifacts"
           docker run --rm \
             --name "miniorangeos-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --volume "$GITHUB_WORKSPACE:/source:ro" \

@@ -79,6 +79,13 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("environment/Containerfile", source)
         self.assertIn("/source:ro", source)
         self.assertIn("${{ runner.temp }}/miniorangeos-ci-artifacts", source)
+        self.assertNotIn("CI_ARTIFACT_DIR: ${{ runner.temp }}", source)
+        self.assertEqual(
+            source.count(
+                'CI_ARTIFACT_DIR="$RUNNER_TEMP/miniorangeos-ci-artifacts"'
+            ),
+            2,
+        )
         self.assertIn("container-build.log", source)
         self.assertIn("$CI_ARTIFACT_DIR:/artifacts", source)
         self.assertIn("bash /source/environment/ubuntu/ci-run.sh", source)
