@@ -249,8 +249,23 @@ def archive_entries() -> dict[str, tuple[str, int, str, str]]:
     }
     regular_files: dict[str, tuple[int, str]] = {}
     hardlinks: dict[str, str] = {}
+    implicit_directories: set[str] = set()
     prefix = expected_name + "/"
     root_seen = False
+
+    def ensure_implicit_parents(relative_path: str) -> None:
+        current = ""
+        for component in relative_path.split("/")[:-1]:
+            current = f"{current}/{component}" if current else component
+            if current in entries:
+                if entries[current][0] != "directory":
+                    raise ValueError(
+                        f"archive parent is not a directory: {current!r}"
+                    )
+                continue
+            entries[current] = ("directory", 0o755, "", "")
+            implicit_directories.add(current)
+
     with tarfile.open(source_path, "r:*") as archive:
         for member in archive:
             name = member.name.rstrip("/")
@@ -279,11 +294,20 @@ def archive_entries() -> dict[str, tuple[str, int, str, str]]:
                     f"{member.name!r}"
                 )
             relative_path = normalized[len(prefix) :]
-            if relative_path in excluded_root_entries or relative_path in entries:
+            if relative_path.split("/", 1)[0] in excluded_root_entries:
                 raise ValueError(
-                    f"unsafe archive member (reserved or duplicate path): "
+                    f"unsafe archive member (reserved path): "
                     f"{member.name!r}"
                 )
+            ensure_implicit_parents(relative_path)
+            if relative_path in entries:
+                if member.isdir() and relative_path in implicit_directories:
+                    implicit_directories.remove(relative_path)
+                else:
+                    raise ValueError(
+                        f"unsafe archive member (duplicate or type-conflicting path): "
+                        f"{member.name!r}"
+                    )
             if member.isdir():
                 entries[relative_path] = (
                     "directory",

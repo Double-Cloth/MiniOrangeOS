@@ -443,7 +443,7 @@ ALL_ARTIFACTS := \
 	$(USER_RM_SYM) \
 	$(MINIFS_IMAGE)
 
-.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu test-image
+.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb check test-host test test-qemu test-boot-qemu test-image loc demo-persistence
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
@@ -463,6 +463,17 @@ debug: $(IMAGE) | prepare-build-dir
 gdb: $(KERNEL_ELF) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode gdb --gdb "$(GDB)" --kernel "$(KERNEL_ELF)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
+check: $(IMAGE) | prepare-build-dir
+	@$(PYTHON) tools/fsck.py --layout config/image-layout.json --image "$(IMAGE)"
+
+test-host:
+	@env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL -u MAKEOVERRIDES -u GNUMAKEFLAGS -u BUILD_DIR -u KERNEL_TEST_BREAKPOINT -u KERNEL_TEST_PAGE_FAULT -u KERNEL_TEST_MINIFS_WRITE $(PYTHON) -m unittest discover -s tests/host -v
+
+test:
+	@./environment/verify.sh
+	@$(MAKE) check
+	@$(MAKE) test-host
+
 test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_test.py --qemu "$(QEMU)" --image "$(QEMU_TEST_FIXTURE)" --log "$(QEMU_SERIAL_LOG)" --timeout "$(QEMU_TIMEOUT)" --max-log-bytes "$(QEMU_LOG_MAX_BYTES)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
 
@@ -472,6 +483,13 @@ test-boot-qemu: | prepare-build-dir
 test-image: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/fsck.py --layout config/image-layout.json --image "$(IMAGE)"
 	@$(PYTHON) -m unittest tests.host.test_minifs_tools
+
+loc:
+	@$(PYTHON) tools/loc.py --repo "$(ROOT_DIR)" --format text
+
+demo-persistence:
+	@./environment/verify.sh
+	@$(PYTHON) tools/demo_persistence.py --repo "$(ROOT_DIR)" --qemu "$(QEMU)"
 
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"

@@ -2912,7 +2912,7 @@ exit 0
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], self._container_calls(fake_log))
 
-    def test_ubuntu_run_preserves_argument_boundaries_and_uses_read_only_repo(self) -> None:
+    def test_ubuntu_run_preserves_arguments_and_copies_read_only_repo(self) -> None:
         for backend in ("podman", "docker"):
             with (
                 self.subTest(backend=backend),
@@ -2945,7 +2945,9 @@ exit 0
                     f"org.miniorangeos.intent={OWNED_INTENT}", call
                 )
                 self.assertIn("org.miniorangeos.task=T01", call)
-                self.assertIn(f"{ROOT}:/workspace:ro", call)
+                self.assertIn(f"{ROOT}:/source:ro", call)
+                flattened = " ".join(call)
+                self.assertIn("/source/environment/ubuntu/run-inside.sh", flattened)
                 self.assertIn("argument with spaces", call)
                 self.assertIn("; touch /tmp/must-not-run", call)
 

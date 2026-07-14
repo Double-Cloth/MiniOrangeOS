@@ -18,6 +18,7 @@ PUBLIC_T01_FILES = (
     "environment/Containerfile",
     "environment/ubuntu/create.sh",
     "environment/ubuntu/run.sh",
+    "environment/ubuntu/run-inside.sh",
     "environment/ubuntu/destroy.sh",
     "environment/bootstrap-inside.sh",
     "environment/with-env.sh",
@@ -701,6 +702,33 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                 ):
                     self.assertIn(token, content)
 
+    def test_verify_accepts_only_kernel_owned_pid_one_runtime_facts(self) -> None:
+        content = self._without_comments(self._read_required("environment/verify.sh"))
+        process_owner = self._function_body(
+            content, "trusted_runtime_process_owner", powershell=False
+        )
+        process_fact = self._function_body(
+            content, "runtime_process_fact_is_trusted", powershell=False
+        )
+        container_gate = self._function_body(
+            content, "verify_container_runtime_identity", powershell=False
+        )
+        self.assertIn("stat -f -c %T", process_owner)
+        self.assertIn("'proc'", process_owner)
+        self.assertRegex(process_owner, r"stat\s+-c\s+'%F\|%u\|%a'.*?/proc/1")
+        self.assertIn("stat -f -c %T", process_fact)
+        self.assertIn("runtime_fact_is_trusted", process_fact)
+        self.assertIn('process_owner="$(trusted_runtime_process_owner)"', container_gate)
+        self.assertIn(
+            'runtime_process_fact_is_trusted /proc/1/cgroup "$process_owner"',
+            container_gate,
+        )
+        self.assertIn(
+            'runtime_process_fact_is_trusted /proc/1/mountinfo "$process_owner"',
+            container_gate,
+        )
+        self.assertIn("runtime_fact_is_trusted /.dockerenv", container_gate)
+
     def test_verify_invokes_runtime_and_instance_identity_checks(self) -> None:
         content = self._without_comments(self._read_required("environment/verify.sh"))
         isolation_gate = content[
@@ -1016,10 +1044,17 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("MINIOS_ENV_ROOT=/opt/miniorangeos-dev", content)
         self.assertIn("bootstrap-inside.sh --system-only", content)
         self.assertIn("bootstrap-inside.sh --toolchain-only", content)
+        self.assertIn("[ ! -e /.dockerenv ]", content)
+        self.assertIn("[ ! -e /run/.containerenv ]", content)
+        self.assertIn("/root/miniorangeos-build-marker-created", content)
+        self.assertIn("rm -f -- /.dockerenv", content)
+        self.assertIn("/usr/sbin/runuser -u minios -- env", content)
+        self.assertIn("HOME=/home/minios USER=minios LOGNAME=minios", content)
         self.assertNotRegex(content, r"(?m)^COPY\s+environment/?\s")
         for build_input in (
             "environment/versions.env",
             "environment/lib/common.sh",
+            "environment/lib/package_state_writer.py",
             "environment/bootstrap-inside.sh",
             "tools/build_toolchain.sh",
         ):
@@ -1028,9 +1063,15 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                     content,
                     rf"(?m)^COPY\s+{re.escape(build_input)}\s+",
                 )
-        self.assertRegex(content, r"(?m)^USER minios\s*$")
+        users = re.findall(r"(?m)^USER\s+(\S+)\s*$", content)
+        self.assertEqual(users, ["minios"])
         self.assertRegex(content, r"(?m)^WORKDIR /workspace\s*$")
-        self.assertNotRegex(content, r"(?m)^USER root\s*$[\s\S]*\Z")
+        self.assertRegex(
+            content,
+            r"(?ms)runuser -u minios -- env.*?--toolchain-only.*?"
+            r"rm -f -- /\.dockerenv.*?^USER minios\s*$\s*"
+            r"^WORKDIR /workspace\s*$",
+        )
 
     def test_ubuntu_adapters_share_strict_backend_library(self) -> None:
         library = self._read_required("environment/ubuntu/lib.sh")

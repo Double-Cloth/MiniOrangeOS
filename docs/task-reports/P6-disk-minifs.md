@@ -14,7 +14,7 @@
 - `0552a8f`：`feat(p6): add mutable MiniFS directories`
 - `64fb8b9`：`feat(p6): add user file commands`
 
-合并提交：待本地合并；本报告提交后分支达到可合并状态，未执行远端推送。
+合并提交：`7de8d07`：`merge: complete P6 disk and MiniFS`。
 
 ## 修改文件
 
@@ -77,4 +77,4 @@ python3 -m unittest discover -s tests/host -v
 ## 文档同步
 
 - 已更新 `PROJECT_PLAN.md`、`docs/filesystem.md`、`docs/syscall.md`、`docs/process.md`、`docs/testing.md`、`docs/progress.md`、`docs/provenance.md` 和 `docs/review-notes.md`。
-- 已新增本阶段报告；P6 功能与文档提交完成后等待本地 no-ff 合并，不自动推送。
+- 已新增本阶段报告；P6 功能与文档提交已通过本地 no-ff 合并进入 `main`，对应合并提交为 `7de8d07`。

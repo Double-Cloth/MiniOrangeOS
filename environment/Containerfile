@@ -12,14 +12,28 @@ ENV MINIOS_CONTAINER=1 \
 # 只复制昂贵依赖层的真实输入；adapter 或 README 变化不使 apt/GCC 层失效。
 COPY environment/versions.env /tmp/miniorangeos-source/environment/versions.env
 COPY environment/lib/common.sh /tmp/miniorangeos-source/environment/lib/common.sh
+COPY environment/lib/package_state_writer.py /tmp/miniorangeos-source/environment/lib/package_state_writer.py
 COPY environment/bootstrap-inside.sh /tmp/miniorangeos-source/environment/bootstrap-inside.sh
 COPY tools/build_toolchain.sh /tmp/miniorangeos-source/tools/build_toolchain.sh
 
-RUN useradd --create-home --shell /bin/bash -- minios \
+# BuildKit 的 RUN sandbox 是真实 overlay 容器，但不总是注入 OCI marker。
+# 仅在 marker 全缺失时创建构建期 marker，并在最终镜像层精确移除。
+RUN if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then \
+        install -m 0644 /dev/null /.dockerenv; \
+        install -m 0600 /dev/null /root/miniorangeos-build-marker-created; \
+    fi \
+    && useradd --create-home --shell /bin/bash -- minios \
     && install -d -m 0755 -o minios -g minios /opt/miniorangeos-dev \
     && /tmp/miniorangeos-source/environment/bootstrap-inside.sh --system-only --target-user minios
 
-USER minios
-RUN /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
+RUN /usr/sbin/runuser -u minios -- env \
+        HOME=/home/minios USER=minios LOGNAME=minios \
+        MINIOS_CONTAINER=1 MINIOS_ENV_ROOT=/opt/miniorangeos-dev \
+        /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
 
+RUN if [ -f /root/miniorangeos-build-marker-created ]; then \
+        rm -f -- /.dockerenv /root/miniorangeos-build-marker-created; \
+    fi
+
+USER minios
 WORKDIR /workspace

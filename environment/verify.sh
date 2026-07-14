@@ -24,15 +24,41 @@ record_fail() {
 
 runtime_fact_is_trusted() {
     local path="$1"
+    local expected_owner="${2:-0}"
     local item_type
     local item_uid
     local item_mode
     [[ -f "$path" && ! -L "$path" ]] || return 1
     IFS='|' read -r item_type item_uid item_mode < <(stat -c '%F|%u|%a' -- "$path") || return $?
     [[ ( "$item_type" == 'regular file' || "$item_type" == 'regular empty file' ) \
-        && "$item_uid" == '0' \
+        && "$item_uid" == "$expected_owner" \
         && "$item_mode" =~ ^[0-7]{3,4}$ \
         && $((8#$item_mode & 8#022)) -eq 0 ]]
+}
+
+trusted_runtime_process_owner() {
+    local item_type
+    local item_uid
+    local item_mode
+    local filesystem_type
+    [[ -d /proc/1 && ! -L /proc/1 ]] || return 1
+    IFS='|' read -r item_type item_uid item_mode < <(
+        stat -c '%F|%u|%a' -- /proc/1
+    ) || return $?
+    filesystem_type="$(stat -f -c %T -- /proc/1)" || return $?
+    [[ "$item_type" == 'directory' \
+        && "$item_uid" =~ ^[0-9]+$ \
+        && "$item_mode" =~ ^[0-7]{3,4}$ \
+        && $((8#$item_mode & 8#022)) -eq 0 \
+        && "$filesystem_type" == 'proc' ]] || return 1
+    printf '%s\n' "$item_uid"
+}
+
+runtime_process_fact_is_trusted() {
+    local path="$1"
+    local expected_owner="$2"
+    runtime_fact_is_trusted "$path" "$expected_owner" \
+        && [[ "$(stat -f -c %T -- "$path")" == 'proc' ]]
 }
 
 verify_wsl2_runtime_identity() {
@@ -63,10 +89,12 @@ verify_wsl_instance_identity() {
 
 verify_container_runtime_identity() {
     local marker=''
+    local process_owner
     local cgroup
     local mountinfo
-    runtime_fact_is_trusted /proc/1/cgroup || return 1
-    runtime_fact_is_trusted /proc/1/mountinfo || return 1
+    process_owner="$(trusted_runtime_process_owner)" || return 1
+    runtime_process_fact_is_trusted /proc/1/cgroup "$process_owner" || return 1
+    runtime_process_fact_is_trusted /proc/1/mountinfo "$process_owner" || return 1
     if runtime_fact_is_trusted /.dockerenv; then
         marker='/.dockerenv'
     elif runtime_fact_is_trusted /run/.containerenv; then

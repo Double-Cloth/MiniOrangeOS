@@ -79,6 +79,52 @@ class ToolchainProvenanceTests(unittest.TestCase):
             self.assertIn("toolchain_status=up-to-date", second.stdout)
             self.assertEqual(log_before, log.read_bytes())
 
+    def test_implicit_archive_directories_are_manifested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            fixture_root, log, env = self.fixture._write_toolchain_fixture(
+                temporary_root
+            )
+            archive = temporary_root / "implicit-directories.tar.xz"
+            configure_data = (
+                b"#!/bin/sh\nset -eu\n"
+                b"printf 'configure component=binutils cwd=%s args=%s\\n' "
+                b'"$PWD" "$*" >> "$FAKE_TOOLCHAIN_LOG"\n'
+                b"printf '%s\\n' binutils > .minios-component\n"
+            )
+            payload_data = b"trusted payload\n"
+            with tarfile.open(archive, "w:xz") as tar:
+                root = tarfile.TarInfo("binutils-1.0")
+                root.type = tarfile.DIRTYPE
+                root.mode = 0o755
+                tar.addfile(root)
+                configure = tarfile.TarInfo("binutils-1.0/configure")
+                configure.mode = 0o755
+                configure.size = len(configure_data)
+                tar.addfile(configure, io.BytesIO(configure_data))
+                payload = tarfile.TarInfo(
+                    "binutils-1.0/implicit/deeper/payload.txt"
+                )
+                payload.mode = 0o644
+                payload.size = len(payload_data)
+                tar.addfile(payload, io.BytesIO(payload_data))
+            self.fixture._replace_fixture_archive(
+                fixture_root, "binutils", archive
+            )
+
+            first = self.fixture._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, first.returncode, first.stderr)
+            source = Path(env["MINIOS_ENV_ROOT"]) / "sources/binutils-1.0"
+            self.assertEqual(
+                (source / "implicit/deeper/payload.txt").read_bytes(),
+                payload_data,
+            )
+            log_before = log.read_bytes()
+            second = self.fixture._run_fixture_toolchain(fixture_root, env=env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertIn("toolchain_status=up-to-date", second.stdout)
+            self.assertEqual(log_before, log.read_bytes())
+
     def test_trusted_legacy_stamp_is_upgraded_without_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             fixture_root, log, env = self._write_fixture(Path(temporary_directory))

@@ -25,6 +25,7 @@ readonly run_name="$MINIOS_CONTAINER_NAME-run-$$"
     --label "$MINIOS_CONTAINER_LABEL" \
     --label "$MINIOS_CONTAINER_TASK_LABEL" \
     --label "$MINIOS_CONTAINER_INTENT_LABEL_KEY=$STATE_CONTAINER_INTENT" \
-    --volume "$MINIOS_REPO_ROOT:/workspace:ro" \
-    --workdir /workspace \
-    "$STATE_CONTAINER_LIVE_REF" "$@"
+    --volume "$MINIOS_REPO_ROOT:/source:ro" \
+    --workdir /source \
+    "$STATE_CONTAINER_LIVE_REF" \
+    bash /source/environment/ubuntu/run-inside.sh "$@"

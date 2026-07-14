@@ -37,6 +37,7 @@
 | `provenance.md` | 来源登记和自主实现证明 |
 | `problems.md` | 风险、问题、降级和环境清理记录 |
 | `progress.md` | 只记录有提交和真实测试证据的进度 |
+| `release-checklist.md` | P7 最终环境、构建、演示、文档与限制核对清单 |
 | `task-reports/` | 历史 T00-T11 任务报告和后续阶段报告 |
 | `decisions/` | 已接受的重要工程决策 |
 
