@@ -10,6 +10,7 @@
 typedef void (*kernel_thread_entry)(void *argument);
 
 #define MINIOS_PROCESS_FD_LIMIT 16U
+#define MINIOS_PROCESS_CWD_SIZE 256U
 
 void scheduler_init(void);
 int32_t kernel_thread_create(const char *name, kernel_thread_entry entry,
@@ -22,6 +23,8 @@ bool scheduler_sleep_current(uint32_t ticks);
 int32_t scheduler_waitpid(int32_t pid, int32_t *exit_code);
 void scheduler_on_tick(void);
 uint32_t scheduler_current_pid(void);
+bool scheduler_get_current_working_directory(char *path, size_t capacity);
+bool scheduler_set_current_working_directory(const char *path);
 int32_t scheduler_fd_install(uintptr_t handle);
 uintptr_t scheduler_fd_get(int32_t descriptor);
 uintptr_t scheduler_fd_remove(int32_t descriptor);

@@ -109,6 +109,45 @@ fail:
     return false;
 }
 
+static bool test_cwd_syscalls(void) {
+    static const char pass[] = "[USER] cwd syscall PASS\n";
+    struct minios_stat status;
+    char path[256];
+    int32_t descriptor = -1;
+
+    if (minios_getcwd(path, sizeof(path)) != 0 ||
+        !minios_streq(path, "/") ||
+        minios_chdir("/bin/") != 0 ||
+        minios_getcwd(path, sizeof(path)) != 0 ||
+        !minios_streq(path, "/bin") ||
+        minios_stat("./sh", &status) != 0 ||
+        status.mode != MINIFS_MODE_REGULAR) {
+        goto fail;
+    }
+    descriptor = minios_open("../bin/echo", MINIOS_O_RDONLY);
+    if (descriptor < 3 || minios_close(descriptor) != 0) {
+        goto fail;
+    }
+    descriptor = -1;
+    if (minios_chdir("init") != -MINIOS_ENOTDIR ||
+        minios_chdir("missing") != -MINIOS_ENOENT ||
+        minios_chdir("..") != 0 ||
+        minios_getcwd(path, sizeof(path)) != 0 ||
+        !minios_streq(path, "/") ||
+        minios_write(1, pass, sizeof(pass) - 1U) !=
+            (int32_t)(sizeof(pass) - 1U)) {
+        goto fail;
+    }
+    return true;
+
+fail:
+    if (descriptor >= 3) {
+        (void)minios_close(descriptor);
+    }
+    (void)minios_chdir("/");
+    return false;
+}
+
 int main(int argc, char **argv);
 
 int main(int argc, char **argv) {
@@ -141,7 +180,7 @@ int main(int argc, char **argv) {
     if (argc != 2 || argv == NULL || argv[0] == NULL || argv[1] == NULL ||
         argv[2] != NULL || !minios_streq(argv[0], "/bin/init") ||
         !minios_streq(argv[1], "--self-test") || !test_file_syscalls() ||
-        !test_directory_syscalls()) {
+        !test_directory_syscalls() || !test_cwd_syscalls()) {
         return 2;
     }
     child_pid = minios_spawn("/bin/echo", echo_arguments);

@@ -34,6 +34,7 @@ KERNEL_IRQ_SOURCE = ROOT / "kernel/arch/x86/irq.c"
 KERNEL_PIC_SOURCE = ROOT / "kernel/drivers/pic.c"
 KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
 KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
+KERNEL_INPUT_HEADER = ROOT / "include/minios/abi/input.h"
 KERNEL_BOOT_INFO_HEADER = ROOT / "kernel/include/minios/boot_info.h"
 KERNEL_PMM_SOURCE = ROOT / "kernel/mm/pmm.c"
 KERNEL_VMM_SOURCE = ROOT / "kernel/mm/vmm.c"
@@ -484,12 +485,40 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
 
     def test_kernel_declares_ps2_keyboard_contract(self) -> None:
         self.assertTrue(KERNEL_KEYBOARD_SOURCE.is_file(), "缺少 PS/2 键盘驱动")
+        self.assertTrue(KERNEL_INPUT_HEADER.is_file(), "缺少内核与用户态共享的按键 ABI")
         source = KERNEL_KEYBOARD_SOURCE.read_text(encoding="utf-8")
+        input_abi = KERNEL_INPUT_HEADER.read_text(encoding="utf-8")
         self.assertIn("0x0060", source)
         self.assertIn("0x0064", source)
         self.assertIn("KEYBOARD_BUFFER_SIZE", source)
         self.assertIn("keyboard_try_read", source)
         self.assertIn("PS2_POLL_LIMIT", source)
+        for key_name in (
+            "MINIOS_KEY_LEFT",
+            "MINIOS_KEY_RIGHT",
+            "MINIOS_KEY_UP",
+            "MINIOS_KEY_DOWN",
+            "MINIOS_KEY_HOME",
+            "MINIOS_KEY_END",
+            "MINIOS_KEY_DELETE",
+        ):
+            self.assertIn(key_name, input_abi)
+        for extended_scancode in ("0x47", "0x48", "0x4B", "0x4D", "0x4F", "0x50", "0x53"):
+            self.assertIn(extended_scancode, source)
+        for punctuation in ("'-'", "'='", "'['", "']'", "';'", "'\"'", "'`'", "'\\\\'", "','", "'.'", "'/'"):
+            self.assertIn(punctuation, source)
+        self.assertIn("left_shift_pressed", source)
+        self.assertIn("right_shift_pressed", source)
+        self.assertIn("left_ctrl_pressed", source)
+        self.assertIn("right_ctrl_pressed", source)
+
+    def test_vga_supports_shell_editing_control_sequences(self) -> None:
+        source = KERNEL_VGA_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("'\\b'", source)
+        self.assertIn("0x03D4", source)
+        self.assertIn("0x03D5", source)
+        self.assertIn("VGA_ESCAPE", source)
+        self.assertIn("vga_clear", source)
 
     def test_kernel_declares_boot_info_and_pmm_contract(self) -> None:
         self.assertTrue(KERNEL_BOOT_INFO_HEADER.is_file(), "缺少 Boot Info C 合同")
@@ -571,6 +600,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             "wake_tick",
             "time_slice",
             "fd_table",
+            "current_working_directory",
         ):
             self.assertIn(field, source)
         self.assertIn("PROCESS_READY", source)
@@ -617,6 +647,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("SYS_waitpid", syscall)
         self.assertIn("SYS_spawn", syscall)
         self.assertIn("SYS_sleep", syscall)
+        self.assertIn("SYS_chdir", syscall)
+        self.assertIn("SYS_getcwd", syscall)
         self.assertIn("SYS_getticks", syscall)
         self.assertIn("SYS_ps", syscall)
         self.assertIn("vmm_address_space_activate", scheduler)
@@ -1039,6 +1071,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] ring3 syscall PASS", output)
         self.assertIn("[USER] file syscall PASS", output)
         self.assertIn("[USER] directory syscall PASS", output)
+        self.assertIn("[USER] cwd syscall PASS", output)
         self.assertIn("[USER] file commands PASS", output)
         self.assertTrue(
             "[USER] command persistence created PASS" in output or
@@ -1047,8 +1080,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] elf init PASS", output)
         self.assertIn("[USER] echo child PASS", output)
         self.assertIn("[USER] shell command PASS", output)
+        self.assertIn("[USER] quoted shell command PASS", output)
+        self.assertIn("[USER] relative command PASS", output)
         self.assertIn("[USER] shell self-test PASS", output)
         self.assertIn("[USER] ps PASS", output)
+        self.assertIn("[USER] time commands PASS", output)
         self.assertIn("[USER] memtest PASS", output)
         self.assertIn("[USER] fault isolation PASS", output)
         self.assertNotIn("[PANIC]", output)
@@ -1240,18 +1276,27 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-                if "MiniOrangeOS shell\n$ " in output:
+                if "MiniOrangeOS shell\n/$ " in output:
                     break
                 time.sleep(0.05)
             else:
                 self.fail(f"QEMU 未到达 Shell 提示符：\n{output}")
 
             assert process.stdin is not None
-            for key in (b"h", b"e", b"l", b"p", b"ret"):
-                process.stdin.write(b"sendkey " + key + b"\n")
-                process.stdin.flush()
-                time.sleep(0.1)
-            deadline = time.monotonic() + 3.0
+
+            def send_keys(*keys: bytes) -> None:
+                for key in keys:
+                    process.stdin.write(b"sendkey " + key + b"\n")
+                    process.stdin.flush()
+                    time.sleep(0.05)
+
+            def send_text(value: str) -> None:
+                key_names = {" ": b"spc", "-": b"minus", "=": b"equal", "/": b"slash"}
+                send_keys(*(key_names.get(character, character.encode("ascii")) for character in value))
+
+            send_text("help")
+            send_keys(b"ret")
+            deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace")
                 if "builtins: help clear cd pwd exit" in output:
@@ -1259,6 +1304,61 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 time.sleep(0.05)
             else:
                 self.fail(f"键盘输入未执行 help 命令：\n{output}")
+
+            send_text("echo backspacz")
+            send_keys(b"backspace")
+            send_text("e")
+            send_keys(b"ret")
+
+            send_text("echo leftrght")
+            send_keys(b"left", b"left", b"left")
+            send_text("i")
+            send_keys(b"ret")
+
+            send_text("echo deleqte")
+            send_keys(b"left", b"left", b"left", b"delete", b"ret")
+
+            send_text("cho homeend")
+            send_keys(b"home")
+            send_text("e")
+            send_keys(b"end", b"ret")
+
+            send_text("echo history")
+            send_keys(b"ret", b"up", b"ret", b"up", b"down")
+            send_text("echo down")
+            send_keys(b"ret")
+
+            send_text("echo cancel")
+            send_keys(b"ctrl-c")
+            send_text("echo control")
+            send_keys(b"ret")
+
+            send_text("echo a/b-c=d")
+            send_keys(b"ret")
+
+            expected_lines = {
+                "backspace": 1,
+                "leftright": 1,
+                "delete": 1,
+                "homeend": 1,
+                "history": 2,
+                "down": 1,
+                "control": 1,
+                "a/b-c=d": 1,
+            }
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                output = log.read_text(encoding="utf-8", errors="replace")
+                normalized_output = output.replace("\r\n", "\n").replace("\r", "\n")
+                if all(
+                    len(re.findall(rf"(?m)^{re.escape(line)}$", normalized_output)) >= count
+                    for line, count in expected_lines.items()
+                ):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"特殊键位未完成行编辑验收：\n{output}")
+            self.assertIsNone(re.search(r"(?m)^cancel$", normalized_output))
             self.assertNotIn(
                 "[KERN] keyboard input=",
                 output,

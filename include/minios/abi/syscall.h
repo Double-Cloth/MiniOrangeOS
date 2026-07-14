@@ -17,9 +17,11 @@ enum syscall_number {
     SYS_getpid = 12,
     SYS_yield = 13,
     SYS_sleep = 14,
+    SYS_chdir = 15,
     SYS_stat = 16,
     SYS_getticks = 17,
-    SYS_ps = 18
+    SYS_ps = 18,
+    SYS_getcwd = 19
 };
 
 #endif
