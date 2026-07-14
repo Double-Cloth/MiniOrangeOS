@@ -106,7 +106,7 @@ MAX_ARG_BYTES = 1024
 `SYS_spawn`：
 
 - 拷贝路径和 argv；
-- 通过 VFS 打开 ELF；
+- P5 先从构建期只读 ELF 注册表按路径取 bytes，P6 改为通过 VFS 打开 ELF；
 - 调用用户 ELF 加载器；
 - 建立父子关系；
 - 将子进程放入 READY；

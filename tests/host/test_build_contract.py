@@ -21,6 +21,12 @@ REQUIRED_BUILD_FILES = (
     "kernel/arch/x86/entry.asm",
     "kernel/core/kernel.c",
     "kernel/linker.ld",
+    "include/minios/abi/syscall.h",
+    "include/minios/abi/errno.h",
+    "user/crt/start.asm",
+    "user/libc/syscall.c",
+    "user/programs/init.c",
+    "user/linker.ld",
 )
 
 GENERATED_SUFFIXES = {
@@ -69,7 +75,7 @@ class BuildContractTests(unittest.TestCase):
 
     def test_source_tree_contains_no_generated_artifacts(self) -> None:
         generated: list[str] = []
-        for directory in ("boot", "kernel", "config", "tools"):
+        for directory in ("boot", "kernel", "user", "config", "tools"):
             root = ROOT / directory
             if not root.exists():
                 continue
@@ -77,6 +83,19 @@ class BuildContractTests(unittest.TestCase):
                 if path.is_file() and path.suffix in GENERATED_SUFFIXES:
                     generated.append(path.relative_to(ROOT).as_posix())
         self.assertEqual([], generated, f"源码树出现构建产物：{generated}")
+
+    def test_user_build_declares_static_elf_and_shared_abi(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        kernel_syscall = (ROOT / "kernel/include/minios/syscall.h").read_text(
+            encoding="utf-8"
+        )
+        user_syscall = (ROOT / "user/libc/syscall.c").read_text(encoding="utf-8")
+        self.assertIn("USER_INIT_ELF", makefile)
+        self.assertIn("user/linker.ld", makefile)
+        self.assertIn("-ffreestanding", makefile)
+        self.assertIn("-nostdlib", makefile)
+        self.assertIn("<minios/abi/syscall.h>", kernel_syscall)
+        self.assertIn("<minios/abi/syscall.h>", user_syscall)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

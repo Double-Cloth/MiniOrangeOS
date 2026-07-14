@@ -126,6 +126,11 @@ KERNEL_CORE_BUILD_DIR := $(KERNEL_BUILD_DIR)/core
 KERNEL_DRIVERS_BUILD_DIR := $(KERNEL_BUILD_DIR)/drivers
 KERNEL_MM_BUILD_DIR := $(KERNEL_BUILD_DIR)/mm
 KERNEL_PROC_BUILD_DIR := $(KERNEL_BUILD_DIR)/proc
+USER_BUILD_DIR := $(BUILD_ABS)/user
+USER_BIN_BUILD_DIR := $(USER_BUILD_DIR)/bin
+USER_CRT_BUILD_DIR := $(USER_BUILD_DIR)/crt
+USER_LIBC_BUILD_DIR := $(USER_BUILD_DIR)/libc
+USER_PROGRAMS_BUILD_DIR := $(USER_BUILD_DIR)/programs
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -231,14 +236,47 @@ KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel.bin
 KERNEL_MAP := $(KERNEL_BUILD_DIR)/kernel.map
 KERNEL_SYM := $(KERNEL_BUILD_DIR)/kernel.sym
 
+USER_START_OBJ := $(USER_CRT_BUILD_DIR)/start.o
+USER_START_DEP := $(USER_CRT_BUILD_DIR)/start.d
+USER_SYSCALL_OBJ := $(USER_LIBC_BUILD_DIR)/syscall.o
+USER_SYSCALL_DEP := $(USER_LIBC_BUILD_DIR)/syscall.d
+USER_INIT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/init.o
+USER_INIT_DEP := $(USER_PROGRAMS_BUILD_DIR)/init.d
+USER_INIT_ELF := $(USER_BIN_BUILD_DIR)/init.elf
+USER_INIT_MAP := $(USER_BIN_BUILD_DIR)/init.map
+USER_INIT_SYM := $(USER_BIN_BUILD_DIR)/init.sym
+
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
 
 KERNEL_CFLAGS := \
+	-I "$(ROOT_DIR)/include" \
 	-I "$(ROOT_DIR)/kernel/include" \
 	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
 	-DMINIOS_TEST_PAGE_FAULT=$(KERNEL_TEST_PAGE_FAULT) \
+	-std=c11 \
+	-ffreestanding \
+	-fno-builtin \
+	-fno-stack-protector \
+	-fno-pic \
+	-fno-pie \
+	-m32 \
+	-mno-mmx \
+	-mno-sse \
+	-mno-sse2 \
+	-Wall \
+	-Wextra \
+	-Wpedantic \
+	-Wshadow \
+	-Wconversion \
+	-Wmissing-prototypes \
+	-Wstrict-prototypes \
+	-Werror
+
+USER_CFLAGS := \
+	-I "$(ROOT_DIR)/include" \
+	-I "$(ROOT_DIR)/user/include" \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \
@@ -267,13 +305,18 @@ ALL_ARTIFACTS := \
 	$(KERNEL_ELF) \
 	$(KERNEL_BIN) \
 	$(KERNEL_MAP) \
-	$(KERNEL_SYM)
+	$(KERNEL_SYM) \
+	$(USER_INIT_ELF) \
+	$(USER_INIT_MAP) \
+	$(USER_INIT_SYM)
 
-.PHONY: all image clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
+.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
+
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -398,6 +441,21 @@ $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 $(KERNEL_SYM): $(KERNEL_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
+$(USER_START_OBJ): user/crt/start.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(USER_START_DEP)" -MT "$@" -o "$@" "$<"
+
+$(USER_SYSCALL_OBJ): user/libc/syscall.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SYSCALL_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_INIT_OBJ): user/programs/init.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_INIT_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_INIT_OBJ)
+
+$(USER_INIT_SYM): $(USER_INIT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"
 
@@ -411,4 +469,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_INIT_DEP)

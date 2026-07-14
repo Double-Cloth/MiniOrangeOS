@@ -124,6 +124,8 @@ GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 
 
 ## ELF 用户程序加载
 
+P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin/sh` 与基础程序的完整静态 ELF32 作为只读 blob 链入内核，并以路径查找表提供给 `spawn`。该注册表只负责返回不可变 ELF bytes，不绕过 ELF header/program header 校验，也不改变 `spawn(path, argv)`、父子关系、argc/argv 或 syscall ABI。P6 挂载 MiniFS 后以 VFS 文件读取替换此 blob 来源，ELF loader 和用户进程创建接口保持不变。
+
 只支持静态 ELF32 `ET_EXEC`。加载器必须：
 
 - 验证 ELF Header；

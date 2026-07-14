@@ -53,6 +53,11 @@ BUILD_SUBDIRECTORIES = (
     ("kernel", "drivers"),
     ("kernel", "mm"),
     ("kernel", "proc"),
+    ("user",),
+    ("user", "bin"),
+    ("user", "crt"),
+    ("user", "libc"),
+    ("user", "programs"),
 )
 DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
 DIRECTORY_FLAGS |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
