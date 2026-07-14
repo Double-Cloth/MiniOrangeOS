@@ -98,7 +98,9 @@ kernel_high_entry:
     jne bss_clear_failed
     mov esi, message_bss_cleared
     call serial_write_line
+    push ebx
     call kernel_main
+    add esp, 4
 
 kernel_halt:
     hlt

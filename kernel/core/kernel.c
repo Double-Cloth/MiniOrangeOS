@@ -1,14 +1,24 @@
 #include <minios/arch/x86/gdt.h>
 #include <minios/arch/x86/idt.h>
 #include <minios/arch/x86/irq.h>
+#include <minios/arch/x86/page_fault.h>
+#include <minios/boot_info.h>
 #include <minios/console.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
+#include <minios/mm/heap.h>
+#include <minios/mm/address_space.h>
+#include <minios/mm/pmm.h>
+#include <minios/mm/usercopy.h>
+#include <minios/mm/vmm.h>
+#include <minios/panic.h>
 
-void kernel_main(void);
+#include <stdint.h>
 
-void kernel_main(void)
+void kernel_main(const struct boot_info *boot_info);
+
+void kernel_main(const struct boot_info *boot_info)
 {
     console_init();
     console_printf("[KERN] console ready hex=%x dec=%u str=%s\n", 0xC0FFEEU, 42U, "ok");
@@ -19,6 +29,41 @@ void kernel_main(void)
 #if MINIOS_TEST_BREAKPOINT == 1
     __asm__ volatile("int3");
 #endif
+#if MINIOS_TEST_PAGE_FAULT == 1
+    (void)*(volatile uint32_t *)(uintptr_t)0x00400000U;
+#endif
+    pmm_init(boot_info);
+    {
+        struct pmm_stats stats = pmm_get_stats();
+        console_printf(
+            "[KERN] pmm pages total=%u free=%u reserved=%u\n",
+            stats.total_pages,
+            stats.free_pages,
+            stats.reserved_pages
+        );
+    }
+    if (!pmm_self_test()) {
+        panic("PMM self-test failed");
+    }
+    console_printf("[KERN] pmm self-test PASS\n");
+    vmm_init(boot_info);
+    console_printf("[KERN] vmm ready identity=off wp=on\n");
+    if (!vmm_self_test()) {
+        panic("VMM self-test failed");
+    }
+    console_printf("[KERN] vmm self-test PASS\n");
+    heap_init();
+    console_printf("[KERN] heap ready\n");
+    if (!heap_self_test()) {
+        panic("heap self-test failed");
+    }
+    console_printf("[KERN] heap self-test PASS\n");
+    console_printf("[KERN] user memory ready\n");
+    if (!vmm_address_space_self_test() || !usercopy_self_test() ||
+        !page_fault_self_test()) {
+        panic("user memory self-test failed");
+    }
+    console_printf("[KERN] user memory self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);
