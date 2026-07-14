@@ -1,14 +1,17 @@
 #include <minios/arch/x86/gdt.h>
 #include <minios/arch/x86/idt.h>
 #include <minios/arch/x86/irq.h>
+#include <minios/boot_info.h>
 #include <minios/console.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pic.h>
 #include <minios/drivers/pit.h>
+#include <minios/mm/pmm.h>
+#include <minios/panic.h>
 
-void kernel_main(void);
+void kernel_main(const struct boot_info *boot_info);
 
-void kernel_main(void)
+void kernel_main(const struct boot_info *boot_info)
 {
     console_init();
     console_printf("[KERN] console ready hex=%x dec=%u str=%s\n", 0xC0FFEEU, 42U, "ok");
@@ -19,6 +22,20 @@ void kernel_main(void)
 #if MINIOS_TEST_BREAKPOINT == 1
     __asm__ volatile("int3");
 #endif
+    pmm_init(boot_info);
+    {
+        struct pmm_stats stats = pmm_get_stats();
+        console_printf(
+            "[KERN] pmm pages total=%u free=%u reserved=%u\n",
+            stats.total_pages,
+            stats.free_pages,
+            stats.reserved_pages
+        );
+    }
+    if (!pmm_self_test()) {
+        panic("PMM self-test failed");
+    }
+    console_printf("[KERN] pmm self-test PASS\n");
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

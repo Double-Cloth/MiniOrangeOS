@@ -34,6 +34,8 @@ KERNEL_IRQ_SOURCE = ROOT / "kernel/arch/x86/irq.c"
 KERNEL_PIC_SOURCE = ROOT / "kernel/drivers/pic.c"
 KERNEL_PIT_SOURCE = ROOT / "kernel/drivers/pit.c"
 KERNEL_KEYBOARD_SOURCE = ROOT / "kernel/drivers/keyboard.c"
+KERNEL_BOOT_INFO_HEADER = ROOT / "kernel/include/minios/boot_info.h"
+KERNEL_PMM_SOURCE = ROOT / "kernel/mm/pmm.c"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -457,6 +459,18 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("keyboard_try_read", source)
         self.assertIn("PS2_POLL_LIMIT", source)
 
+    def test_kernel_declares_boot_info_and_pmm_contract(self) -> None:
+        self.assertTrue(KERNEL_BOOT_INFO_HEADER.is_file(), "缺少 Boot Info C 合同")
+        self.assertTrue(KERNEL_PMM_SOURCE.is_file(), "缺少 PMM 实现")
+        boot_info = KERNEL_BOOT_INFO_HEADER.read_text(encoding="utf-8")
+        pmm = KERNEL_PMM_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("_Static_assert(sizeof(struct boot_info) == 64U", boot_info)
+        self.assertIn("_Static_assert(sizeof(struct e820_entry) == 24U", boot_info)
+        self.assertIn("PMM_MAX_PAGES 1048576U", pmm)
+        self.assertIn("allocatable_bitmap", pmm)
+        self.assertIn("bool pmm_free", pmm)
+        self.assertIn("e820_entries", pmm)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -704,7 +718,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         )
         kernel_lines = re.findall(r"(?m)^\[KERN\][^\r\n]*", output)
         self.assertEqual(
-            kernel_lines,
+            kernel_lines[:6],
             [
                 "[KERN] boot info valid",
                 "[KERN] paging enabled",
@@ -712,6 +726,16 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
                 "[KERN] gdt ready",
                 "[KERN] idt ready",
+            ],
+        )
+        self.assertRegex(
+            kernel_lines[6],
+            r"^\[KERN\] pmm pages total=[1-9][0-9]* free=[1-9][0-9]* reserved=[1-9][0-9]*$",
+        )
+        self.assertEqual(
+            kernel_lines[7:],
+            [
+                "[KERN] pmm self-test PASS",
                 "[KERN] pic ready",
                 "[KERN] pit ready hz=100",
                 "[KERN] keyboard ready",

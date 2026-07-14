@@ -133,6 +133,10 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 
 P2 最终键盘验收在正式 `MiniOrangeOS-Dev` 中完成：PS/2 控制器和第一端口自检、set-1 translation、`F4/FA` 扫描启用、IRQ1、Shift/Caps/extended/break 状态与 64-byte 环形缓冲源码合同 PASS；独立真实 QEMU 通过 HMP `sendkey a` 注入按键，串口观察到 `[KERN] keyboard input=a`。环境自检 PASS，启动专项 20/20 PASS，全量宿主测试 214/214 PASS；干净默认构建再次通过。Kernel ELF 为 19,076 bytes，SHA-256 为 `e441273b3035d73940620ab3de666694818437d4f0e20fe5adef6c3f2d151548`；镜像为 67,108,864 bytes，SHA-256 为 `8b5d2726cc6ee0275bc62af4b5f435b5bf2b1b106e88af174b2add58474596ee`。
 
+## P3 进行中证据
+
+Boot Info/PMM 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：64-byte Boot Info 与 24-byte E820 C 布局使用静态断言；入口把 Loader 的 EBX 指针按 cdecl 交给 C。真实 QEMU 输出非零 PMM total/free/reserved 统计并通过分配、页对齐、释放、最低页复用和计数恢复自检；启动专项 21/21 PASS，全量宿主测试 215/215 PASS。Kernel ELF 为 19,688 bytes，SHA-256 为 `cfede0a1092c0870fdc1ca1e9f84a5b1d5cebfda9f4f1b471168176b1dd1b3b6`；镜像为 67,108,864 bytes，SHA-256 为 `80e9ec59a1f3669bff5cb8f20f966469db267f7fc229600f81d7b9750ea27e84`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
