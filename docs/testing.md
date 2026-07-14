@@ -141,6 +141,8 @@ Boot Info/PMM 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：64-byte
 
 first-fit Heap 增量同日在 `MiniOrangeOS-Dev` 中完成验证：16 MiB 高半堆窗口从一页开始按需扩展，跨 PMM/VMM 的部分失败具有回滚路径；块头边界、magic 与双向链接在遍历时校验。运行时自检覆盖 8 字节对齐、first-fit 原地址复用、前后合并、64 块交错碎片压力、跨页增长、真实 payload 写入、double free 拒绝及超上限耗尽返回。启动专项 23/23 PASS，全量宿主测试 217/217 PASS；真实断点异常与 HMP 键盘回归继续通过。Kernel ELF 为 29,780 bytes，SHA-256 为 `27a4fdc9b80e2d24ed96b5efdc66f0c4aef0db44b4aff457361dedaac71ea862`；镜像为 67,108,864 bytes，SHA-256 为 `0e983f66b0134d1293324635aa414ea8cddb0d5d1a9ee9bdfca32923a1c75508`。
 
+P3 最终用户内存增量同日在 `MiniOrangeOS-Dev` 中完成验证：离线用户页目录自检覆盖高半共享、递归项、用户映射冲突/高半越界、解除映射、销毁与 PMM 计数恢复；usercopy 覆盖有效 PDE/PTE 权限、真实跨页读写、页尾 NUL、未映射页、只读页和越界 `-EFAULT`。独立默认关闭且失败关闭的测试镜像读取未映射 `0x00400000`，真实 CPU #PF 输出 `[PANIC] kernel page fault address=0x00400000 error=0 eip=0x...`。最终 `environment/verify.sh` PASS，启动专项 25/25 PASS，全量宿主测试 219/219 PASS（365.108 秒），真实断点与 HMP 键盘回归继续通过。Kernel ELF 为 35,296 bytes，SHA-256 为 `10777c62c06713692a8dabad98ee91edcbe061bdc7278d4e95d5a0d495ca5161`；镜像为 67,108,864 bytes，SHA-256 为 `49fdcbfc812ee0268e9181bccf1f1f5849e6218ed87bb9d4f6c64603fed081f6`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
