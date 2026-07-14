@@ -118,6 +118,10 @@ STAGE2_SYM := $(BOOT_BUILD_DIR)/stage2.sym
 
 KERNEL_ENTRY_OBJ := $(KERNEL_ARCH_BUILD_DIR)/entry.o
 KERNEL_ENTRY_DEP := $(KERNEL_ARCH_BUILD_DIR)/entry.d
+KERNEL_GDT_LOAD_OBJ := $(KERNEL_ARCH_BUILD_DIR)/gdt_load.o
+KERNEL_GDT_LOAD_DEP := $(KERNEL_ARCH_BUILD_DIR)/gdt_load.d
+KERNEL_GDT_OBJ := $(KERNEL_ARCH_BUILD_DIR)/gdt.o
+KERNEL_GDT_DEP := $(KERNEL_ARCH_BUILD_DIR)/gdt.d
 KERNEL_CORE_OBJ := $(KERNEL_CORE_BUILD_DIR)/kernel.o
 KERNEL_CORE_DEP := $(KERNEL_CORE_BUILD_DIR)/kernel.d
 KERNEL_CONSOLE_OBJ := $(KERNEL_CORE_BUILD_DIR)/console.o
@@ -129,12 +133,14 @@ KERNEL_SERIAL_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/serial.d
 KERNEL_VGA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/vga.o
 KERNEL_VGA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/vga.d
 KERNEL_C_OBJECTS := \
+	$(KERNEL_GDT_OBJ) \
 	$(KERNEL_CORE_OBJ) \
 	$(KERNEL_CONSOLE_OBJ) \
 	$(KERNEL_PANIC_OBJ) \
 	$(KERNEL_SERIAL_OBJ) \
 	$(KERNEL_VGA_OBJ)
 KERNEL_C_DEPS := \
+	$(KERNEL_GDT_DEP) \
 	$(KERNEL_CORE_DEP) \
 	$(KERNEL_CONSOLE_DEP) \
 	$(KERNEL_PANIC_DEP) \
@@ -229,6 +235,12 @@ $(STAGE2_SYM): $(STAGE2_ELF) | prepare-build-dir
 $(KERNEL_ENTRY_OBJ): kernel/arch/x86/entry.asm boot/include/boot_info.inc | prepare-build-dir
 	$(NASM) -I "$(BOOT_INCLUDE_DIR)/" -f elf32 -MD "$(KERNEL_ENTRY_DEP)" -MT "$@" -o "$@" "$<"
 
+$(KERNEL_GDT_LOAD_OBJ): kernel/arch/x86/gdt.asm | prepare-build-dir
+	$(NASM) -f elf32 -MD "$(KERNEL_GDT_LOAD_DEP)" -MT "$@" -o "$@" "$<"
+
+$(KERNEL_GDT_OBJ): kernel/arch/x86/gdt.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_GDT_DEP)" -MT "$@" -c "$<" -o "$@"
+
 $(KERNEL_CORE_OBJ): kernel/core/kernel.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_CORE_DEP)" -MT "$@" -c "$<" -o "$@"
 
@@ -244,8 +256,8 @@ $(KERNEL_SERIAL_OBJ): kernel/drivers/serial.c | prepare-build-dir
 $(KERNEL_VGA_OBJ): kernel/drivers/vga.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_VGA_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_C_OBJECTS)
+$(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T kernel/linker.ld -Map "$(KERNEL_MAP)" -o "$(KERNEL_ELF)" $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_C_OBJECTS)
 
 $(KERNEL_BIN): $(KERNEL_ELF) | prepare-build-dir
 	$(OBJCOPY) -O binary "$<" "$@"
@@ -266,4 +278,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_C_DEPS)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_C_DEPS)

@@ -21,6 +21,8 @@ KERNEL_CONSOLE_SOURCE = ROOT / "kernel/core/console.c"
 KERNEL_PANIC_SOURCE = ROOT / "kernel/core/panic.c"
 KERNEL_SERIAL_SOURCE = ROOT / "kernel/drivers/serial.c"
 KERNEL_VGA_SOURCE = ROOT / "kernel/drivers/vga.c"
+KERNEL_GDT_SOURCE = ROOT / "kernel/arch/x86/gdt.c"
+KERNEL_GDT_ASSEMBLY = ROOT / "kernel/arch/x86/gdt.asm"
 BIOS_FIXTURE_SOURCE = ROOT / "tests/fixtures/boot/stage2_bios_interfaces.asm"
 QEMU = os.environ.get("MINIOS_QEMU", "qemu-system-i386")
 
@@ -387,6 +389,17 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("0x03F8", serial)
         self.assertIn("0xC00B8000", vga)
 
+    def test_kernel_declares_formal_ring0_gdt_contract(self) -> None:
+        self.assertTrue(KERNEL_GDT_SOURCE.is_file(), "缺少正式 GDT C 实现")
+        self.assertTrue(KERNEL_GDT_ASSEMBLY.is_file(), "缺少正式 GDT 加载入口")
+        source = KERNEL_GDT_SOURCE.read_text(encoding="utf-8")
+        assembly = KERNEL_GDT_ASSEMBLY.read_text(encoding="utf-8")
+        self.assertIn("0x9A", source)
+        self.assertIn("0x92", source)
+        self.assertIn("0xCF", source)
+        self.assertIn("lgdt", assembly)
+        self.assertIn("jmp 0x08:", assembly)
+
     def test_entry_builds_independent_real_mode_stack_and_saves_dl(self) -> None:
         self.assertIn("stage2_entry", self.symbols)
         self.assertIn("stage2_boot_drive", self.symbols)
@@ -640,6 +653,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "[KERN] paging enabled",
                 "[KERN] bss cleared",
                 "[KERN] console ready hex=c0ffee dec=42 str=ok",
+                "[KERN] gdt ready",
             ],
         )
         self.assertNotIn("[TEST]", output, "P1 正式镜像不得伪造测试 PASS")

@@ -125,6 +125,8 @@ T03 使用专用固定 fixture 验证自动化框架，不把该结果表述为 
 - 全量宿主测试：207/207 PASS；Kernel ELF 为 10,876 bytes，SHA-256 为 `9e44778414b87db5526abacdde2ecc6f14f27c36047b839acd2959cad6621d34`；镜像为 67,108,864 bytes，SHA-256 为 `c663296fce89f01d3b6d61403815d893be9dc571f5912364647ecef7840a1aff`；
 - panic 的实际触发与 `[PANIC]` 串口可见性将在 CPU 异常负面测试中一并验收，当前只完成编译与源码合同，不将未触发路径记录为运行时 PASS。
 
+同日完成正式 Ring 0 GDT 验证：3 个描述符分别为 null、4 GiB code、4 GiB data，`lgdt` 后重载数据段、`SS` 与 `CS`；正式镜像在既有控制台日志后输出 `[KERN] gdt ready`。启动专项 14/14 PASS，全量宿主测试 208/208 PASS。Kernel ELF 为 11,112 bytes，SHA-256 为 `4587bf4ec6b2edc35e670f1efe7d9f6ba49b955ee5fb62e7a31d388f9519e0e4`；镜像为 67,108,864 bytes，SHA-256 为 `d8fa8fb764c23212e4181907daf80d50f84c56bf378d555285f6e9dd81317b56`。Ring 3 描述符和 TSS 明确保留到 P4，不提前扩大 P2 范围。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：
