@@ -132,6 +132,7 @@ USER_BIN_BUILD_DIR := $(USER_BUILD_DIR)/bin
 USER_CRT_BUILD_DIR := $(USER_BUILD_DIR)/crt
 USER_LIBC_BUILD_DIR := $(USER_BUILD_DIR)/libc
 USER_PROGRAMS_BUILD_DIR := $(USER_BUILD_DIR)/programs
+FS_BUILD_DIR := $(BUILD_ABS)/fs
 
 STAGE1_BIN := $(BOOT_BUILD_DIR)/stage1.bin
 STAGE1_LAYOUT_INC := $(BOOT_BUILD_DIR)/image-layout.inc
@@ -292,6 +293,7 @@ USER_FAULT_ELF := $(USER_BIN_BUILD_DIR)/fault.elf
 USER_FAULT_MAP := $(USER_BIN_BUILD_DIR)/fault.map
 USER_FAULT_SYM := $(USER_BIN_BUILD_DIR)/fault.sym
 
+MINIFS_IMAGE := $(FS_BUILD_DIR)/minifs.img
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
 QEMU_SERIAL_LOG := $(BUILD_ABS)/test-logs/qemu-serial.log
@@ -369,9 +371,10 @@ ALL_ARTIFACTS := \
 	$(USER_MEMTEST_SYM) \
 	$(USER_FAULT_ELF) \
 	$(USER_FAULT_MAP) \
-	$(USER_FAULT_SYM)
+	$(USER_FAULT_SYM) \
+	$(MINIFS_IMAGE)
 
-.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
+.PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu test-image
 
 all: $(ALL_ARTIFACTS) | prepare-build-dir
 
@@ -396,6 +399,10 @@ test-qemu: $(QEMU_TEST_FIXTURE) | prepare-build-dir
 
 test-boot-qemu: | prepare-build-dir
 	@MINIOS_QEMU="$(QEMU)" $(PYTHON) -m unittest tests.host.test_boot_stage2
+
+test-image: $(IMAGE) | prepare-build-dir
+	@$(PYTHON) tools/fsck.py --layout config/image-layout.json --image "$(IMAGE)"
+	@$(PYTHON) -m unittest tests.host.test_minifs_tools
 
 prepare-build-dir:
 	@$(PYTHON) tools/build_dir_guard.py prepare --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)"
@@ -579,6 +586,15 @@ $(USER_FAULT_ELF) $(USER_FAULT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(U
 
 $(USER_FAULT_SYM): $(USER_FAULT_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
+
+$(MINIFS_IMAGE): config/image-layout.json tools/minifs.py tools/mkfs.py $(USER_INIT_ELF) $(USER_ECHO_ELF) $(USER_SH_ELF) $(USER_PS_ELF) $(USER_MEMTEST_ELF) $(USER_FAULT_ELF) | prepare-build-dir
+	$(PYTHON) tools/mkfs.py --layout config/image-layout.json --output "$@" \
+		--import "/bin/init=$(USER_INIT_ELF)" \
+		--import "/bin/echo=$(USER_ECHO_ELF)" \
+		--import "/bin/sh=$(USER_SH_ELF)" \
+		--import "/bin/ps=$(USER_PS_ELF)" \
+		--import "/bin/memtest=$(USER_MEMTEST_ELF)" \
+		--import "/bin/fault=$(USER_FAULT_ELF)"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
 	$(PYTHON) tools/make_image.py --layout config/image-layout.json --build-dir "$(BUILD_DIR)" --output "$(BUILD_DIR)/miniorangeos.img"

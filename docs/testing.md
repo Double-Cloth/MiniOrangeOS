@@ -167,6 +167,12 @@ P4 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environm
 
 P5 最终验收在正式 `MiniOrangeOS-Dev` 中从干净构建执行：`environment/verify.sh` PASS，`make clean` 后 `make -j4 image` PASS，启动专项 28/28 PASS，全量宿主回归 225/225 PASS（463.969 秒）。正式产品从只读注册表加载真实静态 ELF32 init/sh/基础命令；Shell 脚本实际解析并执行 echo、ps、memtest，init 另行核对 fault 的 `-EFAULT` 后继续运行，既有 kernel #PF、`int3` 与 HMP 键盘注入回归继续通过。最终 `kernel.elf` 为 113,984 bytes，SHA-256 为 `19a3a72d575ba65a4d2a65143ddf42f6de3cd5f7fc49191a31037441faf97dd0`；`miniorangeos.img` 为 67,108,864 bytes，SHA-256 为 `aa63d1cacdfa00ecfb3d023113d34e7b345e9ca0409ecb6d4c4bf779d8d1be06`。完整证据见 `docs/task-reports/P5-user-shell.md`。
 
+## P6 进行中证据
+
+ATA/block 首个增量在正式 `MiniOrangeOS-Dev` 中完成验证：主 IDE 主盘通过 `IDENTIFY` 报告 131072 个扇区，LBA28 PIO 具备多扇区读写、BSY/DRQ/ERR/DF、超时、cache flush、容量边界和关中断串行化；4 KiB block 层在真实 QEMU 只读核对 Boot Sector 签名和 Kernel ELF 魔数。环境验证、干净镜像构建、真实产品启动均 PASS；构建契约 8/8、运行时构建回归 21/21 PASS。
+
+MiniFS 宿主工具增量固定 LBA 2048 起始、16128 个 4 KiB 块、1024 个 64-byte inode、64-byte 目录项与 CRC32 Superblock ABI。确定性 mkfs 导入 6 个真实用户 ELF，`make_image.py` 逐字节装配 63 MiB 卷；只读 fsck 同时检查独立卷和整盘，并拒绝坏 magic、坏 CRC、bitmap 不一致、重复块和孤儿 inode。环境验证与干净镜像构建 PASS，MiniFS 工具 6/6、构建契约和真实产品启动组合 10/10、完整运行时构建回归 21/21 PASS（360.246 秒）。`minifs.img` SHA-256 为 `9d9c90bed5bc17c8781082d90ab4b27712bd9796bfe70bcf84c7c27413a5f415`；`kernel.elf` SHA-256 为 `1f7bb6bfe7346fc0b2c783c11862a86f9774499dc70739124677a990ad025965`；`miniorangeos.img` SHA-256 为 `13ec99ac8fac702ccd896c85ede839086e9064397d928326dcf58c2f1b7253af`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

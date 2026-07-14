@@ -58,6 +58,7 @@ EXPECTED_FINAL_ARTIFACTS = (
     "user/bin/fault.elf",
     "user/bin/fault.map",
     "user/bin/fault.sym",
+    "fs/minifs.img",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
@@ -700,7 +701,11 @@ class BuildRuntimeTests(unittest.TestCase):
                     continue
                 self.assertEqual(b"\0" * sector_size, image[offset : offset + sector_size])
                 checked += 1
-            self.assertGreaterEqual(checked, 3, "镜像未占用区域抽样不足")
+            self.assertGreaterEqual(
+                checked,
+                2,
+                "MiniFS 占满镜像尾部后仍应抽样 Stage 2 与 Kernel 预留区",
+            )
 
             independent_outputs = (
                 workspace / "independent-one.img",

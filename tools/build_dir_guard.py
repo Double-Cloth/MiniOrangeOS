@@ -47,6 +47,7 @@ RESERVED_TOP_LEVEL = {
 BUILD_SUBDIRECTORIES = (
     ("boot",),
     ("boot", "stage2"),
+    ("fs",),
     ("kernel",),
     ("kernel", "arch"),
     ("kernel", "arch", "x86"),

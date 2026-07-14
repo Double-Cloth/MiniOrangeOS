@@ -42,6 +42,10 @@ REQUIRED_BUILD_FILES = (
     "kernel/include/minios/block/block.h",
     "kernel/drivers/ata.c",
     "kernel/block/block.c",
+    "include/minios/abi/minifs.h",
+    "tools/minifs.py",
+    "tools/mkfs.py",
+    "tools/fsck.py",
 )
 
 GENERATED_SUFFIXES = {
@@ -58,6 +62,7 @@ EXPECTED_COMPONENTS = {
     "stage1": ("boot/stage1.bin", 0, 1),
     "stage2": ("boot/stage2.bin", 1, 127),
     "kernel": ("kernel/kernel.elf", 128, 1920),
+    "minifs": ("fs/minifs.img", 2048, 129024),
 }
 
 
@@ -159,6 +164,13 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("KERNEL_ATA_OBJ", makefile)
         self.assertIn("KERNEL_BLOCK_OBJ", makefile)
         self.assertIn('(\"kernel\", \"block\")', guard)
+
+    def test_build_declares_minifs_image_and_fsck(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("MINIFS_IMAGE", makefile)
+        self.assertIn("tools/mkfs.py", makefile)
+        self.assertIn("tools/fsck.py", makefile)
+        self.assertIn("test-image", makefile)
 
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()

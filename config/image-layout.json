@@ -20,6 +20,12 @@
       "artifact": "kernel/kernel.elf",
       "lba": 128,
       "max_sectors": 1920
+    },
+    {
+      "name": "minifs",
+      "artifact": "fs/minifs.img",
+      "lba": 2048,
+      "max_sectors": 129024
     }
   ]
 }
