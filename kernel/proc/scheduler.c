@@ -560,10 +560,9 @@ rollback:
     return -1;
 }
 
-static int32_t user_elf_process_create(const char *name,
-                                       const uint8_t *image,
-                                       size_t image_size,
-                                       const char *const argv[])
+int32_t scheduler_spawn_image(const char *name, const uint8_t *image,
+                              size_t image_size,
+                              const char *const argv[])
 {
     struct vmm_address_space address_space = {0U};
     struct process *process;
@@ -1074,7 +1073,7 @@ bool user_elf_self_test(void)
         !elf_loader_validation_self_test(image, image_size)) {
         return false;
     }
-    pid = user_elf_process_create("init", image, image_size, arguments);
+    pid = scheduler_spawn_image("init", image, image_size, arguments);
     process = pid < 1 ? NULL : find_process_by_pid((uint32_t)pid);
     if (process == NULL) {
         return false;

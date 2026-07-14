@@ -43,6 +43,9 @@ EXPECTED_FINAL_ARTIFACTS = (
     "user/bin/init.elf",
     "user/bin/init.map",
     "user/bin/init.sym",
+    "user/bin/echo.elf",
+    "user/bin/echo.map",
+    "user/bin/echo.sym",
     IMAGE_NAME,
 )
 EXPECTED_DEPFILES = (
@@ -54,7 +57,9 @@ EXPECTED_DEPFILES = (
     "kernel/proc/embedded_programs.d",
     "user/crt/start.d",
     "user/libc/syscall.d",
+    "user/libc/string.d",
     "user/programs/init.d",
+    "user/programs/echo.d",
 )
 KERNEL_C_FLAGS = {
     "-std=c11",

@@ -75,6 +75,14 @@ int32_t minios_write(int32_t descriptor, const void *buffer, size_t count) {
     );
 }
 
+int32_t minios_spawn(const char *path, char *const argv[]) {
+    return syscall2(
+        SYS_spawn,
+        (uint32_t)(uintptr_t)path,
+        (uint32_t)(uintptr_t)argv
+    );
+}
+
 int32_t minios_waitpid(int32_t pid, int32_t *status) {
     return syscall2(SYS_waitpid, (uint32_t)pid, (uint32_t)(uintptr_t)status);
 }

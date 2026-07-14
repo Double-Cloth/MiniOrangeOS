@@ -5,6 +5,19 @@
 
 extern const uint8_t embedded_init_start[];
 extern const uint8_t embedded_init_end[];
+extern const uint8_t embedded_echo_start[];
+extern const uint8_t embedded_echo_end[];
+
+struct program_entry {
+    const char *path;
+    const uint8_t *start;
+    const uint8_t *end;
+};
+
+static const struct program_entry programs[] = {
+    {"/bin/init", embedded_init_start, embedded_init_end},
+    {"/bin/echo", embedded_echo_start, embedded_echo_end}
+};
 
 static bool path_equal(const char *left, const char *right)
 {
@@ -22,11 +35,18 @@ static bool path_equal(const char *left, const char *right)
 bool program_registry_lookup(const char *path, const uint8_t **image,
                              size_t *image_size)
 {
-    if (path == NULL || image == NULL || image_size == NULL ||
-        !path_equal(path, "/bin/init")) {
+    size_t index;
+
+    if (path == NULL || image == NULL || image_size == NULL) {
         return false;
     }
-    *image = embedded_init_start;
-    *image_size = (size_t)(embedded_init_end - embedded_init_start);
-    return *image_size != 0U;
+    for (index = 0U; index < sizeof(programs) / sizeof(programs[0]); ++index) {
+        if (path_equal(path, programs[index].path)) {
+            *image = programs[index].start;
+            *image_size =
+                (size_t)(programs[index].end - programs[index].start);
+            return *image_size != 0U;
+        }
+    }
+    return false;
 }

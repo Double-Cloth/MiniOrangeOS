@@ -143,7 +143,7 @@ P5 在 P6 MiniFS/VFS 尚未可用时，先由构建系统把 `/bin/init`、`/bin
 
 当前 P5 首个增量已经建立静态用户 ELF 构建链，并把 `/bin/init` 的完整 `ET_EXEC` 文件通过只读 `INCBIN` 注册表链入内核。加载器限制为 ELF32 little-endian i386，先完整校验 ELF/program header、文件范围、地址溢出、段重叠、入口所属可执行段和用户/内核边界，再分配并清零用户页、复制跨页内容、合并页级 R/W 权限。初始栈在单页映射内按 `argc, argv[], NULL, strings` 构造，下方一页保持未映射作为保护页。真实 QEMU 自检使用 `argc=2` 启动该 ELF，用户程序同时验证 argv、BSS 清零与 RW 数据页，退出后核对页目录、物理页和内核栈全部回收；另有内核内畸形样本覆盖非 `ET_EXEC`、`filesz > memsz` 与越过 `KERNEL_BASE` 的拒绝路径。
 
-这一增量尚未把创建入口暴露为 `spawn` syscall；后续 P5 工作将在保持加载器接口不变的前提下扩展注册表、用户程序集合和 Shell。
+创建入口现已暴露为 `spawn` syscall。注册表包含 `/bin/init` 与 `/bin/echo`，真实 Ring 3 的 init 会 spawn echo、阻塞 waitpid，并核对子进程退出状态；这也验证了从用户父进程上下文创建并激活子页目录。后续 P5 工作将在保持加载器接口不变的前提下继续扩展用户程序集合和 Shell。
 
 ## 用户程序最低集合
 

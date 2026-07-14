@@ -4,6 +4,7 @@
 enum syscall_number {
     SYS_exit = 0,
     SYS_write = 1,
+    SYS_spawn = 10,
     SYS_waitpid = 11,
     SYS_getpid = 12,
     SYS_yield = 13,

@@ -250,11 +250,18 @@ USER_START_OBJ := $(USER_CRT_BUILD_DIR)/start.o
 USER_START_DEP := $(USER_CRT_BUILD_DIR)/start.d
 USER_SYSCALL_OBJ := $(USER_LIBC_BUILD_DIR)/syscall.o
 USER_SYSCALL_DEP := $(USER_LIBC_BUILD_DIR)/syscall.d
+USER_STRING_OBJ := $(USER_LIBC_BUILD_DIR)/string.o
+USER_STRING_DEP := $(USER_LIBC_BUILD_DIR)/string.d
 USER_INIT_OBJ := $(USER_PROGRAMS_BUILD_DIR)/init.o
 USER_INIT_DEP := $(USER_PROGRAMS_BUILD_DIR)/init.d
 USER_INIT_ELF := $(USER_BIN_BUILD_DIR)/init.elf
 USER_INIT_MAP := $(USER_BIN_BUILD_DIR)/init.map
 USER_INIT_SYM := $(USER_BIN_BUILD_DIR)/init.sym
+USER_ECHO_OBJ := $(USER_PROGRAMS_BUILD_DIR)/echo.o
+USER_ECHO_DEP := $(USER_PROGRAMS_BUILD_DIR)/echo.d
+USER_ECHO_ELF := $(USER_BIN_BUILD_DIR)/echo.elf
+USER_ECHO_MAP := $(USER_BIN_BUILD_DIR)/echo.map
+USER_ECHO_SYM := $(USER_BIN_BUILD_DIR)/echo.sym
 
 IMAGE := $(BUILD_ABS)/miniorangeos.img
 QEMU_TEST_FIXTURE := $(BUILD_ABS)/test-fixtures/protocol-pass.img
@@ -318,7 +325,10 @@ ALL_ARTIFACTS := \
 	$(KERNEL_SYM) \
 	$(USER_INIT_ELF) \
 	$(USER_INIT_MAP) \
-	$(USER_INIT_SYM)
+	$(USER_INIT_SYM) \
+	$(USER_ECHO_ELF) \
+	$(USER_ECHO_MAP) \
+	$(USER_ECHO_SYM)
 
 .PHONY: all image user clean distclean prepare-build-dir run-serial run-curses debug gdb test-qemu test-boot-qemu
 
@@ -326,7 +336,7 @@ all: $(ALL_ARTIFACTS) | prepare-build-dir
 
 image: $(IMAGE) | prepare-build-dir
 
-user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) | prepare-build-dir
+user: $(USER_INIT_ELF) $(USER_INIT_MAP) $(USER_INIT_SYM) $(USER_ECHO_ELF) $(USER_ECHO_MAP) $(USER_ECHO_SYM) | prepare-build-dir
 
 run-serial: $(IMAGE) | prepare-build-dir
 	@$(PYTHON) tools/qemu_run.py --mode serial --qemu "$(QEMU)" --image "$(IMAGE)" --gdb-endpoint "$(GDB_ENDPOINT)" --repo "$(ROOT_DIR)" --build-dir "$(BUILD_DIR)"
@@ -448,7 +458,7 @@ $(KERNEL_ELF_LOADER_OBJ): kernel/proc/elf.c | prepare-build-dir
 $(KERNEL_PROGRAM_REGISTRY_OBJ): kernel/proc/program_registry.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_PROGRAM_REGISTRY_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) | prepare-build-dir
+$(KERNEL_EMBEDDED_PROGRAMS_OBJ): kernel/proc/embedded_programs.asm $(USER_INIT_ELF) $(USER_ECHO_ELF) | prepare-build-dir
 	$(NASM) -I "$(USER_BIN_BUILD_DIR)/" -f elf32 -MD "$(KERNEL_EMBEDDED_PROGRAMS_DEP)" -MT "$@" -o "$@" "$<"
 
 $(KERNEL_ELF) $(KERNEL_MAP) &: $(KERNEL_ENTRY_OBJ) $(KERNEL_GDT_LOAD_OBJ) $(KERNEL_EXCEPTION_OBJ) $(KERNEL_IRQ_OBJ) $(KERNEL_CONTEXT_OBJ) $(KERNEL_USER_MODE_OBJ) $(KERNEL_EMBEDDED_PROGRAMS_OBJ) $(KERNEL_C_OBJECTS) kernel/linker.ld | prepare-build-dir
@@ -466,13 +476,25 @@ $(USER_START_OBJ): user/crt/start.asm | prepare-build-dir
 $(USER_SYSCALL_OBJ): user/libc/syscall.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_SYSCALL_DEP)" -MT "$@" -c "$<" -o "$@"
 
+$(USER_STRING_OBJ): user/libc/string.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_STRING_DEP)" -MT "$@" -c "$<" -o "$@"
+
 $(USER_INIT_OBJ): user/programs/init.c | prepare-build-dir
 	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_INIT_DEP)" -MT "$@" -c "$<" -o "$@"
 
-$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
-	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_INIT_OBJ)
+$(USER_INIT_ELF) $(USER_INIT_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_INIT_MAP)" -o "$(USER_INIT_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_INIT_OBJ)
 
 $(USER_INIT_SYM): $(USER_INIT_ELF) | prepare-build-dir
+	$(NM) -n "$<" > "$@"
+
+$(USER_ECHO_OBJ): user/programs/echo.c | prepare-build-dir
+	$(CC) $(USER_CFLAGS) -MMD -MP -MF "$(USER_ECHO_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(USER_ECHO_ELF) $(USER_ECHO_MAP) &: $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ) user/linker.ld | prepare-build-dir
+	$(LD) -m elf_i386 -nostdlib -T user/linker.ld -Map "$(USER_ECHO_MAP)" -o "$(USER_ECHO_ELF)" $(USER_START_OBJ) $(USER_SYSCALL_OBJ) $(USER_STRING_OBJ) $(USER_ECHO_OBJ)
+
+$(USER_ECHO_SYM): $(USER_ECHO_ELF) | prepare-build-dir
 	$(NM) -n "$<" > "$@"
 
 $(IMAGE): config/image-layout.json tools/make_image.py $(ALL_ARTIFACTS) | prepare-build-dir
@@ -488,4 +510,4 @@ clean:
 distclean:
 	@$(PYTHON) tools/build_dir_guard.py clean --repo "$(ROOT_DIR)" --build "$(BUILD_DIR)" --target distclean
 
--include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_INIT_DEP)
+-include $(STAGE2_DEP) $(KERNEL_ENTRY_DEP) $(KERNEL_GDT_LOAD_DEP) $(KERNEL_EXCEPTION_DEP) $(KERNEL_IRQ_DEP) $(KERNEL_CONTEXT_DEP) $(KERNEL_USER_MODE_DEP) $(KERNEL_EMBEDDED_PROGRAMS_DEP) $(KERNEL_C_DEPS) $(USER_START_DEP) $(USER_SYSCALL_DEP) $(USER_STRING_DEP) $(USER_INIT_DEP) $(USER_ECHO_DEP)

@@ -3,6 +3,7 @@
 
 #define MINIOS_ENOENT 2
 #define MINIOS_EIO 5
+#define MINIOS_E2BIG 7
 #define MINIOS_ENOEXEC 8
 #define MINIOS_EBADF 9
 #define MINIOS_ECHILD 10

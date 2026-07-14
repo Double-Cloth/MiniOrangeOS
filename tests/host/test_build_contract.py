@@ -25,7 +25,9 @@ REQUIRED_BUILD_FILES = (
     "include/minios/abi/errno.h",
     "user/crt/start.asm",
     "user/libc/syscall.c",
+    "user/libc/string.c",
     "user/programs/init.c",
+    "user/programs/echo.c",
     "user/linker.ld",
     "kernel/include/minios/proc/elf.h",
     "kernel/include/minios/proc/program_registry.h",
@@ -96,6 +98,7 @@ class BuildContractTests(unittest.TestCase):
         )
         user_syscall = (ROOT / "user/libc/syscall.c").read_text(encoding="utf-8")
         self.assertIn("USER_INIT_ELF", makefile)
+        self.assertIn("USER_ECHO_ELF", makefile)
         self.assertIn("user/linker.ld", makefile)
         self.assertIn("-ffreestanding", makefile)
         self.assertIn("-nostdlib", makefile)
@@ -115,6 +118,7 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("KERNEL_EMBEDDED_PROGRAMS_OBJ", makefile)
         self.assertIn("INCBIN", embedded)
         self.assertIn("/bin/init", registry)
+        self.assertIn("/bin/echo", registry)
         for contract in (
             "ELF_TYPE_EXECUTABLE",
             "ELF_MACHINE_I386",

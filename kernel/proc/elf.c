@@ -82,8 +82,10 @@ static bool program_range_valid(const struct elf_program_header *program,
     if (program->type != ELF_PROGRAM_LOAD) {
         return true;
     }
-    if (program->memory_size == 0U ||
-        program->file_size > program->memory_size ||
+    if (program->memory_size == 0U) {
+        return program->file_size == 0U;
+    }
+    if (program->file_size > program->memory_size ||
         !range_within(image_size, (size_t)program->file_offset,
                       (size_t)program->file_size) ||
         program->virtual_address < PAGE_SIZE ||
@@ -161,6 +163,9 @@ static bool validate_image(const uint8_t *image, size_t image_size,
             return false;
         }
         if (program->type != ELF_PROGRAM_LOAD) {
+            continue;
+        }
+        if (program->memory_size == 0U) {
             continue;
         }
         has_load = true;
@@ -320,7 +325,8 @@ int32_t elf_load_image(struct vmm_address_space *space,
             program_header_at(image, header, index);
         int32_t result;
 
-        if (program->type != ELF_PROGRAM_LOAD) {
+        if (program->type != ELF_PROGRAM_LOAD ||
+            program->memory_size == 0U) {
             continue;
         }
         result = load_program(space, image, program);
