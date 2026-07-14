@@ -143,6 +143,12 @@ class BuildContractTests(unittest.TestCase):
         ):
             self.assertIn(contract, loader)
 
+    def test_build_guard_waits_for_nonzero_drvfs_inode(self) -> None:
+        guard = (ROOT / "tools/build_dir_guard.py").read_text(encoding="utf-8")
+        self.assertIn("BUILD_IDENTITY_STABILIZE_SECONDS", guard)
+        self.assertIn("status.st_ino != 0", guard)
+        self.assertIn("_stable_created_status", guard)
+
     def test_image_layout_has_one_unambiguous_source_of_truth(self) -> None:
         layout = self._read_layout()
         self.assertEqual(

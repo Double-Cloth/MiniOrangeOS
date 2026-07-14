@@ -17,6 +17,7 @@ from typing import NoReturn
 
 MARKER = ".miniorangeos-build-root"
 MARKER_SCHEMA = 1
+BUILD_IDENTITY_STABILIZE_SECONDS = 1.0
 MARKER_FIELDS = {
     "schema",
     "repo_path",
@@ -82,6 +83,26 @@ def _fail(message: str) -> NoReturn:
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
     return value.st_dev, value.st_ino
+
+
+def _stable_created_status(
+    parent_descriptor: int, name: str
+) -> tuple[int, os.stat_result]:
+    """等待 DrvFS 为新目录发布稳定且非零的文件身份。"""
+
+    deadline = time.monotonic() + BUILD_IDENTITY_STABILIZE_SECONDS
+    previous: tuple[int, int] | None = None
+    while True:
+        probe = _open_named_directory(parent_descriptor, name)
+        status = os.fstat(probe)
+        identity = _identity(status)
+        if status.st_ino != 0 and identity == previous:
+            return probe, status
+        os.close(probe)
+        previous = identity if status.st_ino != 0 else None
+        if time.monotonic() >= deadline:
+            _fail("DrvFS 未及时发布稳定的 BUILD_DIR inode")
+        time.sleep(0.01)
 
 
 def _fd_path(descriptor: int) -> str:
@@ -319,9 +340,30 @@ def _prepare(location: Location) -> None:
 
         if _fd_path(build_descriptor) != location.build_path:
             _fail("BUILD_DIR 包含符号链接或发生替换")
-        build_status = os.fstat(build_descriptor)
+        if created:
+            # DrvFS 可能在创建句柄关闭前始终报告 inode=0；先释放该句柄，
+            # 再以父目录 dirfd 重新绑定名称并要求两次稳定的非零身份。
+            os.close(build_descriptor)
+            build_descriptor = None
+            build_descriptor, build_status = _stable_created_status(
+                parent_descriptor, name
+            )
+            if _fd_path(build_descriptor) != location.build_path:
+                _fail("新建 BUILD_DIR 在身份稳定时发生替换")
+        else:
+            build_status = os.fstat(build_descriptor)
         if created:
             _write_marker(build_descriptor, location, repo_status, build_status)
+            named_descriptor = _open_named_directory(parent_descriptor, name)
+            try:
+                named_status = os.fstat(named_descriptor)
+                if _identity(named_status) != _identity(build_status):
+                    _fail("BUILD_DIR 在写入归属标记时被替换")
+                _validate_marker(
+                    named_descriptor, location, repo_status, named_status
+                )
+            finally:
+                os.close(named_descriptor)
         else:
             _validate_marker(build_descriptor, location, repo_status, build_status)
 
