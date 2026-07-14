@@ -13,7 +13,7 @@
 - `ae44349`：`feat(p5): add user diagnostics and fault isolation`
 - `d9eeba7`：`fix(build): stabilize new DrvFS build identity`
 
-合并提交：待阶段分支合并后补记。
+合并提交：`f4363cb`：`merge: complete P5 user shell`。
 
 ## 修改文件
 
