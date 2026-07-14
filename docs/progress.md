@@ -24,7 +24,7 @@
 | P4 进程与系统调用 | 完成 | `29a2c7d` 合并；Ring 3/TSS、PCB/16 KiB 内核栈、三线程 PIT 抢占、用户页目录、用户 #PF 隔离、sleep/waitpid、PID 复用、IRQ-safe Heap 与 7 个 `int 0x80` 调用；环境/干净构建 PASS、启动专项 28/28、全量宿主 222/222 |
 | P5 ELF 用户态与 Shell | 完成 | `f4363cb` 合并；静态 ELF32 loader、共享 ABI、crt0/最小 libc、init/Shell、echo/ps/memtest/fault；环境/干净构建 PASS、启动专项 28/28、全量宿主 225/225 |
 | P6 磁盘与 MiniFS | 完成 | `7de8d07` 合并；ATA/block、确定性 mkfs/fsck/装配、可写 MiniFS 文件/目录、VFS/fd 与完整最低文件调用；12 个用户 ELF 从磁盘加载；双启动覆盖 direct/indirect 文件、65 项目录和用户命令持久化，逐轮 fsck PASS；组合专项 49/49、全量宿主 239/239 |
-| P7 CI、文档和答辩版本 | 完成（待合并） | 聚合 test/check/test-host、LOC、只读源码固定容器 CI、失败证据、双启动演示与 release checklist 已验收；正式 WSL 环境/构建/fsck PASS、全量 243/243（898.861 秒）、持久化演示 PASS；原生 Ubuntu 24.04 CI [29329613100](https://github.com/Double-Cloth/MiniOrangeOS/actions/runs/29329613100) 对 `69be0c2` 完成环境验证及 246/246 PASS（170.948 秒，23 项平台限定测试按设计跳过）；阶段报告已补齐，合并提交待本地 no-ff 合并后记录 |
+| P7 CI、文档和答辩版本 | 完成 | `12cb2c5` 合并；聚合 test/check/test-host、LOC、只读源码固定容器 CI、失败证据、双启动演示与 release checklist 已验收；正式 WSL 环境/构建/fsck PASS、全量 243/243（898.861 秒）、持久化演示 PASS；最终分支 HEAD `72add84` 的原生 Ubuntu 24.04 CI [29331275773](https://github.com/Double-Cloth/MiniOrangeOS/actions/runs/29331275773) 完成环境验证及 246/246 PASS（163.166 秒，23 项平台限定测试按设计跳过） |
 
 ## 记录规则
 

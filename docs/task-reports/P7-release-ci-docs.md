@@ -16,8 +16,9 @@
 - `60c6697`：`fix(p7): run image toolchain as target user`
 - `cf2f06a`：`fix(p7): manifest implicit archive directories`
 - `69be0c2`：`fix(p7): trust nonroot container pid facts`
+- `72add84`：`docs(p7): complete release evidence`
 
-合并提交：本报告提交后执行本地 no-ff 合并，并由 `main` 上的最终文档校准提交记录。
+合并提交：`12cb2c5`：`merge: complete P7 release CI and docs`。
 
 ## 修改文件
 
@@ -66,18 +67,18 @@ python3 -m unittest tests.host.test_environment_contract tests.host.test_release
 
 原生 Linux 证据：
 
-- GitHub Actions 运行：[29329613100](https://github.com/Double-Cloth/MiniOrangeOS/actions/runs/29329613100)；
-- runner：`ubuntu-24.04`；提交：`69be0c2b811a75939a9f573d246f6b5623ac5641`；
-- 固定开发镜像构建：PASS，用时 20 分 50 秒；
+- GitHub Actions 运行：[29331275773](https://github.com/Double-Cloth/MiniOrangeOS/actions/runs/29331275773)；
+- runner：`ubuntu-24.04`；最终分支 HEAD：`72add849f7ff5621e6404b62c232a826f7b5758c`；
+- 固定开发镜像构建：PASS，用时 20 分 10 秒；
 - 容器环境验证：`environment_kind=container`、`result=PASS`；
-- 聚合宿主/QEMU 回归：246/246 PASS，用时 170.948 秒，23 项平台限定测试按设计跳过；
-- 完整 job：PASS，用时 23 分 51 秒；失败 artifact 数量为 0。
+- 聚合宿主/QEMU 回归：246/246 PASS，用时 163.166 秒，23 项平台限定测试按设计跳过；
+- 完整 job：PASS，用时 23 分 3 秒；失败 artifact 数量为 0。
 
 首次远端运行依次暴露并修复 expression 求值阶段、BuildKit marker、遗漏 helper、构建用户身份、上游隐式目录和非 root PID 1 所有权差异。每次有 job 的失败运行均成功上传独立证据；完整根因和安全边界见 `docs/problems.md`。
 
 ## 代码量与来源边界
 
-最终 `make loc` 在本报告加入后重新生成：175 个文本文件、40,144 行、36,072 个非空行。统计区分 Boot/Loader、内核、共享 ABI、用户程序/libc、工具与环境脚本、测试、文档、构建配置、自动生成和第三方文件；自动生成与第三方类别均为 0，不计入自主核心代码。
+最终 `make loc` 在本报告与合并记录加入后重新生成：175 个文本文件、40,145 行、36,073 个非空行。统计区分 Boot/Loader、内核、共享 ABI、用户程序/libc、工具与环境脚本、测试、文档、构建配置、自动生成和第三方文件；自动生成与第三方类别均为 0，不计入自主核心代码。
 
 核心 OS、工具、测试与 CI 编排由项目自主实现；第三方边界仅包括固定来源的 Ubuntu、GNU Binutils/GCC、QEMU/GDB/NASM/Python 工具以及两个固定提交的 GitHub 官方 action。详细登记见 `docs/provenance.md`。
 
@@ -92,4 +93,4 @@ python3 -m unittest tests.host.test_environment_contract tests.host.test_release
 ## 文档同步
 
 - 已更新 `PROJECT_PLAN.md`、架构、测试、来源、问题、进度、release checklist 与审查心得。
-- P7 分支已具备本地 WSL、原生 Linux CI、真实 QEMU、失败证据和最终演示闭环；本报告提交后执行本地 no-ff 合并并补记合并提交。
+- P7 分支已具备本地 WSL、原生 Linux CI、真实 QEMU、失败证据和最终演示闭环，并通过 `12cb2c5` 本地 no-ff 合并进入 `main`。
