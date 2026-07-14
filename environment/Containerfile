@@ -15,11 +15,23 @@ COPY environment/lib/common.sh /tmp/miniorangeos-source/environment/lib/common.s
 COPY environment/bootstrap-inside.sh /tmp/miniorangeos-source/environment/bootstrap-inside.sh
 COPY tools/build_toolchain.sh /tmp/miniorangeos-source/tools/build_toolchain.sh
 
-RUN useradd --create-home --shell /bin/bash -- minios \
+# BuildKit 的 RUN sandbox 是真实 overlay 容器，但不总是注入 OCI marker。
+# 仅在 marker 全缺失时创建构建期 marker，并在最终镜像层精确移除。
+RUN if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then \
+        install -m 0644 /dev/null /.dockerenv; \
+        install -m 0600 /dev/null /root/miniorangeos-build-marker-created; \
+    fi \
+    && useradd --create-home --shell /bin/bash -- minios \
     && install -d -m 0755 -o minios -g minios /opt/miniorangeos-dev \
     && /tmp/miniorangeos-source/environment/bootstrap-inside.sh --system-only --target-user minios
 
 USER minios
 RUN /tmp/miniorangeos-source/environment/bootstrap-inside.sh --toolchain-only --target-user minios
 
+USER root
+RUN if [ -f /root/miniorangeos-build-marker-created ]; then \
+        rm -f -- /.dockerenv /root/miniorangeos-build-marker-created; \
+    fi
+
+USER minios
 WORKDIR /workspace

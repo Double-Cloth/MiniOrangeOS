@@ -1017,6 +1017,10 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("MINIOS_ENV_ROOT=/opt/miniorangeos-dev", content)
         self.assertIn("bootstrap-inside.sh --system-only", content)
         self.assertIn("bootstrap-inside.sh --toolchain-only", content)
+        self.assertIn("[ ! -e /.dockerenv ]", content)
+        self.assertIn("[ ! -e /run/.containerenv ]", content)
+        self.assertIn("/root/miniorangeos-build-marker-created", content)
+        self.assertIn("rm -f -- /.dockerenv", content)
         self.assertNotRegex(content, r"(?m)^COPY\s+environment/?\s")
         for build_input in (
             "environment/versions.env",
@@ -1029,9 +1033,14 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
                     content,
                     rf"(?m)^COPY\s+{re.escape(build_input)}\s+",
                 )
-        self.assertRegex(content, r"(?m)^USER minios\s*$")
+        users = re.findall(r"(?m)^USER\s+(\S+)\s*$", content)
+        self.assertEqual(users, ["minios", "root", "minios"])
         self.assertRegex(content, r"(?m)^WORKDIR /workspace\s*$")
-        self.assertNotRegex(content, r"(?m)^USER root\s*$[\s\S]*\Z")
+        self.assertRegex(
+            content,
+            r"(?ms)^USER root\s*$.*?rm -f -- /\.dockerenv.*?"
+            r"^USER minios\s*$\s*^WORKDIR /workspace\s*$",
+        )
 
     def test_ubuntu_adapters_share_strict_backend_library(self) -> None:
         library = self._read_required("environment/ubuntu/lib.sh")
