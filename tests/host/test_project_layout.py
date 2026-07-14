@@ -167,22 +167,18 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertTrue((ROOT / "PROJECT_PLAN.md").is_file())
         self.assertFalse((ROOT / "MiniOrangeOS_Codex_Project_Plan_v1.1.md").exists())
 
-    def test_project_plan_records_t01_windows_boundary(self) -> None:
+    def test_project_plan_records_current_worktree_and_phase_contract(self) -> None:
         path = ROOT / "PROJECT_PLAN.md"
         self.assertTrue(path.is_file(), "缺少文件：PROJECT_PLAN.md")
         content = path.read_text(encoding="utf-8")
 
-        t01_start = content.index("### T01：")
-        t02_start = content.index("### T02：", t01_start)
-        t01_content = content[t01_start:t02_start]
-        self.assertNotIn("Windows 只允许使用专用 WSL2", t01_content)
-        self.assertIn("Windows Git 负责版本控制和文件编辑", t01_content)
-        self.assertIn("不安装 Windows 原生编译、调试或虚拟化工具链", t01_content)
-        self.assertNotIn("专用 WSL 或真实 Ubuntu 隔离模型", t01_content)
-        self.assertIn("Linux 构建和测试仅在 WSL 隔离模型中执行", t01_content)
-        self.assertIn("独立 Ubuntu 24.04 WSL2 测试发行版", t01_content)
-        self.assertIn("rootless Podman", t01_content)
-        self.assertIn("不冒充原生 Linux 内核", t01_content)
+        self.assertIn("D:\\DC\\program-projects\\OTHER\\MiniOrangeOS", content)
+        self.assertIn("MiniOrangeOS-Dev", content)
+        self.assertIn("Git 只在 Windows 侧操作", content)
+        self.assertIn("WSL 只负责 Linux 构建、QEMU、GDB 和测试", content)
+        self.assertIn("禁止在 Windows 安装项目专用 GCC", content)
+        for phase in range(1, 8):
+            self.assertIn(f"### P{phase}：", content)
 
     def test_development_workflow_records_commit_contract(self) -> None:
         path = ROOT / "docs/development-workflow.md"

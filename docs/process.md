@@ -1,6 +1,6 @@
 # 进程、调度与用户态设计
 
-> 覆盖任务：T40-T53，并依赖 `memory.md` 和 `syscall.md`。
+> 覆盖阶段：P4 进程与系统调用、P5 用户态，并依赖 `memory.md` 和 `syscall.md`。
 
 ## 进程模型
 
@@ -145,4 +145,3 @@ GDT 必须包含 Ring 3 code/data 描述符。TSS 必须提供 Ring 3 -> Ring 0 
 | `/bin/fault` | 触发非法访问，验证异常隔离 |
 
 Shell 最低内建：`help`、`clear`、`cd`、`pwd`。
-

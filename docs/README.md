@@ -1,43 +1,49 @@
-# MiniOrangeOS 项目文档索引
+# MiniOrangeOS 文档索引
 
-> 文档状态：持续维护。M0 工程基础代码已落地，后续任务继续按真实实现和测试证据更新。
+根目录 `PROJECT_PLAN.md` 是当前实施入口，定义阶段路线和完成标准。本目录保存专题设计、测试规则、来源记录、问题记录、进度和历史任务报告。
 
-## 文档目标
+## 快速阅读
 
-权威计划入口是仓库根目录的 `PROJECT_PLAN.md`。本目录把其路线图拆成可执行的工程说明。后续 Codex 或开发者执行任务时，应先阅读对应专题文档，再进入具体任务，不得脱离这些约束生成孤立代码。
+日常实现只需要先读：
 
-## 阅读顺序
+1. `PROJECT_PLAN.md`：确认当前阶段、范围和验收。
+2. `development-workflow.md`：确认分支、测试、报告和提交方式。
+3. 当前阶段对应的专题文档。
 
-1. `PROJECT_PLAN.md`：从仓库根目录确认任务顺序、范围和完成定义。
-2. `environment.md`：确认开发环境、隔离边界和清理方式。
-3. `development-workflow.md`：确认分支、提交、任务报告和文档同步规则。
-4. `coding-standards.md`：确认 C、NASM、Python、Shell、命名和错误模型约定。
-5. `architecture.md`：理解总体分层、目录职责和跨模块接口。
-6. `boot.md`：实现 Stage 1、Stage 2、ELF 内核加载前阅读。
-7. `memory.md`：实现 E820、PMM、分页、堆和用户拷贝前阅读。
-8. `process.md`：实现 PCB、调度、Ring 3、生命周期和 ELF 用户进程前阅读。
-9. `syscall.md`：实现 `int 0x80`、用户指针校验和系统调用表前阅读。
-10. `filesystem.md`：实现 ATA、块设备、MiniFS、VFS 和用户文件命令前阅读。
-11. `testing.md`：实现任何模块前确认测试层级和串口协议。
-12. `provenance.md`：记录来源、自主实现证明和代码审查说明。
-13. `problems.md`：记录风险、降级策略、调试线索和已知问题。
-14. `progress.md`：只记录有提交和真实测试证据的任务与里程碑状态。
-15. `review-notes.md`：记录里程碑阅读、理解、问题修正和待学习内容。
-16. `decisions/`：记录已接受的重要工程决策、背景和代价。
-17. `task-reports/`：记录每个 TXX 的真实变更、命令、测试证据和未解决问题。
+阶段对应文档：
 
-## 文档维护规则
+| 阶段 | 需要读 |
+|---|---|
+| P1 启动链 | `boot.md`、`architecture.md`、`testing.md` |
+| P2 内核基础 | `architecture.md`、`memory.md`、`testing.md` |
+| P3 内存管理 | `memory.md`、`syscall.md`、`testing.md` |
+| P4 进程与系统调用 | `process.md`、`syscall.md`、`testing.md` |
+| P5 用户态 | `process.md`、`syscall.md`、`filesystem.md` |
+| P6 文件系统 | `filesystem.md`、`syscall.md`、`testing.md` |
+| P7 收尾 | `testing.md`、`provenance.md`、`problems.md`、`progress.md` |
 
-- 设计常量、布局、结构字段和命名一旦进入文档，代码必须遵守。
-- 如果实现证明文档约束不合理，必须先修改文档并说明原因，再修改代码。
-- 不得在文档中宣称尚未实现、尚未测试或尚未复验的能力已经完成。
-- 每个任务完成时至少检查一个对应专题文档，确认是否需要更新。
-- 答辩前必须把所有“前置设计”表述更新为“实现状态”，并补充真实文件路径、关键函数和测试日志。
+## 文档职责
 
-## 计划书闭环关系
+| 文档 | 职责 |
+|---|---|
+| `architecture.md` | 总体分层、目录职责、初始化顺序、错误模型 |
+| `boot.md` | Stage 1、Stage 2、A20、E820、保护模式、内核加载 |
+| `memory.md` | PMM、VMM、高半映射、堆、用户地址空间、usercopy |
+| `process.md` | PCB、调度、Ring 3、TSS、ELF 用户程序、Shell |
+| `syscall.md` | `int 0x80` ABI、系统调用表、用户指针安全、fd 语义 |
+| `filesystem.md` | ATA、块设备、MiniFS、VFS、mkfs、fsck |
+| `testing.md` | 测试层级、串口协议、负面测试、CI 要求 |
+| `environment.md` | WSL、工具链隔离、真实 Ubuntu 复验和清理方式 |
+| `provenance.md` | 来源登记和自主实现证明 |
+| `problems.md` | 风险、问题、降级和环境清理记录 |
+| `progress.md` | 只记录有提交和真实测试证据的进度 |
+| `task-reports/` | 历史 T00-T11 任务报告和后续阶段报告 |
+| `decisions/` | 已接受的重要工程决策 |
 
-计划书定义范围、阶段和任务；本目录定义实现细节和日常约束。后续执行时：
+## 维护规则
 
-- 计划书回答“做什么、按什么顺序做、完成定义是什么”。
-- 专题文档回答“具体怎么设计、边界在哪里、如何验证”。
-- 任务报告回答“本次实际改了什么、跑了什么测试、还剩什么风险”。
+- 代码必须遵守已确认的专题文档。
+- 实现证明文档不合理时，先更新文档并说明原因。
+- 不得把未实现、未测试或未复验的能力写成已完成。
+- 阶段结束时只更新相关文档，不做全目录机械同步。
+- 答辩前清理“前置设计”“待实现”等与真实状态冲突的表述。

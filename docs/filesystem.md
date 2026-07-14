@@ -1,6 +1,6 @@
 # 磁盘、块设备与 MiniFS 设计
 
-> 覆盖任务：T60-T68，并影响用户程序和系统调用。
+> 覆盖阶段：P6 磁盘与 MiniFS，并影响用户程序和系统调用。
 
 ## 磁盘分层
 
@@ -228,4 +228,3 @@ ops
 | `tools/image.py` | 按统一布局装配 Boot、Loader、Kernel、MiniFS |
 
 所有磁盘结构必须显式 little-endian 编解码，禁止依赖 Python 对象内存布局。
-
