@@ -96,6 +96,23 @@ void kernel_main(const struct boot_info *boot_info)
         panic("MiniFS self-test failed");
     }
     console_printf("[KERN] minifs self-test PASS\n");
+#if MINIOS_TEST_MINIFS_WRITE == 1
+    {
+        enum minifs_persistence_result persistence =
+            minifs_persistence_self_test();
+
+        if (persistence == MINIFS_PERSISTENCE_CREATED) {
+            console_printf("[KERN] minifs persistence created PASS\n");
+        } else if (persistence ==
+                   MINIFS_PERSISTENCE_VERIFIED_AND_TRUNCATED) {
+            console_printf(
+                "[KERN] minifs persistence verified and truncated PASS\n"
+            );
+        } else {
+            panic("MiniFS persistence self-test failed");
+        }
+    }
+#endif
     pic_init();
     console_printf("[KERN] pic ready\n");
     pit_init(100U);

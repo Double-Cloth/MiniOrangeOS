@@ -650,7 +650,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         ):
             self.assertIn(contract, block)
 
-    def test_kernel_declares_read_only_minifs_contract(self) -> None:
+    def test_kernel_declares_minifs_io_contract(self) -> None:
         self.assertTrue(KERNEL_MINIFS_HEADER.is_file(), "缺少内核 MiniFS 接口")
         self.assertTrue(KERNEL_MINIFS_SOURCE.is_file(), "缺少内核 MiniFS 实现")
         self.assertTrue(MINIFS_LAYOUT_TOOL.is_file(), "缺少 MiniFS 布局头生成器")
@@ -665,6 +665,12 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             "minifs_mount",
             "minifs_lookup",
             "minifs_read",
+            "minifs_create",
+            "minifs_write",
+            "minifs_truncate",
+            "allocate_block",
+            "allocate_inode",
+            "rollback",
             "irq_save_disable",
             "program_registry_lookup",
         ):
@@ -1053,6 +1059,91 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 self.assertNotIn("[KERN] minifs mounted", output)
                 self.assertNotIn("[KERN] pic ready", output)
 
+    def test_real_minifs_write_persists_across_reboot(self) -> None:
+        test_build = Path(self.temporary_directory.name) / "minifs-write-build"
+        test_build_relative = test_build.relative_to(ROOT)
+        build = subprocess.run(
+            [
+                "bash",
+                "environment/with-env.sh",
+                "make",
+                f"BUILD_DIR={test_build_relative.as_posix()}",
+                "KERNEL_TEST_MINIFS_WRITE=1",
+                "-j4",
+                "image",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+
+        image = test_build / "miniorangeos.img"
+        expected_markers = (
+            "[KERN] minifs persistence created PASS",
+            "[KERN] minifs persistence verified and truncated PASS",
+        )
+        for boot, expected in enumerate(expected_markers, start=1):
+            log = test_build / f"test-logs/minifs-write-{boot}.log"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/qemu_test.py",
+                    "--qemu",
+                    QEMU,
+                    "--image",
+                    str(image),
+                    "--log",
+                    str(log),
+                    "--timeout",
+                    "2",
+                    "--max-log-bytes",
+                    "262144",
+                    "--repo",
+                    str(ROOT),
+                    "--build-dir",
+                    test_build_relative.as_posix(),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=12,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("QEMU 超时", result.stderr)
+            output = log.read_text(encoding="utf-8", errors="replace")
+            self.assertIn(expected, output)
+            self.assertNotIn("[PANIC]", output)
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/fsck.py",
+                    "--layout",
+                    "config/image-layout.json",
+                    "--image",
+                    str(image),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(
+                checked.returncode,
+                0,
+                checked.stdout + checked.stderr,
+            )
+
     def test_real_qemu_keyboard_irq_delivers_ascii(self) -> None:
         log = self.build_directory / "test-logs/keyboard-input.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -1242,7 +1333,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             Path(self.temporary_directory.name).relative_to(ROOT) / "invalid"
         )
         marker = Path(self.temporary_directory.name) / "must-not-exist"
-        for variable in ("KERNEL_TEST_BREAKPOINT", "KERNEL_TEST_PAGE_FAULT"):
+        for variable in (
+            "KERNEL_TEST_BREAKPOINT",
+            "KERNEL_TEST_PAGE_FAULT",
+            "KERNEL_TEST_MINIFS_WRITE",
+        ):
             for value in ("2", f"$(shell touch {marker.as_posix()})"):
                 with self.subTest(variable=variable, value=value):
                     result = subprocess.run(

@@ -23,7 +23,7 @@
 | P3 内存管理 | 完成 | `54d7cf3` 合并；E820 PMM、正式 VMM、first-fit heap、用户页目录、usercopy/page fault；环境 PASS、启动专项 25/25、全量宿主 219/219、真实 kernel #PF/断点/按键回归 PASS |
 | P4 进程与系统调用 | 完成 | `29a2c7d` 合并；Ring 3/TSS、PCB/16 KiB 内核栈、三线程 PIT 抢占、用户页目录、用户 #PF 隔离、sleep/waitpid、PID 复用、IRQ-safe Heap 与 7 个 `int 0x80` 调用；环境/干净构建 PASS、启动专项 28/28、全量宿主 222/222 |
 | P5 ELF 用户态与 Shell | 完成 | `f4363cb` 合并；静态 ELF32 loader、共享 ABI、crt0/最小 libc、init/Shell、echo/ps/memtest/fault；环境/干净构建 PASS、启动专项 28/28、全量宿主 225/225 |
-| P6 磁盘与 MiniFS | 进行中 | 已完成 ATA/block、磁盘 ABI、mkfs/fsck/装配、内核只读挂载、inode/direct/indirect 读取与绝对路径解析；真实 QEMU 逐字节核对 6 个磁盘 ELF，坏 magic/CRC 失败关闭；启动专项 31/31、MiniFS 工具 6/6、构建契约 10/10、运行时构建回归 21/21；可变 MiniFS、VFS、fd、文件命令与持久化待完成 |
+| P6 磁盘与 MiniFS | 进行中 | 已完成 ATA/block、磁盘 ABI、mkfs/fsck/装配、内核挂载/读取、bitmap 分配、普通文件创建、跨 direct/indirect 写入与缩小截断；临时镜像双启动验证写入持久化且每次 fsck PASS；启动专项 32/32、MiniFS 工具 6/6、构建契约 10/10、运行时构建回归 21/21；目录扩容/增删、VFS、fd、文件系统调用与用户命令待完成 |
 | P7 CI、文档和答辩版本 | 未开始 | `make test` 收敛、Linux CI、文档校准、演示脚本、release checklist |
 
 ## 记录规则

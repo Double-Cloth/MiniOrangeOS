@@ -175,6 +175,8 @@ MiniFS 宿主工具增量固定 LBA 2048 起始、16128 个 4 KiB 块、1024 个
 
 内核只读 MiniFS 增量从统一 JSON 生成卷起点/容量 C 头，挂载时校验设备范围、完整 CRC32、连续几何、元数据与 root bitmap；inode 和目录读取验证分配状态、direct/indirect 形状、数据块范围及类型一致性。绝对路径覆盖重复 `/`、`.`、`..`、尾随 `/`、不存在组件和中间普通文件；真实 QEMU 将磁盘 `/bin` 的 6 个 ELF 与 P5 嵌入副本逐字节比对。产品启动 PASS，坏 magic 与坏 CRC 临时镜像均在 PIC/用户态前失败关闭；相关构建/MiniFS 组合回归 18/18 PASS。干净镜像构建与完整启动专项 31/31 PASS；`kernel.elf` SHA-256 为 `78068413234f37e8c8bc0c36137af1cc791fa8147c68399b2d225349c75a9030`，`miniorangeos.img` SHA-256 为 `d7eee480f1ec3efa6d9e33b6ab8cd2c5f9286b3c5d552e73f0698bd6dbf17f3f`。
 
+MiniFS 首个可写增量实现 inode/block bitmap 分配与回收、普通文件目录项追加、无稀疏写入、direct 到一级 indirect 扩展及缩小截断。专用 `KERNEL_TEST_MINIFS_WRITE=1` 构建只操作临时镜像：第一次真实 QEMU 启动创建 `/p6-persist` 并写入 45179 bytes，第二次启动逐字节验证后截断为 4113 bytes；两次启动后的宿主只读 fsck 均 PASS，默认产品镜像不执行写入自测。`environment/verify.sh` PASS；启动专项 32/32、构建契约与 MiniFS 工具组合 16/16、完整运行时构建回归 21/21 PASS（369.119 秒）；独立干净构建及 `make test-image` PASS。`kernel.elf` 为 129508 bytes，SHA-256 为 `ed35963f2243622ac182d1fa66dd5587a26a7ceef107eaaa569474116c37b62c`；`miniorangeos.img` 为 67108864 bytes，SHA-256 为 `23748e21cd125cc7e4f5859c66f43bafdded82e216e07e0a9514a9a6495a47f8`。
+
 ## 串口测试协议
 
 自动化测试只解析串口输出。格式固定：

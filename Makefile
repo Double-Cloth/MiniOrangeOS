@@ -12,6 +12,7 @@ QEMU_LOG_MAX_BYTES ?= 1048576
 GDB_ENDPOINT ?= tcp:127.0.0.1:1234
 KERNEL_TEST_BREAKPOINT ?= 0
 KERNEL_TEST_PAGE_FAULT ?= 0
+KERNEL_TEST_MINIFS_WRITE ?= 0
 
 # GNU Make 会递归展开命令行变量，Shell 还会解释命令替换和控制字符。
 # 必须只检查未展开原值，并在展开任何目标路径或执行任何配方前拒绝。
@@ -106,6 +107,14 @@ endif
 ifneq ($(value KERNEL_TEST_PAGE_FAULT),0)
 ifneq ($(value KERNEL_TEST_PAGE_FAULT),1)
 $(error KERNEL_TEST_PAGE_FAULT 只允许 0 或 1)
+endif
+endif
+ifneq ($(call unsafe_make_value,KERNEL_TEST_MINIFS_WRITE),)
+$(error KERNEL_TEST_MINIFS_WRITE 含危险字符)
+endif
+ifneq ($(value KERNEL_TEST_MINIFS_WRITE),0)
+ifneq ($(value KERNEL_TEST_MINIFS_WRITE),1)
+$(error KERNEL_TEST_MINIFS_WRITE 只允许 0 或 1)
 endif
 endif
 
@@ -310,6 +319,7 @@ KERNEL_CFLAGS := \
 	-I "$(KERNEL_BUILD_DIR)" \
 	-DMINIOS_TEST_BREAKPOINT=$(KERNEL_TEST_BREAKPOINT) \
 	-DMINIOS_TEST_PAGE_FAULT=$(KERNEL_TEST_PAGE_FAULT) \
+	-DMINIOS_TEST_MINIFS_WRITE=$(KERNEL_TEST_MINIFS_WRITE) \
 	-std=c11 \
 	-ffreestanding \
 	-fno-builtin \

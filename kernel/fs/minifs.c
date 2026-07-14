@@ -39,10 +39,13 @@ struct minifs_inode {
     uint32_t size;
     uint32_t direct[MINIFS_DIRECT_COUNT];
     uint32_t indirect;
+    uint32_t created_tick;
+    uint32_t modified_tick;
 };
 
 static struct minifs_superblock mounted_superblock;
 static uint8_t io_block[MINIFS_BLOCK_SIZE];
+static uint8_t auxiliary_block[MINIFS_BLOCK_SIZE];
 static uint8_t compare_buffer[MINIFS_COMPARE_BUFFER_SIZE];
 static bool mounted;
 static bool operation_busy;
@@ -56,6 +59,39 @@ static uint32_t read_le32(const uint8_t *source)
 {
     return (uint32_t)source[0] | ((uint32_t)source[1] << 8U) |
         ((uint32_t)source[2] << 16U) | ((uint32_t)source[3] << 24U);
+}
+
+static void write_le16(uint8_t *destination, uint16_t value)
+{
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8U);
+}
+
+static void write_le32(uint8_t *destination, uint32_t value)
+{
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8U);
+    destination[2] = (uint8_t)(value >> 16U);
+    destination[3] = (uint8_t)(value >> 24U);
+}
+
+static void clear_bytes(uint8_t *destination, size_t length)
+{
+    size_t index;
+
+    for (index = 0U; index < length; ++index) {
+        destination[index] = 0U;
+    }
+}
+
+static void copy_bytes(uint8_t *destination, const uint8_t *source,
+                       size_t length)
+{
+    size_t index;
+
+    for (index = 0U; index < length; ++index) {
+        destination[index] = source[index];
+    }
 }
 
 static uint32_t divide_round_up(uint32_t value, uint32_t divisor)
@@ -123,14 +159,30 @@ static void clear_superblock(void)
     mounted_superblock.root_inode = 0U;
 }
 
-static int32_t read_volume_block(uint32_t relative_block)
+static int32_t read_volume_block_into(uint32_t relative_block, void *buffer)
 {
     if (relative_block >= mounted_superblock.total_blocks ||
-        relative_block >= MINIFS_VOLUME_BLOCK_COUNT) {
+        relative_block >= MINIFS_VOLUME_BLOCK_COUNT || buffer == NULL) {
         return -MINIOS_EIO;
     }
     return block_read(MINIFS_VOLUME_START_BLOCK + relative_block,
-                      1U, io_block);
+                      1U, buffer);
+}
+
+static int32_t read_volume_block(uint32_t relative_block)
+{
+    return read_volume_block_into(relative_block, io_block);
+}
+
+static int32_t write_volume_block_from(uint32_t relative_block,
+                                       const void *buffer)
+{
+    if (relative_block >= mounted_superblock.total_blocks ||
+        relative_block >= MINIFS_VOLUME_BLOCK_COUNT || buffer == NULL) {
+        return -MINIOS_EIO;
+    }
+    return block_write(MINIFS_VOLUME_START_BLOCK + relative_block,
+                       1U, buffer);
 }
 
 static bool superblock_reserved_zero(const uint8_t *block)
@@ -242,6 +294,64 @@ static bool bitmap_bit_set(uint32_t start_block, uint32_t block_count_value,
             (uint8_t)(1U << (within_block % 8U))) != 0U;
 }
 
+static int32_t bitmap_update(uint32_t start_block,
+                             uint32_t block_count_value, uint32_t bit,
+                             bool value)
+{
+    uint32_t bitmap_block = bit / MINIFS_BITMAP_BITS_PER_BLOCK;
+    uint32_t within_block = bit % MINIFS_BITMAP_BITS_PER_BLOCK;
+    uint8_t mask = (uint8_t)(1U << (within_block % 8U));
+
+    if (bitmap_block >= block_count_value ||
+        read_volume_block(start_block + bitmap_block) != 0) {
+        return -MINIOS_EIO;
+    }
+    if (value) {
+        io_block[within_block / 8U] |= mask;
+    } else {
+        io_block[within_block / 8U] &= (uint8_t)~mask;
+    }
+    return write_volume_block_from(start_block + bitmap_block, io_block);
+}
+
+static int32_t allocate_bitmap_bit(uint32_t start_block,
+                                   uint32_t block_count_value,
+                                   uint32_t first, uint32_t limit,
+                                   uint32_t *result)
+{
+    uint32_t bit;
+    uint32_t loaded_block = UINT32_MAX;
+
+    if (result == NULL || first >= limit) {
+        return -MINIOS_EINVAL;
+    }
+    for (bit = first; bit < limit; ++bit) {
+        uint32_t bitmap_block = bit / MINIFS_BITMAP_BITS_PER_BLOCK;
+        uint32_t within_block = bit % MINIFS_BITMAP_BITS_PER_BLOCK;
+        uint8_t mask = (uint8_t)(1U << (within_block % 8U));
+
+        if (bitmap_block >= block_count_value) {
+            return -MINIOS_EIO;
+        }
+        if (bitmap_block != loaded_block) {
+            if (read_volume_block(start_block + bitmap_block) != 0) {
+                return -MINIOS_EIO;
+            }
+            loaded_block = bitmap_block;
+        }
+        if ((io_block[within_block / 8U] & mask) == 0U) {
+            io_block[within_block / 8U] |= mask;
+            if (write_volume_block_from(start_block + bitmap_block,
+                                        io_block) != 0) {
+                return -MINIOS_EIO;
+            }
+            *result = bit;
+            return 0;
+        }
+    }
+    return -MINIOS_ENOSPC;
+}
+
 static bool decode_inode(const uint8_t *source, struct minifs_inode *result)
 {
     uint32_t index;
@@ -260,6 +370,10 @@ static bool decode_inode(const uint8_t *source, struct minifs_inode *result)
         );
     }
     result->indirect = read_le32(&source[MINIFS_INODE_INDIRECT_OFFSET]);
+    result->created_tick =
+        read_le32(&source[MINIFS_INODE_CREATED_TICK_OFFSET]);
+    result->modified_tick =
+        read_le32(&source[MINIFS_INODE_MODIFIED_TICK_OFFSET]);
     reserved = read_le32(&source[MINIFS_INODE_RESERVED_OFFSET]);
     if ((result->mode != MINIFS_MODE_REGULAR &&
          result->mode != MINIFS_MODE_DIRECTORY) ||
@@ -271,6 +385,42 @@ static bool decode_inode(const uint8_t *source, struct minifs_inode *result)
         return false;
     }
     return true;
+}
+
+static void encode_inode(const struct minifs_inode *inode, uint8_t *result)
+{
+    uint32_t index;
+
+    clear_bytes(result, MINIFS_INODE_SIZE);
+    write_le16(&result[MINIFS_INODE_MODE_OFFSET], inode->mode);
+    write_le16(&result[MINIFS_INODE_LINK_COUNT_OFFSET], inode->link_count);
+    write_le32(&result[MINIFS_INODE_SIZE_OFFSET], inode->size);
+    for (index = 0U; index < MINIFS_DIRECT_COUNT; ++index) {
+        write_le32(
+            &result[MINIFS_INODE_DIRECT_OFFSET + index * sizeof(uint32_t)],
+            inode->direct[index]
+        );
+    }
+    write_le32(&result[MINIFS_INODE_INDIRECT_OFFSET], inode->indirect);
+    write_le32(&result[MINIFS_INODE_CREATED_TICK_OFFSET],
+               inode->created_tick);
+    write_le32(&result[MINIFS_INODE_MODIFIED_TICK_OFFSET],
+               inode->modified_tick);
+}
+
+static void clear_inode(struct minifs_inode *inode)
+{
+    uint32_t index;
+
+    inode->mode = MINIFS_MODE_REGULAR;
+    inode->link_count = 1U;
+    inode->size = 0U;
+    for (index = 0U; index < MINIFS_DIRECT_COUNT; ++index) {
+        inode->direct[index] = 0U;
+    }
+    inode->indirect = 0U;
+    inode->created_tick = 0U;
+    inode->modified_tick = 0U;
 }
 
 static bool inode_pointer_shape_valid(const struct minifs_inode *inode)
@@ -320,6 +470,53 @@ static int32_t read_inode_internal(uint32_t number,
         inode_pointer_shape_valid(result) ? 0 : -MINIOS_EIO;
 }
 
+static int32_t write_inode_internal(uint32_t number,
+                                    const struct minifs_inode *inode)
+{
+    uint32_t table_block;
+    uint32_t inode_index;
+    size_t offset;
+
+    if (inode == NULL || number >= mounted_superblock.total_inodes ||
+        !inode_pointer_shape_valid(inode)) {
+        return -MINIOS_EINVAL;
+    }
+    table_block = number / MINIFS_INODES_PER_BLOCK;
+    inode_index = number % MINIFS_INODES_PER_BLOCK;
+    if (table_block >= mounted_superblock.inode_table_blocks ||
+        read_volume_block(mounted_superblock.inode_table_start + table_block) !=
+            0) {
+        return -MINIOS_EIO;
+    }
+    offset = (size_t)inode_index * MINIFS_INODE_SIZE;
+    encode_inode(inode, &io_block[offset]);
+    return write_volume_block_from(
+        mounted_superblock.inode_table_start + table_block, io_block
+    );
+}
+
+static int32_t allocate_inode(uint32_t *result)
+{
+    return allocate_bitmap_bit(
+        mounted_superblock.inode_bitmap_start,
+        mounted_superblock.inode_bitmap_blocks,
+        1U,
+        mounted_superblock.total_inodes,
+        result
+    );
+}
+
+static int32_t free_inode(uint32_t inode_number)
+{
+    if (inode_number == mounted_superblock.root_inode ||
+        inode_number >= mounted_superblock.total_inodes) {
+        return -MINIOS_EINVAL;
+    }
+    return bitmap_update(mounted_superblock.inode_bitmap_start,
+                         mounted_superblock.inode_bitmap_blocks,
+                         inode_number, false);
+}
+
 static bool data_block_valid(uint32_t block)
 {
     return block >= mounted_superblock.data_start &&
@@ -331,6 +528,41 @@ static bool data_block_allocated(uint32_t block)
     return data_block_valid(block) &&
         bitmap_bit_set(mounted_superblock.block_bitmap_start,
                        mounted_superblock.block_bitmap_blocks, block);
+}
+
+static int32_t allocate_block(uint32_t *result)
+{
+    uint32_t block;
+    int32_t status = allocate_bitmap_bit(
+        mounted_superblock.block_bitmap_start,
+        mounted_superblock.block_bitmap_blocks,
+        mounted_superblock.data_start,
+        mounted_superblock.total_blocks,
+        &block
+    );
+
+    if (status < 0) {
+        return status;
+    }
+    clear_bytes(auxiliary_block, sizeof(auxiliary_block));
+    if (write_volume_block_from(block, auxiliary_block) != 0) {
+        (void)bitmap_update(mounted_superblock.block_bitmap_start,
+                            mounted_superblock.block_bitmap_blocks,
+                            block, false);
+        return -MINIOS_EIO;
+    }
+    *result = block;
+    return 0;
+}
+
+static int32_t free_block(uint32_t block)
+{
+    if (!data_block_valid(block)) {
+        return -MINIOS_EINVAL;
+    }
+    return bitmap_update(mounted_superblock.block_bitmap_start,
+                         mounted_superblock.block_bitmap_blocks,
+                         block, false);
 }
 
 static int32_t inode_block_at(const struct minifs_inode *inode,
@@ -550,6 +782,182 @@ static int32_t lookup_locked(const char *path, struct minifs_stat *status)
     return 0;
 }
 
+static int32_t resolve_parent_locked(const char *path,
+                                     uint32_t *parent_number,
+                                     struct minifs_inode *parent,
+                                     const char **name, size_t *name_length)
+{
+    uint32_t current = mounted_superblock.root_inode;
+    size_t path_length;
+    size_t index = 1U;
+    int32_t result = bounded_path_length(path, &path_length);
+
+    if (result < 0 || parent_number == NULL || parent == NULL ||
+        name == NULL || name_length == NULL || path_length <= 1U ||
+        path[path_length - 1U] == '/') {
+        return result < 0 ? result : -MINIOS_EINVAL;
+    }
+    while (index < path_length) {
+        size_t component_start;
+        size_t component_length;
+        size_t next;
+        struct minifs_inode directory;
+
+        while (index < path_length && path[index] == '/') {
+            ++index;
+        }
+        if (index == path_length) {
+            return -MINIOS_EINVAL;
+        }
+        component_start = index;
+        while (index < path_length && path[index] != '/') {
+            if ((uint8_t)path[index] > 0x7FU) {
+                return -MINIOS_EINVAL;
+            }
+            ++index;
+        }
+        component_length = index - component_start;
+        if (component_length == 0U || component_length > MINIFS_NAME_MAX) {
+            return -MINIOS_EINVAL;
+        }
+        next = index;
+        while (next < path_length && path[next] == '/') {
+            ++next;
+        }
+        result = read_inode_internal(current, &directory);
+        if (result < 0) {
+            return result;
+        }
+        if (directory.mode != MINIFS_MODE_DIRECTORY) {
+            return -MINIOS_ENOTDIR;
+        }
+        if (next == path_length) {
+            if ((component_length == 1U && path[component_start] == '.') ||
+                (component_length == 2U && path[component_start] == '.' &&
+                 path[component_start + 1U] == '.')) {
+                return -MINIOS_EINVAL;
+            }
+            *parent_number = current;
+            *parent = directory;
+            *name = &path[component_start];
+            *name_length = component_length;
+            return 0;
+        }
+        if (!(component_length == 1U && path[component_start] == '.')) {
+            result = directory_find(&directory, &path[component_start],
+                                    component_length, &current);
+            if (result < 0) {
+                return result;
+            }
+        }
+        index = next;
+    }
+    return -MINIOS_EINVAL;
+}
+
+static int32_t directory_append_locked(uint32_t directory_number,
+                                       struct minifs_inode *directory,
+                                       uint32_t child_number,
+                                       const char *name, size_t name_length)
+{
+    uint32_t entry_offset;
+    uint32_t file_block;
+    uint32_t disk_block;
+    size_t block_offset;
+    size_t index;
+
+    if (directory == NULL || name == NULL || name_length == 0U ||
+        name_length > MINIFS_NAME_MAX ||
+        directory->size > MINIFS_MAX_FILE_SIZE -
+            MINIFS_DIRECTORY_ENTRY_SIZE) {
+        return -MINIOS_EINVAL;
+    }
+    entry_offset = directory->size;
+    file_block = entry_offset / MINIFS_BLOCK_SIZE;
+    block_offset = (size_t)(entry_offset % MINIFS_BLOCK_SIZE);
+    if (block_offset + MINIFS_DIRECTORY_ENTRY_SIZE > MINIFS_BLOCK_SIZE ||
+        file_block >= divide_round_up(directory->size, MINIFS_BLOCK_SIZE) ||
+        inode_block_at(directory, file_block, &disk_block) != 0 ||
+        read_volume_block(disk_block) != 0) {
+        return -MINIOS_ENOSPC;
+    }
+    for (index = 0U; index < MINIFS_DIRECTORY_ENTRY_SIZE; ++index) {
+        if (io_block[block_offset + index] != 0U) {
+            return -MINIOS_EIO;
+        }
+    }
+    write_le32(&io_block[block_offset + MINIFS_DIRECTORY_INODE_OFFSET],
+               child_number);
+    io_block[block_offset + MINIFS_DIRECTORY_TYPE_OFFSET] =
+        MINIFS_ENTRY_REGULAR;
+    for (index = 0U; index < name_length; ++index) {
+        io_block[block_offset + MINIFS_DIRECTORY_NAME_OFFSET + index] =
+            (uint8_t)name[index];
+    }
+    if (write_volume_block_from(disk_block, io_block) != 0) {
+        return -MINIOS_EIO;
+    }
+    copy_bytes(auxiliary_block, io_block, sizeof(auxiliary_block));
+    directory->size += MINIFS_DIRECTORY_ENTRY_SIZE;
+    if (write_inode_internal(directory_number, directory) != 0) {
+        directory->size -= MINIFS_DIRECTORY_ENTRY_SIZE;
+        clear_bytes(&auxiliary_block[block_offset],
+                    MINIFS_DIRECTORY_ENTRY_SIZE);
+        (void)write_volume_block_from(disk_block, auxiliary_block);
+        return -MINIOS_EIO;
+    }
+    return 0;
+}
+
+static void rollback_created_inode(uint32_t inode_number)
+{
+    (void)free_inode(inode_number);
+}
+
+static int32_t create_locked(const char *path, struct minifs_stat *status)
+{
+    struct minifs_inode parent;
+    struct minifs_inode inode;
+    const char *name;
+    size_t name_length;
+    uint32_t parent_number;
+    uint32_t inode_number;
+    uint32_t existing;
+    int32_t result = resolve_parent_locked(path, &parent_number, &parent,
+                                           &name, &name_length);
+
+    if (result < 0 || status == NULL) {
+        return result < 0 ? result : -MINIOS_EINVAL;
+    }
+    result = directory_find(&parent, name, name_length, &existing);
+    if (result == 0) {
+        return -MINIOS_EEXIST;
+    }
+    if (result != -MINIOS_ENOENT) {
+        return result;
+    }
+    result = allocate_inode(&inode_number);
+    if (result < 0) {
+        return result;
+    }
+    clear_inode(&inode);
+    if (write_inode_internal(inode_number, &inode) != 0) {
+        rollback_created_inode(inode_number);
+        return -MINIOS_EIO;
+    }
+    result = directory_append_locked(parent_number, &parent, inode_number,
+                                     name, name_length);
+    if (result < 0) {
+        rollback_created_inode(inode_number);
+        return result;
+    }
+    status->inode = inode_number;
+    status->mode = inode.mode;
+    status->link_count = inode.link_count;
+    status->size = inode.size;
+    return 0;
+}
+
 int32_t minifs_mount(void)
 {
     struct minifs_superblock candidate;
@@ -681,6 +1089,292 @@ finish:
     return result;
 }
 
+int32_t minifs_create(const char *path, struct minifs_stat *status)
+{
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted) {
+        return -MINIOS_EIO;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = create_locked(path, status);
+    minifs_release(irq_flags);
+    return result;
+}
+
+static int32_t write_chunk_locked(uint32_t inode_number,
+                                  struct minifs_inode *inode,
+                                  uint32_t offset, const uint8_t *source,
+                                  size_t length)
+{
+    uint32_t old_size = inode->size;
+    uint32_t old_indirect = inode->indirect;
+    uint32_t file_block = offset / MINIFS_BLOCK_SIZE;
+    size_t block_offset = (size_t)(offset % MINIFS_BLOCK_SIZE);
+    uint32_t allocated_blocks = divide_round_up(inode->size,
+                                                MINIFS_BLOCK_SIZE);
+    uint32_t end = offset + (uint32_t)length;
+    uint32_t disk_block;
+    uint32_t new_indirect = 0U;
+    bool pointer_written = false;
+
+    if (file_block < allocated_blocks) {
+        if (inode_block_at(inode, file_block, &disk_block) != 0 ||
+            read_volume_block(disk_block) != 0) {
+            return -MINIOS_EIO;
+        }
+        copy_bytes(&io_block[block_offset], source, length);
+        if (write_volume_block_from(disk_block, io_block) != 0) {
+            return -MINIOS_EIO;
+        }
+        if (end > inode->size) {
+            inode->size = end;
+            if (write_inode_internal(inode_number, inode) != 0) {
+                inode->size = old_size;
+                return -MINIOS_EIO;
+            }
+        }
+        return 0;
+    }
+    if (file_block != allocated_blocks) {
+        return -MINIOS_EINVAL;
+    }
+    if (file_block >= MINIFS_DIRECT_COUNT && inode->indirect == 0U) {
+        int32_t status = allocate_block(&new_indirect);
+
+        if (status < 0) {
+            return status;
+        }
+        inode->indirect = new_indirect;
+    }
+    {
+        int32_t status = allocate_block(&disk_block);
+
+        if (status < 0) {
+            if (new_indirect != 0U) {
+                inode->indirect = old_indirect;
+                (void)free_block(new_indirect);
+            }
+            return status;
+        }
+    }
+    clear_bytes(io_block, sizeof(io_block));
+    copy_bytes(&io_block[block_offset], source, length);
+    if (write_volume_block_from(disk_block, io_block) != 0) {
+        (void)free_block(disk_block);
+        if (new_indirect != 0U) {
+            inode->indirect = old_indirect;
+            (void)free_block(new_indirect);
+        }
+        return -MINIOS_EIO;
+    }
+    if (file_block < MINIFS_DIRECT_COUNT) {
+        inode->direct[file_block] = disk_block;
+    } else {
+        uint32_t indirect_index = file_block - MINIFS_DIRECT_COUNT;
+
+        if (indirect_index >= MINIFS_INDIRECT_COUNT ||
+            read_volume_block_into(inode->indirect, auxiliary_block) != 0) {
+            (void)free_block(disk_block);
+            if (new_indirect != 0U) {
+                inode->indirect = old_indirect;
+                (void)free_block(new_indirect);
+            }
+            return -MINIOS_EIO;
+        }
+        write_le32(&auxiliary_block[indirect_index * sizeof(uint32_t)],
+                   disk_block);
+        if (write_volume_block_from(inode->indirect, auxiliary_block) != 0) {
+            (void)free_block(disk_block);
+            if (new_indirect != 0U) {
+                inode->indirect = old_indirect;
+                (void)free_block(new_indirect);
+            }
+            return -MINIOS_EIO;
+        }
+        pointer_written = true;
+    }
+    inode->size = end;
+    if (write_inode_internal(inode_number, inode) != 0) {
+        inode->size = old_size;
+        if (file_block < MINIFS_DIRECT_COUNT) {
+            inode->direct[file_block] = 0U;
+        } else if (pointer_written && new_indirect == 0U) {
+            uint32_t indirect_index = file_block - MINIFS_DIRECT_COUNT;
+
+            write_le32(
+                &auxiliary_block[indirect_index * sizeof(uint32_t)], 0U
+            );
+            (void)write_volume_block_from(inode->indirect, auxiliary_block);
+        }
+        (void)free_block(disk_block);
+        if (new_indirect != 0U) {
+            inode->indirect = old_indirect;
+            (void)free_block(new_indirect);
+        }
+        return -MINIOS_EIO;
+    }
+    return 0;
+}
+
+int32_t minifs_write(uint32_t inode_number, uint32_t offset,
+                     const void *buffer, size_t length)
+{
+    struct minifs_inode inode;
+    const uint8_t *source = (const uint8_t *)buffer;
+    uint32_t irq_flags;
+    size_t completed = 0U;
+    int32_t result;
+
+    if (!mounted || (buffer == NULL && length != 0U) ||
+        length > (size_t)INT32_MAX || offset > MINIFS_MAX_FILE_SIZE ||
+        length > (size_t)(MINIFS_MAX_FILE_SIZE - offset)) {
+        return -MINIOS_EINVAL;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = read_inode_internal(inode_number, &inode);
+    if (result < 0) {
+        goto finish;
+    }
+    if (inode.mode == MINIFS_MODE_DIRECTORY) {
+        result = -MINIOS_EISDIR;
+        goto finish;
+    }
+    if (offset > inode.size) {
+        result = -MINIOS_EINVAL;
+        goto finish;
+    }
+    while (completed < length) {
+        uint32_t position = offset + (uint32_t)completed;
+        size_t block_offset = (size_t)(position % MINIFS_BLOCK_SIZE);
+        size_t chunk = MINIFS_BLOCK_SIZE - block_offset;
+
+        if (chunk > length - completed) {
+            chunk = length - completed;
+        }
+        result = write_chunk_locked(inode_number, &inode, position,
+                                    &source[completed], chunk);
+        if (result < 0) {
+            if (completed > 0U) {
+                result = (int32_t)completed;
+            }
+            goto finish;
+        }
+        completed += chunk;
+    }
+    result = (int32_t)completed;
+
+finish:
+    minifs_release(irq_flags);
+    return result;
+}
+
+static int32_t truncate_locked(uint32_t inode_number, uint32_t new_size)
+{
+    struct minifs_inode inode;
+    struct minifs_inode old_inode;
+    uint32_t old_blocks;
+    uint32_t new_blocks;
+    uint32_t index;
+
+    if (read_inode_internal(inode_number, &inode) != 0) {
+        return -MINIOS_EIO;
+    }
+    if (inode.mode == MINIFS_MODE_DIRECTORY) {
+        return -MINIOS_EISDIR;
+    }
+    if (new_size > inode.size) {
+        return -MINIOS_EINVAL;
+    }
+    if (new_size == inode.size) {
+        return 0;
+    }
+    old_inode = inode;
+    old_blocks = divide_round_up(inode.size, MINIFS_BLOCK_SIZE);
+    new_blocks = divide_round_up(new_size, MINIFS_BLOCK_SIZE);
+    if (old_inode.indirect != 0U) {
+        if (read_volume_block_into(old_inode.indirect, auxiliary_block) != 0) {
+            return -MINIOS_EIO;
+        }
+        copy_bytes(compare_buffer, auxiliary_block, sizeof(compare_buffer));
+    }
+    if (new_blocks > MINIFS_DIRECT_COUNT) {
+        uint32_t first = new_blocks - MINIFS_DIRECT_COUNT;
+        uint32_t count = old_blocks - MINIFS_DIRECT_COUNT;
+
+        for (index = first; index < count; ++index) {
+            write_le32(&auxiliary_block[index * sizeof(uint32_t)], 0U);
+        }
+        if (write_volume_block_from(old_inode.indirect, auxiliary_block) != 0) {
+            return -MINIOS_EIO;
+        }
+    } else {
+        inode.indirect = 0U;
+    }
+    for (index = new_blocks;
+         index < old_blocks && index < MINIFS_DIRECT_COUNT;
+         ++index) {
+        inode.direct[index] = 0U;
+    }
+    inode.size = new_size;
+    if (write_inode_internal(inode_number, &inode) != 0) {
+        if (new_blocks > MINIFS_DIRECT_COUNT) {
+            (void)write_volume_block_from(old_inode.indirect, compare_buffer);
+        }
+        return -MINIOS_EIO;
+    }
+    for (index = new_blocks;
+         index < old_blocks && index < MINIFS_DIRECT_COUNT;
+         ++index) {
+        if (free_block(old_inode.direct[index]) != 0) {
+            return -MINIOS_EIO;
+        }
+    }
+    if (old_blocks > MINIFS_DIRECT_COUNT) {
+        uint32_t first = new_blocks;
+
+        if (first < MINIFS_DIRECT_COUNT) {
+            first = MINIFS_DIRECT_COUNT;
+        }
+        for (index = first; index < old_blocks; ++index) {
+            uint32_t pointer_index = index - MINIFS_DIRECT_COUNT;
+            uint32_t block = read_le32(
+                &compare_buffer[pointer_index * sizeof(uint32_t)]
+            );
+
+            if (free_block(block) != 0) {
+                return -MINIOS_EIO;
+            }
+        }
+        if (new_blocks <= MINIFS_DIRECT_COUNT &&
+            free_block(old_inode.indirect) != 0) {
+            return -MINIOS_EIO;
+        }
+    }
+    return 0;
+}
+
+int32_t minifs_truncate(uint32_t inode_number, uint32_t new_size)
+{
+    uint32_t irq_flags;
+    int32_t result;
+
+    if (!mounted || new_size > MINIFS_MAX_FILE_SIZE) {
+        return -MINIOS_EINVAL;
+    }
+    if (!minifs_acquire(&irq_flags)) {
+        return -MINIOS_EAGAIN;
+    }
+    result = truncate_locked(inode_number, new_size);
+    minifs_release(irq_flags);
+    return result;
+}
+
 bool minifs_self_test(void)
 {
     static const char *const paths[] = {
@@ -743,4 +1437,89 @@ bool minifs_self_test(void)
         }
     }
     return true;
+}
+
+static uint8_t persistence_pattern(uint32_t position)
+{
+    return (uint8_t)(position * 37U + 0x5AU);
+}
+
+static bool verify_persistence_file(const struct minifs_stat *status)
+{
+    uint32_t offset = 0U;
+
+    while (offset < status->size) {
+        size_t chunk = (size_t)(status->size - offset);
+        size_t index;
+
+        if (chunk > sizeof(compare_buffer)) {
+            chunk = sizeof(compare_buffer);
+        }
+        if (minifs_read(status->inode, offset, compare_buffer, chunk) !=
+            (int32_t)chunk) {
+            return false;
+        }
+        for (index = 0U; index < chunk; ++index) {
+            if (compare_buffer[index] !=
+                persistence_pattern(offset + (uint32_t)index)) {
+                return false;
+            }
+        }
+        offset += (uint32_t)chunk;
+    }
+    return minifs_read(status->inode, status->size,
+                       compare_buffer, 1U) == 0;
+}
+
+enum minifs_persistence_result minifs_persistence_self_test(void)
+{
+    const uint32_t full_size =
+        (MINIFS_DIRECT_COUNT + 1U) * MINIFS_BLOCK_SIZE + 123U;
+    const uint32_t truncated_size = MINIFS_BLOCK_SIZE + 17U;
+    struct minifs_stat status;
+    int32_t lookup = minifs_lookup("/p6-persist", &status);
+
+    if (lookup == -MINIOS_ENOENT) {
+        uint32_t offset = 0U;
+
+        if (minifs_create("/p6-persist", &status) != 0) {
+            return MINIFS_PERSISTENCE_FAILED;
+        }
+        while (offset < full_size) {
+            size_t chunk = (size_t)(full_size - offset);
+            size_t index;
+
+            if (chunk > sizeof(compare_buffer)) {
+                chunk = sizeof(compare_buffer);
+            }
+            for (index = 0U; index < chunk; ++index) {
+                compare_buffer[index] =
+                    persistence_pattern(offset + (uint32_t)index);
+            }
+            if (minifs_write(status.inode, offset,
+                             compare_buffer, chunk) != (int32_t)chunk) {
+                return MINIFS_PERSISTENCE_FAILED;
+            }
+            offset += (uint32_t)chunk;
+        }
+        if (minifs_lookup("/p6-persist", &status) != 0 ||
+            status.size != full_size || !verify_persistence_file(&status)) {
+            return MINIFS_PERSISTENCE_FAILED;
+        }
+        return MINIFS_PERSISTENCE_CREATED;
+    }
+    if (lookup != 0 ||
+        (status.size != full_size && status.size != truncated_size) ||
+        !verify_persistence_file(&status)) {
+        return MINIFS_PERSISTENCE_FAILED;
+    }
+    if (status.size == full_size &&
+        minifs_truncate(status.inode, truncated_size) != 0) {
+        return MINIFS_PERSISTENCE_FAILED;
+    }
+    if (minifs_lookup("/p6-persist", &status) != 0 ||
+        status.size != truncated_size || !verify_persistence_file(&status)) {
+        return MINIFS_PERSISTENCE_FAILED;
+    }
+    return MINIFS_PERSISTENCE_VERIFIED_AND_TRUNCATED;
 }
