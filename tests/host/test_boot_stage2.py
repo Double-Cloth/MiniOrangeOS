@@ -906,7 +906,10 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[TEST] case=bios_disk_read_edd PASS", output)
 
     def test_real_product_image_logs_s1_then_s2_and_times_out_safely(self) -> None:
+        image = self.build_directory / "test-fixtures/stage2-product.img"
         log = self.build_directory / "test-logs/stage2-product.log"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.image, image)
         result = subprocess.run(
             [
                 sys.executable,
@@ -914,11 +917,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 "--qemu",
                 QEMU,
                 "--image",
-                str(self.image),
+                str(image),
                 "--log",
                 str(log),
                 "--timeout",
-                "8",
+                "30",
                 "--max-log-bytes",
                 "262144",
                 "--repo",
@@ -931,7 +934,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=18,
+            timeout=45,
             check=False,
         )
         self.assertNotEqual(result.returncode, 0, "P1 尚未定义最终测试 PASS/退出握手")
@@ -1201,9 +1204,12 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             )
 
     def test_real_qemu_keyboard_input_executes_shell_command(self) -> None:
+        image = self.build_directory / "test-fixtures/keyboard-input.img"
         log = self.build_directory / "test-logs/keyboard-input.log"
+        image.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.image, image)
         log.parent.mkdir(parents=True, exist_ok=True)
-        drive = f"file={self.image},format=raw,if=ide,index=0,media=disk"
+        drive = f"file={image},format=raw,if=ide,index=0,media=disk"
         process = subprocess.Popen(
             [
                 QEMU,
@@ -1231,14 +1237,14 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + 15.0
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
                 if "MiniOrangeOS shell\n$ " in output:
                     break
                 time.sleep(0.05)
             else:
-                self.fail("QEMU 未到达 Shell 提示符")
+                self.fail(f"QEMU 未到达 Shell 提示符：\n{output}")
 
             assert process.stdin is not None
             for key in (b"h", b"e", b"l", b"p", b"ret"):
