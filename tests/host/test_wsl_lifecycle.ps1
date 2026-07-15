@@ -589,7 +589,7 @@ try {
             Command = 'true'
         }
         Invoke-WithFakeLxss $EnterScript $EnterArgs $DistroName $InstallPath
-        Assert-True ((Read-FakeLog $FakeLog) -match "-d $([regex]::Escape($DistroName))") '精确名称未进入 fake 发行版'
+        Assert-True ((Read-FakeLog $FakeLog) -match "-d $([regex]::Escape($DistroName)) -u minios") '未以 minios 用户进入精确名称的 fake 发行版'
     }
 
     Invoke-Test 'enter 单个命令字符串通过 bash -lc 精确保持' {
@@ -611,7 +611,7 @@ try {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
         })
         $ExpectedCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $ComplexCommand
-        $ExpectedArguments = @('-d', $DistroName, '--', 'bash', '-lc', $ExpectedCommand)
+        $ExpectedArguments = @('-d', $DistroName, '-u', 'minios', '--', 'bash', '-lc', $ExpectedCommand)
         Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("命令字符串边界发生变化：" + ($ActualArguments -join '|'))
         Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
     }
