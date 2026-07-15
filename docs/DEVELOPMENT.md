@@ -2,29 +2,29 @@
 
 本文汇总原贡献规范、编码规范、开发流程、环境设计、测试策略和发布清单。项目架构见 `docs/PROJECT.md`，运行与卸载见根目录 `README.md`，历史过程见 `docs/HISTORY.md`。
 
-## 权威工作树与执行边界
+## 工作树与执行边界
 
-唯一权威工作树是当前 Windows 仓库根目录，不要求固定盘符或父目录：
+唯一工作树是 Windows 仓库根目录，不要求固定盘符或父目录，即：
 
 ```text
 <任意本地目录>\MiniOrangeOS
 ```
 
-WSL 中通过脚本自动推导的 `/mnt/<drive>/.../MiniOrangeOS` 访问同一工作树。不要在代码或文档中写死某台机器的仓库绝对路径。
+WSL 中通过脚本自动推导的 `/mnt/<drive>/.../MiniOrangeOS` 访问同一工作树。不要在代码或文档中写死仓库绝对路径。
 
 固定规则：
 
-- 文件编辑和 Git 只在 Windows 权威工作树执行，Git 只由 Windows 执行；
+- 文件编辑和 Git 只在 Windows 工作树执行，Git 只由 Windows 执行；
 - `MiniOrangeOS-Dev` 只负责 Linux 构建、QEMU、GDB 和测试；
 - 禁止在 WSL 中运行 Git，也不维护第二份活动工作树；
-- Windows 不安装项目专用 GCC、NASM、Make、QEMU、GDB、MSYS2、Cygwin 或 MinGW；
+- Windows 不需要安装项目专用 GCC、NASM、Make、QEMU、GDB、MSYS2、Cygwin 或 MinGW；
 - 项目环境不修改 Windows PATH、注册表、全局 Git 配置和 Linux 全局 Shell 配置；
 - `/mnt/d` 的性能、大小写、权限和 inode 语义通过 `.gitattributes`、WSL metadata 和运行时测试持续约束。
 
 项目环境载荷需要绝对路径以校验 WSL ownership，唯一配置入口为 `config/wsl.psd1`：
 
 ```powershell
-@{ AuthorizedRoot = '<项目环境绝对路径>' }
+@{ AuthorizedRoot = '<WSL 环境绝对路径>' }
 ```
 
 Linux 用户私有工具根默认为：
@@ -268,7 +268,7 @@ type(scope): summary
 下一步：具体命令或任务
 ```
 
-不得用“理论上可行”“应当通过”替代测试证据。
+不得用“理论上可行”、“应当通过”等替代测试证据。
 
 ## CI 与失败证据
 
@@ -322,15 +322,3 @@ WSL2 rootless OCI 集成曾在独立 `MiniOrangeOS-Dev-Test-ContainerHost`（Ubu
 - [ ] `docs/HISTORY.md` 已记录真实提交、测试、问题和未解决边界；
 - [ ] 工作树无构建产物、临时实验、审查缓存和无用途占位文件；
 - [ ] 没有把 QEMU/WSL/容器结果表述为真实裸机证据。
-
-## 当前发布基线
-
-2026-07-14 的已验收基线：
-
-- 正式 WSL 聚合回归 243/243 PASS，用时 898.861 秒；
-- Ubuntu 24.04 CI 运行 `29331275773` 对 `72add849f7ff5621e6404b62c232a826f7b5758c` 完成 246/246 PASS，23 项平台限定测试按设计跳过；
-- `kernel.elf`：145,656 bytes，SHA-256 `2a0749ff4fb27289c79e1a9f75b186b7dcd66ac0b777a0177ad84734aa87873b`；
-- `minifs.img`：66,060,288 bytes，SHA-256 `79fe925f71552cf9b4fd47cedd99ef91b08a3bfc1d97ec0d5c301435156ead2b`；
-- `miniorangeos.img`：67,108,864 bytes，SHA-256 `3c55f18a0a4768d98e8d834a9f783c47adf7d77c88d9576d436f4f35bb0001fe`。
-
-这些是历史发布证据；修改源码后必须重新运行相应验证，不能沿用旧哈希或计数声明当前分支通过。
