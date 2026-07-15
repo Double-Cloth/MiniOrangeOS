@@ -1313,6 +1313,25 @@ chmod 0755 "$root/home/minios"
 protected_after_ancestor_cases="$(stat -c '%u|%a|%s' "$protected/sentinel")|$(cat "$protected/sentinel")"
 [[ "$protected_before" == "$protected_after_ancestor_cases" ]] || { printf 'ancestor cases changed protected target\n' >&2; exit 1; }
 
+fresh_environment_root="$root/home/minios/.local/share/miniorangeos-dev"
+/usr/sbin/runuser -u minios -- env \
+    "PATH=$PATH" "FAKE_TARGET_UID=$target_uid" "FAKE_TARGET_HOME=$root/home/minios" \
+    MINIOS_BOOTSTRAP_TEST_MODE=1 "MINIOS_BOOTSTRAP_TEST_ROOT=$root" \
+    "MINIOS_RUNTIME_PROBE_ROOT=$wsl2_probe_root" "MINIOS_WSL_IDENTITY_FILE=$identity_file" \
+    "MINIOS_OS_RELEASE_FILE=$good_os" WSL_DISTRO_NAME=MiniOrangeOS-Dev \
+    "MINIOS_ENV_ROOT=$fresh_environment_root" \
+    "$script" --prepare-package-state --target-user minios
+for created_directory in \
+    "$root/home/minios/.local" \
+    "$root/home/minios/.local/share" \
+    "$fresh_environment_root" \
+    "$fresh_environment_root/state"; do
+    [[ "$(stat -c '%F|%u|%a' -- "$created_directory")" == "directory|$target_uid|755" ]] \
+        || { printf 'fresh environment directory metadata mismatch: %s\n' "$created_directory" >&2; exit 1; }
+done
+rm -rf -- "$root/home/minios/.local"
+printf 'checkpoint=fresh-environment-root\n'
+
 environment_root="$root/home/minios/.local/share/miniorangeos-dev"
 mkdir -p -- "$environment_root"
 chown root:root "$root/home/minios/.local" "$root/home/minios/.local/share"

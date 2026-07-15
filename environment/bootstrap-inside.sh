@@ -890,6 +890,26 @@ validate_environment_root() {
     export MINIOS_ENV_ROOT="$environment_root"
 }
 
+create_missing_environment_root_as_target() {
+    local current="$target_home"
+    local relative="${environment_root#"$target_home"/}"
+    local component
+    local -a components
+    if [[ "$environment_kind" != 'wsl' || "$relative" == "$environment_root" ]]; then
+        fail "仅允许在目标用户 home 内创建缺失的 WSL environment root：$environment_root"
+        return 1
+    fi
+    IFS='/' read -r -a components <<<"$relative"
+    for component in "${components[@]}"; do
+        [[ -n "$component" ]] || continue
+        current="$current/$component"
+        if [[ ! -e "$current" && ! -L "$current" ]]; then
+            (umask 022; mkdir -m 0755 -- "$current") || return $?
+        fi
+        validate_user_owned_existing_components "$target_home" "$environment_root" || return $?
+    done
+}
+
 validate_wsl_configuration_path() {
     wsl_conf_file=''
     [[ "$environment_kind" == 'wsl' ]] || return 0
@@ -981,7 +1001,7 @@ prepare_package_state_as_target() {
     validate_environment_root || return $?
     local state_directory="$environment_root/state"
     if [[ ! -e "$environment_root" && ! -L "$environment_root" ]]; then
-        (umask 022; mkdir -m 0755 -- "$environment_root") || return $?
+        create_missing_environment_root_as_target || return $?
         validate_environment_root || return $?
     fi
     if [[ ! -e "$state_directory" && ! -L "$state_directory" ]]; then
