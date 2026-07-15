@@ -195,20 +195,24 @@ class ReleaseContractTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
-        self.assertIn("双启动", help_result.stdout)
+        self.assertIn("--repo", help_result.stdout)
+        self.assertIn("--qemu", help_result.stdout)
 
         checklist = CHECKLIST.read_text(encoding="utf-8")
-        for heading in (
-            "CI 与失败证据",
-            "来源与自主实现边界",
-            "发布检查",
+        for token in (
+            "workflow_dispatch",
+            "environment/verify.sh",
+            "make test",
+            "make demo-persistence",
+            "README.md",
+            "docs/PROJECT.md",
+            "docs/HISTORY.md",
         ):
-            self.assertIn(f"## {heading}", checklist)
-        for phrase in ("环境与来源", "构建与测试", "文档与交付", "demo-persistence"):
-            self.assertIn(phrase, checklist)
+            self.assertIn(token, checklist)
 
         history = HISTORY.read_text(encoding="utf-8")
-        self.assertIn("## 当前已知限制与后续方向", history)
+        self.assertIn("GitHub Actions", history)
+        self.assertIn("Linux CI", history)
 
 
 if __name__ == "__main__":

@@ -170,8 +170,9 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertTrue(path.is_file(), "缺少文件：README.md")
         content = path.read_text(encoding="utf-8")
         self.assertIn("MiniOrangeOS-Dev", content)
-        self.assertIn("仓库根目录", content)
-        self.assertIn("自动推导", content)
+        self.assertIn("config/wsl.psd1", content)
+        self.assertIn("environment/wsl/create.ps1", content)
+        self.assertIn(r"environment\wsl\enter.ps1", content)
 
     def test_readme_records_real_ubuntu_verification(self) -> None:
         path = ROOT / "README.md"
@@ -181,7 +182,7 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn("environment/ubuntu/create.sh", content)
         self.assertIn("environment/ubuntu/run.sh", content)
         self.assertIn("environment/ubuntu/destroy.sh --all", content)
-        self.assertIn("无参数只预览且不删除任何资源", content)
+        self.assertIn("system prune", content)
 
     def test_documentation_is_consolidated(self) -> None:
         self.assertTrue((ROOT / "docs/PROJECT.md").is_file())
@@ -195,13 +196,10 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertTrue(path.is_file(), "缺少文件：docs/DEVELOPMENT.md")
         content = path.read_text(encoding="utf-8")
 
-        self.assertIn("仓库根目录", content)
         self.assertIn("config/wsl.psd1", content)
         self.assertIn("MiniOrangeOS-Dev", content)
-        self.assertIn("Git 只由 Windows 执行", content)
-        self.assertIn("只负责 Linux 构建、QEMU、GDB 和测试", content)
-        self.assertIn("Windows", content)
-        self.assertIn("项目专用 GCC", content)
+        self.assertIn("environment/wsl/enter.ps1 -Command", content)
+        self.assertIn("environment/with-env.sh", content)
         for target in ("image", "run-curses", "test", "demo-persistence"):
             self.assertIn(f"`{target}`", content)
 

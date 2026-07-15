@@ -1151,8 +1151,9 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         for relative_path in ("README.md", "docs/DEVELOPMENT.md"):
             with self.subTest(path=relative_path):
                 lifecycle_docs = self._read_required(relative_path)
-                self.assertIn("无参数只预览且不删除任何资源", lifecycle_docs)
-                self.assertIn("只有 `--all`", lifecycle_docs)
+                self.assertIn("environment/ubuntu/destroy.sh", lifecycle_docs)
+                self.assertIn("--all", lifecycle_docs)
+                self.assertIn("system prune", lifecycle_docs)
 
     def test_public_environment_docs_exclude_tool_output_metadata(self) -> None:
         metadata = re.compile(r"^(?:Exit code:|Wall time:|Output:)(?:\s|$)", re.MULTILINE)
@@ -1171,7 +1172,8 @@ $RegisteredBasePath = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Unrelated')
         self.assertIn("MiniOrangeOS-Dev-Test-ContainerHost", docs)
         self.assertIn("rootless Podman", docs)
         self.assertIn("Ubuntu 24.04 WSL2", docs)
-        self.assertIn("原生 Linux 内核", docs)
+        self.assertIn("Microsoft WSL2", docs)
+        self.assertIn("GitHub", docs)
         self.assertIn("Linux CI", docs)
 
 
