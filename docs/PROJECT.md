@@ -1,10 +1,10 @@
-# MiniOrangeOS 项目总览
+# MiniOrangeOS 项目介绍
 
 本文是实现层面的总文档，描述当前代码已经具备的架构和接口。运行、安装与卸载见根目录 `README.md`；开发流程见 `docs/DEVELOPMENT.md`；历史证据见 `docs/HISTORY.md`。
 
 ## 目标与边界
 
-MiniOrangeOS 用 C11 Freestanding 和 NASM 从零实现 x86 32 位教学操作系统，证明从 BIOS 启动到 Ring 3 用户程序、持久化文件系统和自动化验证的完整闭环：
+MiniOrangeOS 用 C11 Freestanding 和 NASM 从零实现 x86 32 位演示操作系统，证明从 BIOS 启动到 Ring 3 用户程序、持久化文件系统和自动化验证的完整闭环：
 
 ```text
 BIOS
@@ -20,7 +20,7 @@ BIOS
   -> create/read file -> reboot -> read persisted file
 ```
 
-最低版本有意排除 x86_64、UEFI、SMP、网络、USB、图形桌面、动态链接、Swap、`fork`、管道、完整 POSIX、权限系统、文件系统日志和复杂 Shell。
+最低版本未实现 x86_64、UEFI、SMP、网络、USB、图形桌面、动态链接、Swap、`fork`、管道、完整 POSIX、权限系统、文件系统日志和复杂 Shell。
 
 ## 技术基线
 
