@@ -274,6 +274,8 @@ type(scope): summary
 
 `.github/workflows/ci.yml` 使用 `ubuntu-24.04`，只授予 `contents: read`。`actions/checkout` 与 `actions/upload-artifact` 均固定完整提交 SHA，基础镜像固定 tag + digest。
 
+纯 Markdown 或 `docs/**` 变更不触发 `push` / `pull_request` Linux CI；需要复核时使用 `workflow_dispatch` 手动运行。涉及代码、构建配置、测试、环境脚本或 workflow 自身的变更仍运行完整 Linux CI。
+
 CI 流程：
 
 ```text

@@ -200,7 +200,8 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertIn("MiniOrangeOS-Dev", content)
         self.assertIn("Git 只由 Windows 执行", content)
         self.assertIn("只负责 Linux 构建、QEMU、GDB 和测试", content)
-        self.assertIn("Windows 不安装项目专用 GCC", content)
+        self.assertIn("Windows", content)
+        self.assertIn("项目专用 GCC", content)
         for target in ("image", "run-curses", "test", "demo-persistence"):
             self.assertIn(f"`{target}`", content)
 

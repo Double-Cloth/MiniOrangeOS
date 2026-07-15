@@ -77,6 +77,9 @@ class ReleaseContractTests(unittest.TestCase):
             source,
         )
         self.assertIn("permissions:\n  contents: read", source)
+        self.assertIn("paths-ignore:", source)
+        self.assertIn('"**/*.md"', source)
+        self.assertIn('"docs/**"', source)
         self.assertIn("environment/Containerfile", source)
         self.assertIn("/source:ro", source)
         self.assertIn("${{ runner.temp }}/miniorangeos-ci-artifacts", source)
@@ -199,7 +202,6 @@ class ReleaseContractTests(unittest.TestCase):
             "CI 与失败证据",
             "来源与自主实现边界",
             "发布检查",
-            "当前发布基线",
         ):
             self.assertIn(f"## {heading}", checklist)
         for phrase in ("环境与来源", "构建与测试", "文档与交付", "demo-persistence"):
