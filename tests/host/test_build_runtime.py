@@ -1051,6 +1051,12 @@ class BuildRuntimeTests(unittest.TestCase):
                     before,
                 )
 
+    def test_worktree_ampersand_path_builds_complete_image(self) -> None:
+        with self._workspace(name="C&C++-workspace") as workspace:
+            result = self._make(workspace, "-j4", "image")
+            self._assert_success(result)
+            self.assertTrue((workspace / "build" / IMAGE_NAME).is_file())
+
     def test_tool_space_paths_are_supported_or_cleanly_rejected(self) -> None:
         with self._workspace() as workspace:
             wrappers = workspace / "tool wrappers"
@@ -1108,6 +1114,7 @@ class BuildRuntimeTests(unittest.TestCase):
         targets = ("all", "image", "clean", "distclean")
         gate_variables = (
             "unsafe_make_value",
+            "unsafe_quoted_path_value",
             "make_dollar",
             "left_parenthesis",
             "right_parenthesis",

@@ -79,7 +79,7 @@ function Invoke-WslShellCommand {
     )
     if ([IO.Path]::GetExtension($Executable) -ieq '.cmd') {
         # 测试替身；生产 wsl.exe 与精确 argv 测试均走 ProcessStartInfo。
-        & $Executable -d $Name -u $User -- bash -lc $ShellCommand
+        & $Executable -d $Name -u $User --exec bash -lc $ShellCommand
         $script:LastWslShellExitCode = $LASTEXITCODE
         return
     }
@@ -87,9 +87,9 @@ function Invoke-WslShellCommand {
     $Info = [Diagnostics.ProcessStartInfo]::new()
     $Info.FileName = $ResolvedExecutable
     $Info.UseShellExecute = $false
-    # wsl.exe 的 legacy option parser 不接受被引号包裹的 -d/-u/--；发行版名和
+    # wsl.exe 的 option parser 不接受被引号包裹的 -d/-u/--exec；发行版名和
     # 用户名均为项目固定安全单段，只有任意 shell 字符串需要 CommandLineToArgvW 编码。
-    $Info.Arguments = '-d ' + $Name + ' -u ' + $User + ' -- bash -lc ' +
+    $Info.Arguments = '-d ' + $Name + ' -u ' + $User + ' --exec bash -lc ' +
         (ConvertTo-WindowsNativeArgument $ShellCommand)
     $Process = [Diagnostics.Process]::Start($Info)
     $Process.WaitForExit()

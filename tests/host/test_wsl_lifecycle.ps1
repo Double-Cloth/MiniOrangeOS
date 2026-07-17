@@ -655,7 +655,7 @@ try {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
         })
         $ExpectedCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $ComplexCommand
-        $ExpectedArguments = @('-d', $DistroName, '-u', 'minios', '--', 'bash', '-lc', $ExpectedCommand)
+        $ExpectedArguments = @('-d', $DistroName, '-u', 'minios', '--exec', 'bash', '-lc', $ExpectedCommand)
         Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("命令字符串边界发生变化：" + ($ActualArguments -join '|'))
         Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
     }
