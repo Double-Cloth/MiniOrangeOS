@@ -55,7 +55,7 @@ MiniOrangeOS/
 │   ├── mm/               PMM、VMM、Heap、地址空间、usercopy
 │   ├── proc/             ELF loader、程序注册表、调度器
 │   └── include/          内核私有公开接口
-├── user/                 crt0、最小 libc、linker script 与 16 个程序
+├── user/                 crt0、最小 libc、linker script 与 17 个程序
 ├── tools/                构建守卫、镜像、MiniFS、QEMU、LOC 工具
 ├── tests/                宿主合同、运行时与 QEMU 测试
 ├── environment/          WSL、工具链、OCI 环境生命周期
@@ -165,6 +165,8 @@ PIT 时间片轮转可抢占不主动 `yield` 的线程。上下文切换保存 
 
 Shell 提供 256-byte 行缓冲、8 项命令历史、退格/Delete/方向键/Home/End 行编辑、`Ctrl+A/E/C/D/K/L/U` 控制、最多 16 项 argv、单/双引号、反斜杠转义、`/bin/` 补全、当前目录提示符和前台 spawn/wait。每个进程保存独立工作目录，子进程继承父进程目录；内核在进入 VFS 前统一规范化绝对/相对路径、重复 `/`、`.` 与 `..`。
 
+文件内容工具在既有 VFS/fd ABI 上实现，不增加系统调用：`cat -n` 可跨多个文件连续编号，`write -a` 通过 `lseek(..., SEEK_END)` 追加；`edit` 是适配 text-mode console 的 32 KiB 行式 ASCII 文本编辑器，支持范围打印、追加、按行插入/替换/删除、显式保存、未保存退出保护和 `q!` 明确丢弃。正式 Shell 自检会在 Ring 3 中完成编辑缓冲变换、写盘、重读比对和临时文件清理。
+
 ## 系统调用 ABI
 
 系统调用通过 `int 0x80`：`EAX` 为调用号/返回值，`EBX`、`ECX`、`EDX`、`ESI`、`EDI` 为最多五个参数；成功返回非负值，失败返回负错误码。
@@ -210,7 +212,7 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 
 宿主工具：
 
-- `tools/mkfs.py`：确定性创建卷并导入 16 个用户 ELF；
+- `tools/mkfs.py`：确定性创建卷并导入 17 个用户 ELF；
 - `tools/fsck.py`：只读检查 CRC、几何、bitmap、inode、目录、重复块和孤儿 inode；
 - `tools/make_image.py`：按统一布局原子装配完整磁盘；
 - `tools/demo_persistence.py`：用临时镜像完成两次 QEMU 启动与逐轮 fsck。
@@ -230,4 +232,5 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 - 进程表 16 项、用户栈固定一页，不支持 `fork`；
 - console/keyboard 仍由 syscall 适配，不是统一 VFS file object；
 - 普通 fd 不跨 spawn 继承；
+- `edit` 只处理不超过 32 KiB 的 ASCII 文本，不面向二进制文件；
 - QEMU/CI 证据不等同于真实裸机验收。
