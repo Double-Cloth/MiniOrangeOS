@@ -27,7 +27,7 @@ MODE_DIRECTORY = 2
 CHECKSUM_OFFSET = 52
 PROGRAMS = (
     "init", "echo", "sh", "ps", "memtest", "fault",
-    "ls", "cat", "touch", "write", "mkdir", "rm",
+    "ls", "cat", "touch", "write", "edit", "mkdir", "rm",
     "cp", "stat", "sleep", "uptime",
 )
 

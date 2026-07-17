@@ -1073,6 +1073,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] directory syscall PASS", output)
         self.assertIn("[USER] cwd syscall PASS", output)
         self.assertIn("[USER] file commands PASS", output)
+        self.assertIn("[USER] edit command PASS", output)
         self.assertTrue(
             "[USER] command persistence created PASS" in output or
             "[USER] command persistence verified PASS" in output
@@ -1215,6 +1216,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             self.assertIn(expected[1], output)
             self.assertIn("[USER] directory syscall PASS", output)
             self.assertIn("[USER] file commands PASS", output)
+            self.assertIn("[USER] edit command PASS", output)
             self.assertNotIn("[PANIC]", output)
             checked = subprocess.run(
                 [

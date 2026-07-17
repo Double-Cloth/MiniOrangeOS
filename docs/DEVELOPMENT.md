@@ -197,7 +197,7 @@ type(scope): summary
 |---|---|
 | `all` | 构建 Boot、Loader、Kernel、用户 ELF、MiniFS 与镜像相关产物 |
 | `image` | 构建 `miniorangeos.img` |
-| `user` | 构建 16 个用户 ELF、map 和 symbol |
+| `user` | 构建 17 个用户 ELF、map 和 symbol |
 | `run-serial` | 无显示窗口运行，串口连接当前终端 |
 | `run-curses` | curses VGA/PS2 键盘交互运行 |
 | `debug` | QEMU 在启动入口暂停并开启 GDB remote |

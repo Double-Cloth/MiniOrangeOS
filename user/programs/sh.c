@@ -189,7 +189,7 @@ static int run_builtin(char **arguments, size_t argument_count)
         }
         return write_text(
             "builtins: help clear cd pwd exit\n"
-            "commands: ls cat touch write mkdir rm cp stat echo ps sleep uptime\n"
+            "commands: ls cat touch write edit mkdir rm cp stat echo ps sleep uptime\n"
             "diagnostics: memtest fault\n"
             "quoting:  'single quoted' \"double quoted\" backslash\\escape\n"
         ) ? 0 : -1;
@@ -296,7 +296,9 @@ static bool run_file_command_self_test(void)
     char mkdir_line[] = "mkdir /p6-command-dir";
     char touch_line[] = "touch /p6-command-dir/file";
     char write_line[] = "write /p6-command-dir/file file command data";
-    char cat_line[] = "cat /p6-command-dir/file";
+    char append_line[] = "write -a /p6-command-dir/file appended data";
+    char cat_line[] = "cat -n /p6-command-dir/file";
+    char edit_line[] = "edit --self-test";
     char cp_line[] = "cp /p6-command-dir/file /p6-command-dir/copy";
     char stat_line[] = "stat /p6-command-dir/copy";
     char ls_line[] = "ls /p6-command-dir";
@@ -322,7 +324,8 @@ static bool run_file_command_self_test(void)
         return false;
     }
     return run_line(mkdir_line) == 0 && run_line(touch_line) == 0 &&
-        run_line(write_line) == 0 && run_line(cat_line) == 0 &&
+        run_line(write_line) == 0 && run_line(append_line) == 0 &&
+        run_line(cat_line) == 0 && run_line(edit_line) == 0 &&
         run_line(cp_line) == 0 && run_line(stat_line) == 0 &&
         run_line(ls_line) == 0 && run_line(rm_file_line) == 0 &&
         run_line(rm_copy_line) == 0 &&

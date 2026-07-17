@@ -38,6 +38,7 @@ REQUIRED_BUILD_FILES = (
     "user/programs/cat.c",
     "user/programs/touch.c",
     "user/programs/write.c",
+    "user/programs/edit.c",
     "user/programs/mkdir.c",
     "user/programs/rm.c",
     "user/programs/cp.c",
@@ -138,6 +139,7 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("USER_CAT_ELF", makefile)
         self.assertIn("USER_TOUCH_ELF", makefile)
         self.assertIn("USER_WRITE_ELF", makefile)
+        self.assertIn("USER_EDIT_ELF", makefile)
         self.assertIn("USER_MKDIR_ELF", makefile)
         self.assertIn("USER_RM_ELF", makefile)
         self.assertIn("USER_CP_ELF", makefile)
@@ -149,6 +151,24 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("-nostdlib", makefile)
         self.assertIn("<minios/abi/syscall.h>", kernel_syscall)
         self.assertIn("<minios/abi/syscall.h>", user_syscall)
+
+    def test_file_content_tools_expose_view_append_and_line_editing(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        cat = (ROOT / "user/programs/cat.c").read_text(encoding="utf-8")
+        write = (ROOT / "user/programs/write.c").read_text(encoding="utf-8")
+        edit = (ROOT / "user/programs/edit.c").read_text(encoding="utf-8")
+
+        self.assertIn("USER_EDIT_ELF", makefile)
+        self.assertIn('"/bin/edit=$(USER_EDIT_ELF)"', makefile)
+        self.assertIn("print_line_number", cat)
+        self.assertIn('"-n"', cat)
+        self.assertIn("MINIOS_SEEK_END", write)
+        self.assertIn("append_line", edit)
+        self.assertIn("insert_line", edit)
+        self.assertIn("replace_line", edit)
+        self.assertIn("delete_line", edit)
+        self.assertIn("unsaved changes", edit)
+        self.assertIn("[USER] edit command PASS", edit)
 
     def test_kernel_declares_strict_embedded_elf_loader(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
