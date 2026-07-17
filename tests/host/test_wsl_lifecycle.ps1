@@ -158,13 +158,21 @@ public static class FakeWslArguments
 {
     public static int Main(string[] args)
     {
-        string log = Environment.GetEnvironmentVariable("FAKE_WSL_JSON_LOG");
-        using (StreamWriter writer = File.AppendText(log))
+        string textLog = Environment.GetEnvironmentVariable("FAKE_WSL_LOG");
+        if (!String.IsNullOrEmpty(textLog))
         {
-            writer.WriteLine("CALL");
-            foreach (string argument in args)
+            File.AppendAllText(textLog, String.Join(" ", args) + Environment.NewLine);
+        }
+        string argumentLog = Environment.GetEnvironmentVariable("FAKE_WSL_JSON_LOG");
+        if (!String.IsNullOrEmpty(argumentLog))
+        {
+            using (StreamWriter writer = File.AppendText(argumentLog))
             {
-                writer.WriteLine("ARG=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(argument)));
+                writer.WriteLine("CALL");
+                foreach (string argument in args)
+                {
+                    writer.WriteLine("ARG=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(argument)));
+                }
             }
         }
         if (args.Length > 0 && args[0] == "--list")
@@ -338,7 +346,7 @@ try {
         $Args = @{
             DistroName = $DistroName
             AuthorizedRoot = $AuthorizedRoot
-            WslExecutable = $FakeWsl
+            WslExecutable = $FakeWslArguments
         }
         Invoke-WithFakeLxss $CreateScript $Args $DistroName $InstallPath
         $Log = Read-FakeLog $FakeLog
@@ -347,6 +355,42 @@ try {
         Assert-True ($Log -match '--expected-distro') 'identity provision 未绑定精确发行版名'
         Assert-True ($Log -match '--registration-id') 'identity provision 未绑定 Lxss registration ID'
         Assert-True ($Log -match '--base-path-sha256') 'identity provision 未绑定 BasePath identity'
+    }
+
+    Invoke-Test 'create 通过 WSL exec 保持 bootstrap 路径参数边界' {
+        $ArgumentsLog = Join-Path $TemporaryRoot 'create-wsl-arguments.log'
+        $env:FAKE_WSL_JSON_LOG = $ArgumentsLog
+        $env:FAKE_WSL_LIST = $DistroName
+        $Arguments = @{
+            DistroName = $DistroName
+            AuthorizedRoot = $AuthorizedRoot
+            WslExecutable = $FakeWslArguments
+        }
+        try {
+            Invoke-WithFakeLxss $CreateScript $Arguments $DistroName $InstallPath
+            $Lines = [IO.File]::ReadAllLines($ArgumentsLog)
+            $LastCall = [Array]::LastIndexOf($Lines, 'CALL')
+            Assert-True ($LastCall -ge 0) ("未记录 create 调用：" + ($Lines -join '|'))
+            $ActualArguments = @($Lines[($LastCall + 1)..($Lines.Length - 1)] | ForEach-Object {
+                [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
+            })
+            $ExpectedPrefix = @(
+                '-d',
+                $DistroName,
+                '-u',
+                'root',
+                '--exec',
+                'bash',
+                "$RepoWslPath/environment/bootstrap-inside.sh"
+            )
+            Assert-True ($ActualArguments.Count -gt $ExpectedPrefix.Count) 'create identity provision 参数不完整'
+            Assert-True (
+                (($ActualArguments[0..($ExpectedPrefix.Count - 1)] -join "`0") -ceq ($ExpectedPrefix -join "`0"))
+            ) ("bootstrap 路径参数边界发生变化：" + ($ActualArguments -join '|'))
+        }
+        finally {
+            Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
+        }
     }
 
     Invoke-Test '四个 WSL 入口拒绝非单路径段测试名称' {
@@ -434,7 +478,7 @@ try {
         $Arguments = @{
             DistroName = $CreateName
             AuthorizedRoot = $AuthorizedRoot
-            WslExecutable = $FakeWsl
+            WslExecutable = $FakeWslArguments
             DownloadExecutable = $FakeDownload
             Bootstrap = $true
         }
@@ -446,8 +490,8 @@ try {
         }
         $Log = Read-FakeLog $FakeLog
         Assert-True ($Log -match "--import\s+$([regex]::Escape($CreateName))") ("verified 下载后未 import 精确名称：$Log")
-        Assert-True ($Log -match "-d $CreateName -u root -- bash .+ --system-only --target-user minios") ("缺少 root system-only bootstrap：$Log")
-        Assert-True ($Log -match "-d $CreateName -u minios -- bash .+ --toolchain-only --target-user minios") ("缺少普通用户 toolchain-only bootstrap：$Log")
+        Assert-True ($Log -match "-d $CreateName -u root --exec bash .+ --system-only --target-user minios") ("缺少 root system-only bootstrap：$Log")
+        Assert-True ($Log -match "-d $CreateName -u minios --exec bash .+ --toolchain-only --target-user minios") ("缺少普通用户 toolchain-only bootstrap：$Log")
     }
 
     Invoke-Test 'create SkipBootstrap 可绑定且与 Bootstrap 冲突' {
@@ -456,7 +500,7 @@ try {
         $Arguments = @{
             DistroName = $DistroName
             AuthorizedRoot = $AuthorizedRoot
-            WslExecutable = $FakeWsl
+            WslExecutable = $FakeWslArguments
             Bootstrap = $true
             SkipBootstrap = $true
         }

@@ -205,9 +205,9 @@ function Get-VerifiedRootfs {
 }
 
 function Invoke-Bootstrap {
-    & $WslExecutable -d $DistroName -u root -- bash "$RepoWslPath/environment/bootstrap-inside.sh" --system-only --target-user minios
+    & $WslExecutable -d $DistroName -u root --exec bash "$RepoWslPath/environment/bootstrap-inside.sh" --system-only --target-user minios
     if ($LASTEXITCODE -ne 0) { throw 'WSL system bootstrap 失败' }
-    & $WslExecutable -d $DistroName -u minios -- bash "$RepoWslPath/environment/bootstrap-inside.sh" --toolchain-only --target-user minios
+    & $WslExecutable -d $DistroName -u minios --exec bash "$RepoWslPath/environment/bootstrap-inside.sh" --toolchain-only --target-user minios
     if ($LASTEXITCODE -ne 0) { throw 'WSL toolchain bootstrap 失败' }
 }
 
@@ -217,7 +217,7 @@ function Invoke-WslIdentityProvision {
         $script:ValidatedRegistration.Version -ne 2) {
         throw '缺少当前发行版的可信 Lxss ownership 结果'
     }
-    & $WslExecutable -d $DistroName -u root -- bash "$RepoWslPath/environment/bootstrap-inside.sh" `
+    & $WslExecutable -d $DistroName -u root --exec bash "$RepoWslPath/environment/bootstrap-inside.sh" `
         --provision-wsl-identity `
         --expected-distro $DistroName `
         --registration-id $script:ValidatedRegistration.RegistrationId `
