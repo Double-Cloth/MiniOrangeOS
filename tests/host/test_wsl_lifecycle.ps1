@@ -629,14 +629,16 @@ try {
         $EnterArgs = @{
             DistroName = $DistroName
             AuthorizedRoot = $AuthorizedRoot
-            WslExecutable = $FakeWsl
+            WslExecutable = $FakeWslArguments
             Command = 'true'
         }
         Invoke-WithFakeLxss $EnterScript $EnterArgs $DistroName $InstallPath
-        Assert-True ((Read-FakeLog $FakeLog) -match "-d $([regex]::Escape($DistroName)) -u minios") '未以 minios 用户进入精确名称的 fake 发行版'
+        $Log = Read-FakeLog $FakeLog
+        Assert-True ($Log -match "-d $([regex]::Escape($DistroName)) -u root --exec unshare") '未通过私有 mount namespace 进入精确名称的 fake 发行版'
+        Assert-True ($Log -match 'runuser -u minios') 'workspace runner 未降权到 minios 用户'
     }
 
-    Invoke-Test 'enter 单个命令字符串通过 bash -lc 精确保持' {
+    Invoke-Test 'enter 通过私有挂载精确保持源路径和命令 argv' {
         $ArgumentsLog = Join-Path $TemporaryRoot 'wsl-arguments.log'
         $env:FAKE_WSL_JSON_LOG = $ArgumentsLog
         $env:FAKE_WSL_LIST = $DistroName
@@ -654,9 +656,17 @@ try {
         $ActualArguments = @($Lines[($LastCall + 1)..($Lines.Length - 1)] | ForEach-Object {
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_.Substring(4)))
         })
-        $ExpectedCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $ComplexCommand
-        $ExpectedArguments = @('-d', $DistroName, '-u', 'minios', '--exec', 'bash', '-lc', $ExpectedCommand)
-        Assert-True (($ActualArguments -join "`0") -ceq ($ExpectedArguments -join "`0")) ("命令字符串边界发生变化：" + ($ActualArguments -join '|'))
+        $ExpectedPrefix = @('-d', $DistroName, '-u', 'root', '--exec', 'unshare', '--mount', '--propagation', 'private', 'bash', '-c')
+        Assert-True ($ActualArguments.Count -eq 15) ("enter 参数数量发生变化：" + ($ActualArguments -join '|'))
+        Assert-True (
+            (($ActualArguments[0..($ExpectedPrefix.Count - 1)] -join "`0") -ceq ($ExpectedPrefix -join "`0"))
+        ) ("私有挂载入口前缀发生变化：" + ($ActualArguments -join '|'))
+        Assert-True ($ActualArguments[11] -match 'mount --bind "\$source_path" "\$workspace"') 'workspace runner 缺少 bind mount'
+        Assert-True ($ActualArguments[11] -match 'runuser -u minios') 'workspace runner 缺少 minios 降权'
+        Assert-True ($ActualArguments[11] -match 'MINIOS_REPO_MOUNT="\$workspace"') 'workspace runner 缺少安全挂载根映射'
+        Assert-True ($ActualArguments[12] -ceq 'bash') 'workspace runner argv[0] 发生变化'
+        Assert-True ($ActualArguments[13] -ceq $RepoWslPath) '仓库源路径参数边界发生变化'
+        Assert-True ($ActualArguments[14] -ceq $ComplexCommand) '用户命令参数边界发生变化'
         Remove-Item Env:FAKE_WSL_JSON_LOG -ErrorAction SilentlyContinue
     }
 
@@ -715,6 +725,65 @@ try {
 
     Invoke-Test '真实 enter 单条命令使用 bash -lc 执行' {
         & $EnterScript -Command 'test "$(printf enter-ok && printf second)" = enter-oksecond'
+    }
+
+    Invoke-Test '真实 enter 跨调用保持稳定安全路径' {
+        & $EnterScript -Command 'test "$PWD" = /run/miniorangeos-workspace'
+        & $EnterScript -Command 'test "$PWD" = /run/miniorangeos-workspace'
+    }
+
+    Invoke-Test '真实 enter 支持 Windows 合法特殊字符路径全集' {
+        $SpecialName = '工作区 !#$%&''()+,-.;=@[]^_`{}~'
+        $SpecialRepo = Join-Path $TemporaryRoot $SpecialName
+        $SpecialWslPath = ConvertTo-MiniosWslPath $SpecialRepo
+        [void][IO.Directory]::CreateDirectory((Join-Path $SpecialRepo 'environment\wsl'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $SpecialRepo 'config'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $SpecialRepo 'tools'))
+        [IO.File]::Copy($EnterScript, (Join-Path $SpecialRepo 'environment\wsl\enter.ps1'))
+        [IO.File]::Copy((Join-Path $WslDirectory 'common.ps1'), (Join-Path $SpecialRepo 'environment\wsl\common.ps1'))
+        [IO.File]::Copy((Join-Path $RepoRoot 'config\wsl.psd1'), (Join-Path $SpecialRepo 'config\wsl.psd1'))
+        [IO.File]::Copy((Join-Path $RepoRoot 'tools\build_dir_guard.py'), (Join-Path $SpecialRepo 'tools\build_dir_guard.py'))
+        [IO.File]::WriteAllText(
+            (Join-Path $SpecialRepo 'Makefile'),
+            "path-probe:`n`t@python3 tools/build_dir_guard.py prepare --repo `"`$(CURDIR)`" --build build`n`t@python3 probe.py`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.File]::WriteAllText(
+            (Join-Path $SpecialRepo 'probe.py'),
+            @'
+import json
+import os
+from pathlib import Path
+
+Path("probe.json").write_text(
+    json.dumps(
+        {
+            "cwd": os.getcwd(),
+            "repo_mount": os.environ.get("MINIOS_REPO_MOUNT"),
+            "repo_source": os.environ.get("MINIOS_REPO_SOURCE"),
+            "uid": os.getuid(),
+        }
+    ),
+    encoding="utf-8",
+)
+'@,
+            [Text.UTF8Encoding]::new($false)
+        )
+        Push-Location -LiteralPath $SpecialRepo
+        try {
+            & '.\environment\wsl\enter.ps1' -Command 'make --no-print-directory -s path-probe'
+        }
+        finally {
+            Pop-Location
+        }
+        $Probe = Get-Content -LiteralPath (Join-Path $SpecialRepo 'probe.json') -Raw | ConvertFrom-Json
+        Assert-True ($Probe.uid -eq 1000) "特殊字符路径命令未以 minios UID 执行：$($Probe.uid)"
+        Assert-True ($Probe.repo_source -ceq $SpecialWslPath) "特殊字符源路径 argv 不匹配：$($Probe.repo_source)"
+        Assert-True ($Probe.cwd -ceq '/run/miniorangeos-workspace') "Make 未在稳定安全挂载路径运行：$($Probe.cwd)"
+        Assert-True ($Probe.repo_mount -ceq $Probe.cwd) "安全挂载根环境映射不匹配：$($Probe.repo_mount)"
+        $Marker = Get-Content -LiteralPath (Join-Path $SpecialRepo 'build\.miniorangeos-build-root') -Raw | ConvertFrom-Json
+        Assert-True ($Marker.repo_path -ceq $SpecialWslPath) "构建 marker 未记录真实特殊字符路径：$($Marker.repo_path)"
+        Assert-True ($Marker.build_path -ceq "$SpecialWslPath/build") "构建 marker 路径不匹配：$($Marker.build_path)"
     }
 
     Invoke-Test '正式 WSL identity 与 Windows Lxss 注册绑定' {

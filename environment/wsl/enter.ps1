@@ -9,14 +9,64 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'common.ps1')
+$CommonPath = [IO.Path]::Combine($PSScriptRoot, 'common.ps1')
+. ([scriptblock]::Create([IO.File]::ReadAllText($CommonPath)))
 $PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
 $ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
 if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
 $RepoWslPath = ConvertTo-MiniosWslPath $PathConfiguration.RepoRoot
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
-$DistroUser = 'minios'
 $script:LastWslShellExitCode = 0
+$WorkspaceRunner = @'
+set -euo pipefail
+
+readonly source_path="$1"
+readonly shell_command="$2"
+case "$source_path" in
+    /mnt/[a-z]/*) ;;
+    *)
+        printf 'MiniOrangeOS workspace source is not a WSL local-drive path: %s\n' "$source_path" >&2
+        exit 2
+        ;;
+esac
+if [[ ! -d "$source_path" || -L "$source_path" ]]; then
+    printf 'MiniOrangeOS workspace source is not a regular directory: %s\n' "$source_path" >&2
+    exit 2
+fi
+
+readonly workspace='/run/miniorangeos-workspace'
+if [[ -L "$workspace" || ( -e "$workspace" && ! -d "$workspace" ) ]]; then
+    printf 'MiniOrangeOS workspace mountpoint is not a regular directory: %s\n' "$workspace" >&2
+    exit 2
+fi
+if mountpoint -q -- "$workspace"; then
+    printf 'MiniOrangeOS workspace mountpoint is unexpectedly mounted: %s\n' "$workspace" >&2
+    exit 2
+fi
+install -d -o root -g root -m 0755 -- "$workspace"
+if [[ "$(stat -c '%F|%u|%g|%a' -- "$workspace")" != 'directory|0|0|755' ]]; then
+    printf 'MiniOrangeOS workspace mountpoint metadata is invalid: %s\n' "$workspace" >&2
+    exit 2
+fi
+mounted=0
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if ((mounted)); then
+        if ! umount -- "$workspace"; then
+            printf 'MiniOrangeOS workspace unmount failed: %s\n' "$workspace" >&2
+            status=1
+        fi
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+
+mount --bind "$source_path" "$workspace"
+mounted=1
+runuser -u minios -- env MINIOS_REPO_SOURCE="$source_path" MINIOS_REPO_MOUNT="$workspace" \
+    bash -c 'cd -- "$1" && exec bash -lc "$2"' bash "$workspace" "$shell_command"
+'@
 
 function Assert-AllowedDistroName {
     if ($DistroName -ceq 'MiniOrangeOS-Dev') { return }
@@ -30,7 +80,7 @@ function Assert-NoReparsePointComponents {
     $Current = [IO.Path]::GetPathRoot($FullPath)
     foreach ($Part in $FullPath.Substring($Current.Length).Split('\')) {
         if (-not $Part) { continue }
-        $Current = Join-Path $Current $Part
+        $Current = [IO.Path]::Combine($Current, $Part)
         if (Test-Path -LiteralPath $Current) {
             $Item = Get-Item -LiteralPath $Current -Force
             if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "路径包含 ReparsePoint：$Current" }
@@ -70,16 +120,17 @@ function ConvertTo-WindowsNativeArgument {
     return '"' + $Escaped + '"'
 }
 
-function Invoke-WslShellCommand {
+function Invoke-WslWorkspaceCommand {
     param(
         [string]$Executable,
         [string]$Name,
-        [string]$User,
+        [string]$SourcePath,
         [AllowEmptyString()][string]$ShellCommand
     )
     if ([IO.Path]::GetExtension($Executable) -ieq '.cmd') {
         # 测试替身；生产 wsl.exe 与精确 argv 测试均走 ProcessStartInfo。
-        & $Executable -d $Name -u $User --exec bash -lc $ShellCommand
+        & $Executable -d $Name -u root --exec unshare --mount --propagation private `
+            bash -c $WorkspaceRunner bash $SourcePath $ShellCommand
         $script:LastWslShellExitCode = $LASTEXITCODE
         return
     }
@@ -87,9 +138,13 @@ function Invoke-WslShellCommand {
     $Info = [Diagnostics.ProcessStartInfo]::new()
     $Info.FileName = $ResolvedExecutable
     $Info.UseShellExecute = $false
-    # wsl.exe 的 option parser 不接受被引号包裹的 -d/-u/--exec；发行版名和
-    # 用户名均为项目固定安全单段，只有任意 shell 字符串需要 CommandLineToArgvW 编码。
-    $Info.Arguments = '-d ' + $Name + ' -u ' + $User + ' --exec bash -lc ' +
+    # wsl.exe 的 option parser 不接受被引号包裹的固定选项；发行版名已经过
+    # 单段白名单校验。Runner、源路径和用户命令分别按 CommandLineToArgvW
+    # 编码，源路径中的 Shell/Make 特殊字符始终只作为 argv 数据传递。
+    $Info.Arguments = '-d ' + $Name +
+        ' -u root --exec unshare --mount --propagation private bash -c ' +
+        (ConvertTo-WindowsNativeArgument $WorkspaceRunner) + ' bash ' +
+        (ConvertTo-WindowsNativeArgument $SourcePath) + ' ' +
         (ConvertTo-WindowsNativeArgument $ShellCommand)
     $Process = [Diagnostics.Process]::Start($Info)
     $Process.WaitForExit()
@@ -110,9 +165,9 @@ if ($null -ne $Command -and $Command.Count -gt 1) {
 }
 $Root = [IO.Path]::GetFullPath($AuthorizedRoot)
 $ExpectedPath = if ($DistroName -ceq 'MiniOrangeOS-Dev') {
-    [IO.Path]::GetFullPath((Join-Path $Root 'rootfs'))
+    [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'rootfs'))
 } else {
-    [IO.Path]::GetFullPath((Join-Path (Join-Path $Root 'drills') $DistroName))
+    [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'drills', $DistroName))
 }
 Assert-NoReparsePointComponents $ExpectedPath
 $Names = @(& $WslExecutable --list --quiet)
@@ -121,11 +176,10 @@ $Names = @($Names | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Obj
 if (@($Names | Where-Object { $_ -ceq $DistroName }).Count -ne 1) { throw "WSL 发行版不存在（精确匹配）：$DistroName" }
 Assert-WslDistributionOwnership $DistroName $ExpectedPath
 if ($null -ne $Command -and $Command.Count -eq 1) {
-    $RepoCommand = 'cd -- ' + (ConvertTo-MiniosShellLiteral $RepoWslPath) + ' && ' + $Command[0]
-    Invoke-WslShellCommand $WslExecutable $DistroName $DistroUser $RepoCommand
-    $global:LASTEXITCODE = $script:LastWslShellExitCode
+    Invoke-WslWorkspaceCommand $WslExecutable $DistroName $RepoWslPath $Command[0]
 }
 else {
-    & $WslExecutable -d $DistroName -u $DistroUser
+    Invoke-WslWorkspaceCommand $WslExecutable $DistroName $RepoWslPath 'exec bash -l'
 }
+$global:LASTEXITCODE = $script:LastWslShellExitCode
 if ($LASTEXITCODE -ne 0) { throw "进入 WSL 失败：$DistroName" }

@@ -1,8 +1,8 @@
 function Get-MiniosWslPathConfiguration {
     param([Parameter(Mandatory = $true)][string]$WslDirectory)
 
-    $RepoRoot = [IO.Path]::GetFullPath((Join-Path $WslDirectory '..\..'))
-    $ConfigPath = Join-Path $RepoRoot 'config\wsl.psd1'
+    $RepoRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($WslDirectory, '..', '..'))
+    $ConfigPath = [IO.Path]::Combine($RepoRoot, 'config', 'wsl.psd1')
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
         throw "Missing WSL path configuration: $ConfigPath"
     }
@@ -36,10 +36,4 @@ function ConvertTo-MiniosWslPath {
     $Drive = $Matches[1].ToLowerInvariant()
     $RelativePath = $FullPath.Substring($PathRoot.Length).Replace('\', '/')
     return "/mnt/$Drive/$RelativePath"
-}
-
-function ConvertTo-MiniosShellLiteral {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    return "'" + $Value.Replace("'", "'`"'`"'") + "'"
 }

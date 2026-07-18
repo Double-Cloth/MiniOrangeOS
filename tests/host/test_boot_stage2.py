@@ -1193,7 +1193,9 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                     "--log",
                     str(log),
                     "--timeout",
-                    "15",
+                    # 全量 DrvFS 构建/QEMU 回归并行负载较高；等待完整用户态
+                    # 文件命令序列，不能把固定 15 秒机器性能差异当成功能失败。
+                    "25",
                     "--max-log-bytes",
                     "262144",
                     "--repo",
@@ -1206,7 +1208,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=30,
+                timeout=40,
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)

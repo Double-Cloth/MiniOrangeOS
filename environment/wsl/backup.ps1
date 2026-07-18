@@ -8,7 +8,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'common.ps1')
+$CommonPath = [IO.Path]::Combine($PSScriptRoot, 'common.ps1')
+. ([scriptblock]::Create([IO.File]::ReadAllText($CommonPath)))
 $PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
 $ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
 if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
@@ -22,8 +23,8 @@ function Assert-AllowedDistroName {
 
 function Get-ExpectedInstallPath {
     $Root = [IO.Path]::GetFullPath($AuthorizedRoot)
-    if ($DistroName -ceq 'MiniOrangeOS-Dev') { return [IO.Path]::GetFullPath((Join-Path $Root 'rootfs')) }
-    return [IO.Path]::GetFullPath((Join-Path (Join-Path $Root 'drills') $DistroName))
+    if ($DistroName -ceq 'MiniOrangeOS-Dev') { return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'rootfs')) }
+    return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'drills', $DistroName))
 }
 
 function Assert-PathWithinRoot {
@@ -43,7 +44,7 @@ function Assert-NoReparsePointComponents {
     $Current = [IO.Path]::GetPathRoot($FullPath)
     foreach ($Part in $FullPath.Substring($Current.Length).Split('\')) {
         if (-not $Part) { continue }
-        $Current = Join-Path $Current $Part
+        $Current = [IO.Path]::Combine($Current, $Part)
         if (Test-Path -LiteralPath $Current) {
             $Item = Get-Item -LiteralPath $Current -Force
             if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "路径包含 ReparsePoint：$Current" }
@@ -94,9 +95,9 @@ $ExpectedPath = Get-ExpectedInstallPath
 [void](Assert-PathWithinRoot $ExpectedPath $AuthorizedRoot)
 Assert-NoReparsePointComponents ([IO.Path]::GetFullPath($AuthorizedRoot))
 Assert-NoReparsePointComponents $ExpectedPath
-$ExportsRoot = Assert-PathWithinRoot (Join-Path $AuthorizedRoot 'exports') $AuthorizedRoot
+$ExportsRoot = Assert-PathWithinRoot ([IO.Path]::Combine($AuthorizedRoot, 'exports')) $AuthorizedRoot
 if (-not $ExportPath) {
-    $ExportPath = Join-Path $ExportsRoot ("{0}-{1}.tar" -f $DistroName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $ExportPath = [IO.Path]::Combine($ExportsRoot, ("{0}-{1}.tar" -f $DistroName, (Get-Date -Format 'yyyyMMdd-HHmmss')))
 }
 $ExportPath = Assert-PathWithinRoot $ExportPath $ExportsRoot
 $PartialPath = $ExportPath + '.partial'

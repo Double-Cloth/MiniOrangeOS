@@ -9,7 +9,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'common.ps1')
+$CommonPath = [IO.Path]::Combine($PSScriptRoot, 'common.ps1')
+. ([scriptblock]::Create([IO.File]::ReadAllText($CommonPath)))
 $PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
 $ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
 if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
@@ -24,8 +25,8 @@ function Assert-AllowedDistroName {
 
 function Get-ExpectedInstallPath {
     $Root = [IO.Path]::GetFullPath($AuthorizedRoot)
-    if ($DistroName -ceq 'MiniOrangeOS-Dev') { return [IO.Path]::GetFullPath((Join-Path $Root 'rootfs')) }
-    return [IO.Path]::GetFullPath((Join-Path (Join-Path $Root 'drills') $DistroName))
+    if ($DistroName -ceq 'MiniOrangeOS-Dev') { return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'rootfs')) }
+    return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'drills', $DistroName))
 }
 
 function Assert-NoReparsePointComponents {
@@ -34,7 +35,7 @@ function Assert-NoReparsePointComponents {
     $Current = [IO.Path]::GetPathRoot($FullPath)
     foreach ($Part in $FullPath.Substring($Current.Length).Split('\')) {
         if (-not $Part) { continue }
-        $Current = Join-Path $Current $Part
+        $Current = [IO.Path]::Combine($Current, $Part)
         if (Test-Path -LiteralPath $Current) {
             $Item = Get-Item -LiteralPath $Current -Force
             if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "路径包含 ReparsePoint：$Current" }

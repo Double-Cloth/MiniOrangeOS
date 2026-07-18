@@ -77,6 +77,8 @@ class GuardError(Exception):
 class Location:
     repo_path: str
     build_path: str
+    marker_repo_path: str
+    marker_build_path: str
     relative_parts: tuple[str, ...]
 
 
@@ -167,16 +169,70 @@ def _validate_arguments(repo_argument: str, build_argument: str) -> Location:
     parts = tuple(relative.split(os.sep))
     if not parts or parts[0] in RESERVED_TOP_LEVEL:
         _fail(f"BUILD_DIR 使用了源码保留目录：{parts[0] if parts else relative}")
-    return Location(repo_path, build_path, parts)
+
+    # enter.ps1 会在私有 mount namespace 中把任意 Windows 仓库路径绑定到
+    # 一个只含安全字符的短路径。文件操作使用短路径；marker 按 mount/source
+    # 根映射回真实路径，因此仓库内测试副本也保持各自身份，不降低清理边界。
+    source_root = os.environ.get("MINIOS_REPO_SOURCE")
+    mount_root = os.environ.get("MINIOS_REPO_MOUNT")
+    if (source_root is None) != (mount_root is None):
+        _fail("MINIOS_REPO_SOURCE 与 MINIOS_REPO_MOUNT 必须同时设置")
+    marker_repo_path = repo_path
+    if source_root is not None and mount_root is not None:
+        for name, path in (
+            ("MINIOS_REPO_SOURCE", source_root),
+            ("MINIOS_REPO_MOUNT", mount_root),
+        ):
+            if not path or "\x00" in path:
+                _fail(f"{name} 不得为空或包含 NUL")
+            if (
+                not os.path.isabs(path)
+                or os.path.abspath(path) != path
+                or os.path.normpath(path) != path
+            ):
+                _fail(f"{name} 必须是规范绝对路径")
+        try:
+            common = os.path.commonpath((mount_root, repo_path))
+        except ValueError as error:
+            _fail(f"无法映射私有 workspace：{error}")
+        if common == mount_root:
+            relative_repo = os.path.relpath(repo_path, mount_root)
+            marker_repo_path = os.path.normpath(
+                os.path.join(source_root, relative_repo)
+            )
+        # 测试会把仓库复制到 /tmp 等独立文件系统。它们不经过 bind mount，
+        # marker 应记录副本自身路径；父进程携带的映射环境不能污染独立副本。
+    marker_build_path = os.path.join(marker_repo_path, *parts)
+    return Location(
+        repo_path,
+        build_path,
+        marker_repo_path,
+        marker_build_path,
+        parts,
+    )
 
 
 def _open_repo(location: Location) -> int:
     descriptor = _open_absolute_directory(location.repo_path)
-    status = os.fstat(descriptor)
-    if not stat.S_ISDIR(status.st_mode):
+    marker_descriptor: int | None = None
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISDIR(status.st_mode):
+            _fail("repo 不是目录")
+        if location.marker_repo_path != location.repo_path:
+            marker_descriptor = _open_absolute_directory(location.marker_repo_path)
+            marker_status = os.fstat(marker_descriptor)
+            if not stat.S_ISDIR(marker_status.st_mode):
+                _fail("MINIOS_REPO_SOURCE 不是目录")
+            if _identity(marker_status) != _identity(status):
+                _fail("MINIOS_REPO_SOURCE 与当前仓库不是同一目录")
+        return descriptor
+    except BaseException:
         os.close(descriptor)
-        _fail("repo 不是目录")
-    return descriptor
+        raise
+    finally:
+        if marker_descriptor is not None:
+            os.close(marker_descriptor)
 
 
 def _open_parent(repo_descriptor: int, location: Location) -> tuple[int | None, str]:
@@ -207,10 +263,10 @@ def _marker_value(
 ) -> dict[str, int | str]:
     return {
         "schema": MARKER_SCHEMA,
-        "repo_path": location.repo_path,
+        "repo_path": location.marker_repo_path,
         "repo_dev": repo_status.st_dev,
         "repo_ino": repo_status.st_ino,
-        "build_path": location.build_path,
+        "build_path": location.marker_build_path,
         "build_dev": build_status.st_dev,
         "build_ino": build_status.st_ino,
     }

@@ -10,7 +10,7 @@
 <任意本地目录>\MiniOrangeOS
 ```
 
-WSL 中通过脚本自动推导的 `/mnt/<drive>/.../MiniOrangeOS` 访问同一工作树。不要在代码或文档中写死仓库绝对路径。
+WSL 入口把自动推导的 `/mnt/<drive>/.../MiniOrangeOS` 作为原始 argv 数据传入私有 mount namespace，再通过 `/run/miniorangeos-workspace` 安全短路径访问同一工作树。原路径可以包含全部 Windows 合法字符；不要在代码或文档中写死仓库绝对路径。
 
 固定规则：
 
@@ -44,7 +44,7 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/miniorangeos-dev
 | `config/wsl.psd1` | 集中配置必须保持绝对形式的 WSL 授权根 |
 | `environment/wsl/common.ps1` | 从脚本位置解析仓库根、加载路径配置并推导 WSL 路径 |
 | `environment/wsl/create.ps1` | 定向创建/复用 `MiniOrangeOS-Dev`，可执行 bootstrap 或身份迁移 |
-| `environment/wsl/enter.ps1` | 校验 ownership 后进入发行版或执行单个 `bash -lc` 命令 |
+| `environment/wsl/enter.ps1` | 校验 ownership，通过临时私有绑定挂载屏蔽路径语法字符，再降权进入发行版或执行单个 `bash -lc` 命令 |
 | `environment/wsl/backup.ps1` | 终止并导出专用发行版到授权根 `exports` |
 | `environment/wsl/destroy.ps1` | 默认预览；精确确认后只注销专用发行版 |
 | `environment/Containerfile` | 固定 Ubuntu 24.04 OCI 开发镜像 |
@@ -84,7 +84,7 @@ environment/wsl/destroy.ps1 -Apply -ConfirmName MiniOrangeOS-Dev
 
 容器销毁无参数只预览且不删除任何资源；只有 `--all` 才执行定向清理。WSL 销毁同样默认只预览，必须同时提供 `-Apply` 和大小写精确的 `-ConfirmName MiniOrangeOS-Dev`。禁止使用无范围的 `system prune` 或删除整个 `$HOME/.local/share`。
 
-`environment/wsl/enter.ps1 -Command` 会先切换到自动推导的仓库根目录，再执行单个 `bash -lc` 命令，因此公开命令和文档都应使用仓库相对路径。
+`environment/wsl/enter.ps1 -Command` 会在私有 mount namespace 中把自动推导的仓库根绑定到安全短路径，降权到 `minios` 后再执行单个 `bash -lc` 命令，因此公开命令和文档都应使用仓库相对路径。源路径和用户命令始终是两个独立 argv，不拼接进 root Shell；挂载仅存在于该次进程树，退出后自动清理。需要支持特殊字符路径时必须通过该入口进入 WSL，不能绕过入口后从原始 `/mnt/<drive>/...` 路径直接调用 Make。
 
 ## 开发流程
 

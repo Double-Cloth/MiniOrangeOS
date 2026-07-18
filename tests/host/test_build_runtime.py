@@ -158,6 +158,29 @@ def _is_wsl_linux() -> bool:
     return "microsoft" in release.casefold()
 
 
+def _drvfs_source_path(path: Path) -> Path | None:
+    """返回安全访问路径对应的真实 DrvFS 路径。"""
+
+    if re.match(r"^/mnt/[a-z](?:/|$)", path.as_posix()):
+        return path
+    source_value = os.environ.get("MINIOS_REPO_SOURCE")
+    mount_value = os.environ.get("MINIOS_REPO_MOUNT")
+    if not source_value or not mount_value:
+        return None
+    source_root = Path(source_value)
+    mount_root = Path(mount_value)
+    if not re.match(r"^/mnt/[a-z](?:/|$)", source_root.as_posix()):
+        return None
+    try:
+        relative = path.relative_to(mount_root)
+        source_path = source_root / relative
+        if not path.samefile(source_path):
+            return None
+    except (OSError, ValueError):
+        return None
+    return source_path
+
+
 @unittest.skipUnless(_is_wsl_linux(), "真实构建契约只在专用 WSL Linux 中执行")
 class BuildRuntimeTests(unittest.TestCase):
     @contextlib.contextmanager
@@ -186,8 +209,8 @@ class BuildRuntimeTests(unittest.TestCase):
                     f"测试工作副本逃逸权威工作树：{workspace}",
                 )
                 self.assertTrue(
-                    workspace.as_posix().startswith("/mnt/"),
-                    f"测试工作副本不在 Windows DrvFS 挂载：{workspace}",
+                    _drvfs_source_path(workspace) is not None,
+                    f"测试工作副本未映射到同一 Windows DrvFS 目录：{workspace}",
                 )
                 yield workspace
         finally:

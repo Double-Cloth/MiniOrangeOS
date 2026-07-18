@@ -12,12 +12,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'common.ps1')
+$CommonPath = [IO.Path]::Combine($PSScriptRoot, 'common.ps1')
+. ([scriptblock]::Create([IO.File]::ReadAllText($CommonPath)))
 $PathConfiguration = Get-MiniosWslPathConfiguration -WslDirectory $PSScriptRoot
 $ProductionAuthorizedRoot = $PathConfiguration.AuthorizedRoot
 if (-not $AuthorizedRoot) { $AuthorizedRoot = $ProductionAuthorizedRoot }
 $RepoRoot = $PathConfiguration.RepoRoot
-$VersionsPath = Join-Path $RepoRoot 'environment\versions.env'
+$VersionsPath = [IO.Path]::Combine($RepoRoot, 'environment', 'versions.env')
 $RepoWslPath = ConvertTo-MiniosWslPath $RepoRoot
 $SafeTestDistroPattern = '^MiniOrangeOS-Dev-Test-[A-Za-z0-9][A-Za-z0-9_-]*$'
 $script:ValidatedRegistration = $null
@@ -45,9 +46,9 @@ function Get-ExpectedInstallPath {
     param([string]$Name)
     $Root = [IO.Path]::GetFullPath($AuthorizedRoot)
     if ($Name -ceq 'MiniOrangeOS-Dev') {
-        return [IO.Path]::GetFullPath((Join-Path $Root 'rootfs'))
+        return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'rootfs'))
     }
-    return [IO.Path]::GetFullPath((Join-Path (Join-Path $Root 'drills') $Name))
+    return [IO.Path]::GetFullPath([IO.Path]::Combine($Root, 'drills', $Name))
 }
 
 function Assert-PathWithinAuthorizedRoot {
@@ -67,7 +68,7 @@ function Assert-NoReparsePointComponents {
     $Current = [IO.Path]::GetPathRoot($FullPath)
     foreach ($Part in $FullPath.Substring($Current.Length).Split('\')) {
         if (-not $Part) { continue }
-        $Current = Join-Path $Current $Part
+        $Current = [IO.Path]::Combine($Current, $Part)
         if (Test-Path -LiteralPath $Current) {
             $Item = Get-Item -LiteralPath $Current -Force
             if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -158,7 +159,7 @@ function Read-VersionLock {
 
 function Get-VerifiedRootfs {
     param([hashtable]$Versions)
-    $Downloads = Assert-PathWithinAuthorizedRoot (Join-Path $AuthorizedRoot 'downloads')
+    $Downloads = Assert-PathWithinAuthorizedRoot ([IO.Path]::Combine($AuthorizedRoot, 'downloads'))
     Assert-NoReparsePointComponents $Downloads
     [void][IO.Directory]::CreateDirectory($Downloads)
     Assert-NoReparsePointComponents $Downloads
@@ -166,7 +167,7 @@ function Get-VerifiedRootfs {
         $Candidate = [IO.Path]::GetFullPath($RootfsPath)
     }
     else {
-        $Candidate = [IO.Path]::GetFullPath((Join-Path $Downloads ("ubuntu-{0}-wsl-amd64.wsl" -f $Versions.MINIOS_WSL_IMAGE_VERSION)))
+        $Candidate = [IO.Path]::GetFullPath([IO.Path]::Combine($Downloads, ("ubuntu-{0}-wsl-amd64.wsl" -f $Versions.MINIOS_WSL_IMAGE_VERSION)))
         $Partial = $Candidate + '.partial'
         [void](Assert-PathWithinAuthorizedRoot $Partial)
         Assert-NoReparsePointComponents $Partial
