@@ -172,6 +172,18 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("unsaved changes", edit)
         self.assertIn("[USER] edit command PASS", edit)
 
+    def test_shell_tab_completion_uses_builtins_and_bin_directory(self) -> None:
+        shell = (ROOT / "user/programs/sh.c").read_text(encoding="utf-8")
+
+        self.assertIn("shell_builtin_commands", shell)
+        self.assertIn("collect_command_matches", shell)
+        self.assertIn('minios_open("/bin", MINIOS_O_RDONLY)', shell)
+        self.assertIn("minios_readdir", shell)
+        self.assertIn("completion.common_length", shell)
+        self.assertIn("complete_command(line, sizeof(line)", shell)
+        self.assertIn("[USER] shell completion PASS", shell)
+        self.assertNotIn("character = (uint8_t)' '", shell)
+
     def test_shutdown_builtin_reaches_qemu_exit_device(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         abi = (ROOT / "include/minios/abi/syscall.h").read_text(encoding="utf-8")
