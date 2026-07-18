@@ -27,5 +27,6 @@ int32_t minios_chdir(const char *path);
 int32_t minios_getcwd(char *buffer, size_t capacity);
 uint32_t minios_getticks(void);
 int32_t minios_ps(struct minios_process_info *processes, size_t capacity);
+_Noreturn void minios_shutdown(void);
 
 #endif

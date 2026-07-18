@@ -5,6 +5,7 @@
 #include <minios/errno.h>
 #include <minios/drivers/keyboard.h>
 #include <minios/drivers/pit.h>
+#include <minios/drivers/power.h>
 #include <minios/fs/vfs.h>
 #include <minios/mm/heap.h>
 #include <minios/mm/usercopy.h>
@@ -626,6 +627,8 @@ void syscall_dispatch(struct trap_frame *frame)
                 (size_t)frame->ecx
             );
             break;
+        case SYS_shutdown:
+            power_shutdown();
         default:
             result = -MINIOS_ENOSYS;
             break;

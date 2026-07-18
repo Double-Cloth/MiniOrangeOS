@@ -52,8 +52,10 @@ REQUIRED_BUILD_FILES = (
     "kernel/proc/program_registry.c",
     "kernel/proc/embedded_programs.asm",
     "kernel/include/minios/drivers/ata.h",
+    "kernel/include/minios/drivers/power.h",
     "kernel/include/minios/block/block.h",
     "kernel/drivers/ata.c",
+    "kernel/drivers/power.c",
     "kernel/block/block.c",
     "include/minios/abi/minifs.h",
     "include/minios/abi/file.h",
@@ -169,6 +171,25 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("delete_line", edit)
         self.assertIn("unsaved changes", edit)
         self.assertIn("[USER] edit command PASS", edit)
+
+    def test_shutdown_builtin_reaches_qemu_exit_device(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        abi = (ROOT / "include/minios/abi/syscall.h").read_text(encoding="utf-8")
+        libc = (ROOT / "user/libc/syscall.c").read_text(encoding="utf-8")
+        shell = (ROOT / "user/programs/sh.c").read_text(encoding="utf-8")
+        kernel = (ROOT / "kernel/core/syscall.c").read_text(encoding="utf-8")
+        power = (ROOT / "kernel/drivers/power.c").read_text(encoding="utf-8")
+        runner = (ROOT / "tools/qemu_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("SYS_shutdown = 20", abi)
+        self.assertIn("minios_shutdown", libc)
+        self.assertIn('minios_streq(arguments[0], "shutdown")', shell)
+        self.assertIn("case SYS_shutdown:", kernel)
+        self.assertIn("power_shutdown();", kernel)
+        self.assertIn("QEMU_SHUTDOWN_VALUE 0x2AU", power)
+        self.assertIn("KERNEL_POWER_OBJ", makefile)
+        self.assertIn("isa-debug-exit,iobase=0xf4,iosize=0x04", runner)
+        self.assertIn("QEMU_SHUTDOWN_STATUS", runner)
 
     def test_kernel_declares_strict_embedded_elf_loader(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")

@@ -86,6 +86,10 @@ class QemuRuntimeTests(unittest.TestCase):
             "    while True: time.sleep(10)\n"
             "if scenario == 'exit':\n"
             "    raise SystemExit(0)\n"
+            "if scenario == 'shutdown':\n"
+            "    raise SystemExit(85)\n"
+            "if scenario == 'other-exit':\n"
+            "    raise SystemExit(42)\n"
             "pid_file = os.environ['MINIOS_FAKE_PID_FILE']\n"
             "helper = os.path.join(os.path.dirname(__file__), 'fake-qemu-child.py')\n"
             "child = subprocess.Popen([sys.executable, helper, pid_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
@@ -469,6 +473,18 @@ class QemuRuntimeTests(unittest.TestCase):
                 self.assertIn("format=raw", drive)
                 self.assertIn("file=", drive)
                 self.assertNotIn(";", drive)
+                device_index = argv.index("-device")
+                self.assertEqual(
+                    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+                    argv[device_index + 1],
+                )
+
+    def test_public_run_mode_accepts_only_guest_shutdown_status(self) -> None:
+        shutdown = self._make("run-serial", scenario="shutdown")
+        self.assertEqual(0, shutdown.returncode, shutdown.stdout + shutdown.stderr)
+
+        other = self._make("run-serial", scenario="other-exit")
+        self.assertNotEqual(0, other.returncode, other.stdout + other.stderr)
 
     def test_debug_and_gdb_use_loopback_only(self) -> None:
         debug = self._make("debug")

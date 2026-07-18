@@ -66,6 +66,13 @@ _Noreturn void minios_exit(int32_t status) {
     }
 }
 
+_Noreturn void minios_shutdown(void) {
+    (void)syscall0(SYS_shutdown);
+    for (;;) {
+        __asm__ volatile("ud2");
+    }
+}
+
 int32_t minios_write(int32_t descriptor, const void *buffer, size_t count) {
     return syscall3(
         SYS_write,

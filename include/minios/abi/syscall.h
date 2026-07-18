@@ -21,7 +21,8 @@ enum syscall_number {
     SYS_stat = 16,
     SYS_getticks = 17,
     SYS_ps = 18,
-    SYS_getcwd = 19
+    SYS_getcwd = 19,
+    SYS_shutdown = 20
 };
 
 #endif

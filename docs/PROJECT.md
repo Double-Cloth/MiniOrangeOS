@@ -34,7 +34,7 @@ BIOS
 | 模拟调试 | QEMU `qemu-system-i386`、GDB remote |
 | 内存 | E820、4 KiB 页、两级页表、bitmap PMM、first-fit Heap |
 | 进程 | 独立页目录、TSS、Ring 3、PIT 抢占式轮转 |
-| 系统调用 | `int 0x80`，20 个调用 |
+| 系统调用 | `int 0x80`，21 个调用 |
 | 存储 | primary master ATA PIO LBA28、512-byte sector |
 | 文件系统 | 4 KiB block、自定义 inode MiniFS、VFS/fd |
 | 用户态 | 静态 ELF32，`/bin/init` 拉起 `/bin/sh` |
@@ -129,6 +129,7 @@ Boot Info 固定 64 bytes，包含 magic/version/size/checksum、启动盘、虚
 - PS/2 初始化执行控制器/端口自检、set-1 translation 和 scanning ACK；IRQ1 解析普通与 `E0/E1` 扫描码、独立左右 Shift/Ctrl 状态，并将 ASCII 或共享特殊键码写入 128-byte 环形缓冲。
 - COM1 采用有界轮询；VGA 使用 text mode，维护硬件光标并处理退格和 Shell 清屏序列。panic 关闭中断、输出上下文并进入 `hlt` 循环。
 - ATA 驱动支持 IDENTIFY、多扇区读写、BSY/DRQ/ERR/DF、超时、容量检查和 cache flush。
+- Power 驱动通过 `isa-debug-exit` 完成官方 QEMU 运行器的主动关机；未提供该设备时关闭中断并停机，不继续执行不确定状态。
 
 ## 内存管理
 
@@ -163,7 +164,7 @@ PIT 时间片轮转可抢占不主动 `yield` 的线程。上下文切换保存 
 
 用户 ELF loader 只接受静态 ELF32 `ET_EXEC`，先完整验证所有 Header/Program Header，再分配用户页、复制 `PT_LOAD`、清零 BSS、应用页级权限并构造 `argc/argv` 栈。`spawn` 从 VFS 读取磁盘 `/bin/*.elf`；内嵌的 6 个基础 ELF 仅用于迁移一致性自检，不参与运行时路径解析。
 
-Shell 提供 256-byte 行缓冲、8 项命令历史、退格/Delete/方向键/Home/End 行编辑、`Ctrl+A/E/C/D/K/L/U` 控制、最多 16 项 argv、单/双引号、反斜杠转义、`/bin/` 补全、当前目录提示符和前台 spawn/wait。每个进程保存独立工作目录，子进程继承父进程目录；内核在进入 VFS 前统一规范化绝对/相对路径、重复 `/`、`.` 与 `..`。
+Shell 提供 256-byte 行缓冲、8 项命令历史、退格/Delete/方向键/Home/End 行编辑、`Ctrl+A/E/C/D/K/L/U` 控制、最多 16 项 argv、单/双引号、反斜杠转义、`/bin/` 补全、当前目录提示符、前台 spawn/wait 和 `shutdown` 主动关机。每个进程保存独立工作目录，子进程继承父进程目录；内核在进入 VFS 前统一规范化绝对/相对路径、重复 `/`、`.` 与 `..`。
 
 文件内容工具在既有 VFS/fd ABI 上实现，不增加系统调用：`cat -n` 可跨多个文件连续编号，`write -a` 通过 `lseek(..., SEEK_END)` 追加；`edit` 是适配 text-mode console 的 32 KiB 行式 ASCII 文本编辑器，支持范围打印、追加、按行插入/替换/删除、显式保存、未保存退出保护和 `q!` 明确丢弃。正式 Shell 自检会在 Ring 3 中完成编辑缓冲变换、写盘、重读比对和临时文件清理。
 
@@ -193,6 +194,7 @@ Shell 提供 256-byte 行缓冲、8 项命令历史、退格/Delete/方向键/Ho
 | 17 | `getticks` | 返回 tick 低 32 位 |
 | 18 | `ps` | 复制定长进程快照 |
 | 19 | `getcwd` | 复制当前进程的规范绝对工作目录 |
+| 20 | `shutdown` | 关闭中断并终止官方 QEMU 运行实例，不返回 |
 
 每个进程的 fd 0/1/2 保留给键盘输入、控制台输出和错误输出；普通文件从 fd 3 开始。全局 VFS 有 32 项 file object 池，每个对象保存 backend、inode、独立 offset、flags、refcount 和 ops。普通 fd 不跨 spawn 继承；进程 exit/fault 会关闭全部普通 fd。
 
@@ -221,7 +223,7 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 
 所有产物进入 `BUILD_DIR`。`tools/build_dir_guard.py` 以仓库身份、构建目录身份和不可复制 marker 约束 prepare/clean；源码目录、仓库外目录、symlink、特殊文件和竞态替换均 fail closed。
 
-镜像工具使用 nofollow dirfd、普通文件/单硬链接约束、分块 I/O 和同目录原子替换；失败不会覆盖已有镜像。QEMU runner 同样把镜像和日志绑定到已验证的构建目录 FD，并使用严格串口状态机、超时、debug-exit 状态和本次进程组清理。
+镜像工具使用 nofollow dirfd、普通文件/单硬链接约束、分块 I/O 和同目录原子替换；失败不会覆盖已有镜像。QEMU runner 同样把镜像和日志绑定到已验证的构建目录 FD，并使用严格串口状态机、超时、debug-exit 状态和本次进程组清理；交互 runner 只把 MiniOrangeOS 专用关机状态归一化为成功，其他 QEMU 错误保持失败。
 
 ## 已知限制
 
@@ -234,3 +236,4 @@ MiniFS Superblock 位于卷 block 0，使用 magic `MFS1`、version 1 和完整 
 - 普通 fd 不跨 spawn 继承；
 - `edit` 只处理不超过 32 KiB 的 ASCII 文本，不面向二进制文件；
 - QEMU/CI 证据不等同于真实裸机验收。
+- `shutdown` 的主动退出合同面向项目官方 QEMU runner；真实裸机关机尚未实现 ACPI/APM。

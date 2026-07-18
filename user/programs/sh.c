@@ -188,11 +188,21 @@ static int run_builtin(char **arguments, size_t argument_count)
             return -1;
         }
         return write_text(
-            "builtins: help clear cd pwd exit\n"
+            "builtins: help clear cd pwd exit shutdown\n"
             "commands: ls cat touch write edit mkdir rm cp stat echo ps sleep uptime\n"
             "diagnostics: memtest fault\n"
             "quoting:  'single quoted' \"double quoted\" backslash\\escape\n"
         ) ? 0 : -1;
+    }
+    if (minios_streq(arguments[0], "shutdown")) {
+        if (argument_count != 1U) {
+            (void)minios_print(2, "usage: shutdown\n");
+            return -1;
+        }
+        if (!write_text("Shutting down MiniOrangeOS...\n")) {
+            return -1;
+        }
+        minios_shutdown();
     }
     if (minios_streq(arguments[0], "clear")) {
         if (argument_count != 1U) {

@@ -1267,6 +1267,8 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 f"file:{log}",
                 "-no-reboot",
                 "-no-shutdown",
+                "-device",
+                "isa-debug-exit,iobase=0xf4,iosize=0x04",
             ],
             cwd=ROOT,
             stdin=subprocess.PIPE,
@@ -1301,7 +1303,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 output = log.read_text(encoding="utf-8", errors="replace")
-                if "builtins: help clear cd pwd exit" in output:
+                if "builtins: help clear cd pwd exit shutdown" in output:
                     break
                 time.sleep(0.05)
             else:
@@ -1366,13 +1368,24 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 output,
                 "键盘 IRQ 不得把每次按键作为内核日志写入终端",
             )
-        finally:
-            os.killpg(process.pid, signal.SIGTERM)
+            send_text("shutdown")
+            send_keys(b"ret")
             try:
-                process.wait(timeout=3)
+                returncode = process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=3)
+                self.fail("shutdown 命令未主动退出 QEMU")
+            self.assertEqual(85, returncode, "shutdown 未使用约定的 debug-exit 状态")
+            output = log.read_text(encoding="utf-8", errors="replace")
+            self.assertIn("Shutting down MiniOrangeOS...", output)
+            self.assertIn("[KERN] shutdown requested", output)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
             if process.stdin is not None:
                 process.stdin.close()
             if process.stderr is not None:

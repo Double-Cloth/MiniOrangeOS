@@ -105,6 +105,7 @@ result=PASS
 | `uptime` | 显示启动后的秒数与 tick | `uptime` |
 | `fault` | 故意触发用户 page fault，验证进程隔离 | `fault` |
 | `exit` | 退出当前 Shell | `exit` |
+| `shutdown` | 关闭 MiniOrangeOS 并退出当前 QEMU | `shutdown` |
 
 `edit` 启动后先显示带行号的当前内容。可使用 `p [first [last]]` 查看范围、`a [text]` 追加、`i line [text]` 插入、`r line [text]` 替换、`d line` 删除、`w` 保存、`q` 退出；存在未保存修改时，`q` 会拒绝退出，只有 `q!` 会明确丢弃。编辑器面向 ASCII 文本，接受换行和制表符，单个文件上限为 32 KiB。
 
@@ -115,15 +116,15 @@ write /hello MiniOrangeOS persists
 cat /hello
 ```
 
-正常退出 QEMU 后再次执行 `make run-curses`，再运行 `cat /hello`。默认 `build/miniorangeos.img` 未被 `make clean` 删除前，文件内容会保留。
+执行 `shutdown` 正常关闭 MiniOrangeOS 后，再次执行 `make run-curses` 并运行 `cat /hello`。默认 `build/miniorangeos.img` 未被 `make clean` 删除前，文件内容会保留。
 
-终止 QEMU 可在另一个 PowerShell 窗口执行：
+如果系统无响应，仍可在另一个 PowerShell 窗口强制终止 QEMU：
 
 ```powershell
 wsl.exe --terminate MiniOrangeOS-Dev
 ```
 
-该命令只停止发行版当前进程，不会注销或删除环境。
+`shutdown` 与该命令都会结束当前 QEMU 运行；后者会同时强制停止发行版中的其他当前进程，但不会注销或删除环境。
 
 ### 串口运行
 

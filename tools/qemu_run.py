@@ -13,6 +13,8 @@ from qemu_paths import BoundBuild, PathBoundaryError
 
 
 ENDPOINT_PATTERN = re.compile(r"tcp:127\.0\.0\.1:([1-9][0-9]{0,4})\Z")
+QEMU_SHUTDOWN_VALUE = 0x2A
+QEMU_SHUTDOWN_STATUS = (QEMU_SHUTDOWN_VALUE << 1) | 1
 
 
 class RunError(Exception):
@@ -42,6 +44,8 @@ def _qemu_command(options: argparse.Namespace, endpoint: str, image: str) -> lis
         f"file={image},format=raw,if=ide,index=0,media=disk",
         "-no-reboot",
         "-no-shutdown",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]
     if options.mode == "serial":
         command.extend(("-display", "none", "-monitor", "none", "-serial", "stdio"))
@@ -63,6 +67,12 @@ def _gdb_command(options: argparse.Namespace, port: int, kernel: str) -> list[st
         "-ex",
         f"target remote 127.0.0.1:{port}",
     ]
+
+
+def _qemu_result(returncode: int) -> int:
+    if returncode == QEMU_SHUTDOWN_STATUS:
+        return 0
+    return returncode
 
 
 def _arguments(arguments: list[str] | None) -> argparse.Namespace:
@@ -92,9 +102,11 @@ def main(arguments: list[str] | None = None) -> int:
                     ).returncode
             with build.open_file(_required(options.image, "--image"), "镜像") as image:
                 command = _qemu_command(options, endpoint, image.owner_path)
-                return subprocess.run(
-                    command, check=False, pass_fds=(image.descriptor,)
-                ).returncode
+                return _qemu_result(
+                    subprocess.run(
+                        command, check=False, pass_fds=(image.descriptor,)
+                    ).returncode
+                )
     except (RunError, PathBoundaryError, OSError) as error:
         print(f"qemu_run.py: error: {error}", file=sys.stderr)
         return 2

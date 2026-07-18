@@ -197,6 +197,8 @@ KERNEL_PIT_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/pit.o
 KERNEL_PIT_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/pit.d
 KERNEL_KEYBOARD_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.o
 KERNEL_KEYBOARD_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/keyboard.d
+KERNEL_POWER_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/power.o
+KERNEL_POWER_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/power.d
 KERNEL_ATA_OBJ := $(KERNEL_DRIVERS_BUILD_DIR)/ata.o
 KERNEL_ATA_DEP := $(KERNEL_DRIVERS_BUILD_DIR)/ata.d
 KERNEL_BLOCK_OBJ := $(KERNEL_BLOCK_BUILD_DIR)/block.o
@@ -237,6 +239,7 @@ KERNEL_C_OBJECTS := \
 	$(KERNEL_PIC_OBJ) \
 	$(KERNEL_PIT_OBJ) \
 	$(KERNEL_KEYBOARD_OBJ) \
+	$(KERNEL_POWER_OBJ) \
 	$(KERNEL_ATA_OBJ) \
 	$(KERNEL_BLOCK_OBJ) \
 	$(KERNEL_MINIFS_OBJ) \
@@ -272,6 +275,7 @@ KERNEL_C_DEPS := \
 	$(KERNEL_PIC_DEP) \
 	$(KERNEL_PIT_DEP) \
 	$(KERNEL_KEYBOARD_DEP) \
+	$(KERNEL_POWER_DEP) \
 	$(KERNEL_ATA_DEP) \
 	$(KERNEL_BLOCK_DEP) \
 	$(KERNEL_MINIFS_DEP) \
@@ -629,6 +633,9 @@ $(KERNEL_PIT_OBJ): kernel/drivers/pit.c | prepare-build-dir
 
 $(KERNEL_KEYBOARD_OBJ): kernel/drivers/keyboard.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_KEYBOARD_DEP)" -MT "$@" -c "$<" -o "$@"
+
+$(KERNEL_POWER_OBJ): kernel/drivers/power.c | prepare-build-dir
+	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_POWER_DEP)" -MT "$@" -c "$<" -o "$@"
 
 $(KERNEL_ATA_OBJ): kernel/drivers/ata.c | prepare-build-dir
 	$(CC) $(KERNEL_CFLAGS) -MMD -MP -MF "$(KERNEL_ATA_DEP)" -MT "$@" -c "$<" -o "$@"
