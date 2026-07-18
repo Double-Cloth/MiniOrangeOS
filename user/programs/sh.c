@@ -13,7 +13,18 @@
 #define SHELL_ARGUMENT_LIMIT 16U
 #define SHELL_PATH_SIZE 256U
 #define SHELL_HISTORY_LIMIT 8U
+#define SHELL_COMMAND_NAME_SIZE (MINIFS_NAME_MAX + 1U)
 #define SHELL_RUN_EXIT 1
+
+struct shell_completion {
+    size_t match_count;
+    size_t common_length;
+    char common[SHELL_COMMAND_NAME_SIZE];
+};
+
+static const char *const shell_builtin_commands[] = {
+    "help", "clear", "cd", "pwd", "exit", "shutdown"
+};
 
 static int shell_exit_status;
 static char shell_history[SHELL_HISTORY_LIMIT][SHELL_LINE_SIZE];
@@ -27,6 +38,102 @@ static bool write_text(const char *text)
 static bool is_separator(char character)
 {
     return character == ' ' || character == '\t';
+}
+
+static bool string_has_prefix(const char *value, const char *prefix,
+                              size_t prefix_length)
+{
+    size_t index;
+
+    for (index = 0U; index < prefix_length; ++index) {
+        if (value[index] == '\0' || value[index] != prefix[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool command_is_builtin(const char *command)
+{
+    size_t index;
+
+    for (index = 0U;
+         index < sizeof(shell_builtin_commands) /
+                     sizeof(shell_builtin_commands[0]);
+         ++index) {
+        if (minios_streq(command, shell_builtin_commands[index])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void completion_add(struct shell_completion *completion,
+                           const char *command, const char *prefix,
+                           size_t prefix_length)
+{
+    size_t command_length;
+    size_t index;
+
+    if (!string_has_prefix(command, prefix, prefix_length)) {
+        return;
+    }
+    command_length = minios_strlen(command);
+    if (command_length > MINIFS_NAME_MAX) {
+        return;
+    }
+    if (completion->match_count == 0U) {
+        for (index = 0U; index < command_length; ++index) {
+            completion->common[index] = command[index];
+        }
+        completion->common[command_length] = '\0';
+        completion->common_length = command_length;
+    } else {
+        size_t common_limit = completion->common_length < command_length ?
+            completion->common_length : command_length;
+
+        for (index = 0U; index < common_limit; ++index) {
+            if (completion->common[index] != command[index]) {
+                break;
+            }
+        }
+        completion->common_length = index;
+        completion->common[index] = '\0';
+    }
+    ++completion->match_count;
+}
+
+static bool collect_command_matches(const char *prefix, size_t prefix_length,
+                                    struct shell_completion *completion)
+{
+    struct minios_dirent entry;
+    int32_t descriptor;
+    int32_t result;
+    int32_t close_result;
+    size_t index;
+
+    completion->match_count = 0U;
+    completion->common_length = 0U;
+    completion->common[0] = '\0';
+    for (index = 0U;
+         index < sizeof(shell_builtin_commands) /
+                     sizeof(shell_builtin_commands[0]);
+         ++index) {
+        completion_add(completion, shell_builtin_commands[index], prefix,
+                       prefix_length);
+    }
+    descriptor = minios_open("/bin", MINIOS_O_RDONLY);
+    if (descriptor < 3) {
+        return false;
+    }
+    while ((result = minios_readdir(descriptor, &entry, sizeof(entry))) == 1) {
+        if (entry.mode == MINIFS_MODE_REGULAR &&
+            !command_is_builtin(entry.name)) {
+            completion_add(completion, entry.name, prefix, prefix_length);
+        }
+    }
+    close_result = minios_close(descriptor);
+    return result == 0 && close_result == 0;
 }
 
 static int parse_line(char *line, char **arguments, size_t *argument_count)
@@ -191,6 +298,7 @@ static int run_builtin(char **arguments, size_t argument_count)
             "builtins: help clear cd pwd exit shutdown\n"
             "commands: ls cat touch write edit mkdir rm cp stat echo ps sleep uptime\n"
             "diagnostics: memtest fault\n"
+            "completion: Tab completes builtins and /bin commands\n"
             "quoting:  'single quoted' \"double quoted\" backslash\\escape\n"
         ) ? 0 : -1;
     }
@@ -343,6 +451,24 @@ static bool run_file_command_self_test(void)
         write_text("[USER] file commands PASS\n");
 }
 
+static bool run_completion_self_test(void)
+{
+    struct shell_completion completion;
+
+    if (!collect_command_matches("ec", 2U, &completion) ||
+        completion.match_count != 1U ||
+        !minios_streq(completion.common, "echo") ||
+        !collect_command_matches("hel", 3U, &completion) ||
+        completion.match_count != 1U ||
+        !minios_streq(completion.common, "help") ||
+        !collect_command_matches("c", 1U, &completion) ||
+        completion.match_count < 2U || completion.common_length != 1U ||
+        completion.common[0] != 'c') {
+        return false;
+    }
+    return write_text("[USER] shell completion PASS\n");
+}
+
 static int run_self_test(void)
 {
     char help_line[] = "help";
@@ -364,6 +490,7 @@ static int run_self_test(void)
         run_line(uptime_line) != 0 ||
         !write_text("[USER] time commands PASS\n") ||
         run_line(memtest_line) != 0 ||
+        !run_completion_self_test() ||
         !run_file_command_self_test() ||
         !write_text("[USER] shell self-test PASS\n")) {
         return 1;
@@ -403,6 +530,132 @@ static bool redraw_line(const char *line, size_t length, size_t cursor,
         }
     }
     return write_backspaces(rendered_length - cursor);
+}
+
+static bool print_command_matches(const char *prefix, size_t prefix_length,
+                                  const char *line, size_t length,
+                                  size_t cursor)
+{
+    struct minios_dirent entry;
+    int32_t descriptor;
+    int32_t result;
+    int32_t close_result;
+    size_t index;
+    bool success = write_text("\n");
+
+    for (index = 0U;
+         success && index < sizeof(shell_builtin_commands) /
+                                sizeof(shell_builtin_commands[0]);
+         ++index) {
+        if (string_has_prefix(shell_builtin_commands[index], prefix,
+                              prefix_length)) {
+            success = write_text(shell_builtin_commands[index]) &&
+                write_text("\n");
+        }
+    }
+    descriptor = minios_open("/bin", MINIOS_O_RDONLY);
+    if (descriptor < 3) {
+        return false;
+    }
+    while (success &&
+           (result = minios_readdir(descriptor, &entry, sizeof(entry))) == 1) {
+        if (entry.mode == MINIFS_MODE_REGULAR &&
+            !command_is_builtin(entry.name) &&
+            string_has_prefix(entry.name, prefix, prefix_length)) {
+            success = write_text(entry.name) && write_text("\n");
+        }
+    }
+    close_result = minios_close(descriptor);
+    if (!success || result != 0 || close_result != 0) {
+        return false;
+    }
+    return print_prompt() && write_buffer(line, length) &&
+        write_backspaces(length - cursor);
+}
+
+static bool insert_completion(char *line, size_t capacity, size_t *length,
+                              size_t *cursor, const char *completion,
+                              size_t completion_length,
+                              size_t prefix_length, bool append_separator)
+{
+    size_t old_length = *length;
+    size_t old_cursor = *cursor;
+    size_t suffix_length;
+    size_t separator_length;
+    size_t added_length;
+    size_t index;
+
+    if (completion_length < prefix_length) {
+        return true;
+    }
+    suffix_length = completion_length - prefix_length;
+    separator_length = append_separator &&
+        (*cursor == *length || !is_separator(line[*cursor])) ? 1U : 0U;
+    added_length = suffix_length + separator_length;
+    if (added_length == 0U || *length + added_length + 1U > capacity) {
+        return true;
+    }
+    for (index = *length; index > *cursor; --index) {
+        line[index + added_length - 1U] = line[index - 1U];
+    }
+    for (index = 0U; index < suffix_length; ++index) {
+        line[*cursor + index] = completion[prefix_length + index];
+    }
+    if (separator_length != 0U) {
+        line[*cursor + suffix_length] = ' ';
+    }
+    *cursor += added_length;
+    *length += added_length;
+    line[*length] = '\0';
+    if (old_cursor == old_length) {
+        return write_buffer(&line[old_cursor], added_length);
+    }
+    return redraw_line(line, *length, *cursor, old_length, old_cursor);
+}
+
+static bool complete_command(char *line, size_t capacity, size_t *length,
+                             size_t *cursor)
+{
+    struct shell_completion completion;
+    size_t command_start = 0U;
+    size_t prefix_length;
+    size_t index;
+
+    while (command_start < *cursor && is_separator(line[command_start])) {
+        ++command_start;
+    }
+    if (command_start == *cursor) {
+        return true;
+    }
+    for (index = command_start; index < *cursor; ++index) {
+        if (is_separator(line[index])) {
+            return true;
+        }
+    }
+    if (*cursor < *length && !is_separator(line[*cursor])) {
+        return true;
+    }
+    prefix_length = *cursor - command_start;
+    if (prefix_length > MINIFS_NAME_MAX ||
+        !collect_command_matches(&line[command_start], prefix_length,
+                                 &completion) ||
+        completion.match_count == 0U) {
+        return true;
+    }
+    if (completion.match_count == 1U) {
+        return insert_completion(
+            line, capacity, length, cursor, completion.common,
+            completion.common_length, prefix_length, true
+        );
+    }
+    if (completion.common_length > prefix_length) {
+        return insert_completion(
+            line, capacity, length, cursor, completion.common,
+            completion.common_length, prefix_length, false
+        );
+    }
+    return print_command_matches(&line[command_start], prefix_length, line,
+                                 *length, *cursor);
 }
 
 static void copy_line(char *destination, const char *source, size_t length)
@@ -642,7 +895,10 @@ int main(int argc, char **argv)
             continue;
         }
         if (character == '\t') {
-            character = (uint8_t)' ';
+            if (!complete_command(line, sizeof(line), &length, &cursor)) {
+                return 1;
+            }
+            continue;
         }
         if (character < 0x20U || character > 0x7EU) {
             continue;

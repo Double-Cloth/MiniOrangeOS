@@ -81,7 +81,7 @@ result=PASS
 .\environment\wsl\enter.ps1 -Command './environment/with-env.sh make run-curses'
 ```
 
-该命令会在需要时构建 `build/miniorangeos.img`，然后用 QEMU 启动。系统完成自检后进入 MiniOrangeOS Shell。Shell 支持单引号、双引号、反斜杠转义、相对路径和最长 255 字节的输入行；可用退格、Delete、左右方向键、Home/End 编辑，使用上下方向键浏览最近 8 条命令，并支持 `Ctrl+A/E/C/D/K/L/U`。可用命令：
+该命令会在需要时构建 `build/miniorangeos.img`，然后用 QEMU 启动。系统完成自检后进入 MiniOrangeOS Shell。Shell 支持单引号、双引号、反斜杠转义、相对路径和最长 255 字节的输入行；可用退格、Delete、左右方向键、Home/End 编辑，使用上下方向键浏览最近 8 条命令，并支持 `Ctrl+A/E/C/D/K/L/U`。在首个命令词中按 `Tab` 会从内建命令和实时 `/bin` 目录补全；唯一候选自动追加空格，多个候选先扩展公共前缀，再次无法扩展时列出所有匹配项。可用命令：
 
 | 命令 | 用途 | 示例 |
 |---|---|---|

@@ -1083,6 +1083,7 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
         self.assertIn("[USER] shell command PASS", output)
         self.assertIn("[USER] quoted shell command PASS", output)
         self.assertIn("[USER] relative command PASS", output)
+        self.assertIn("[USER] shell completion PASS", output)
         self.assertIn("[USER] shell self-test PASS", output)
         self.assertIn("[USER] ps PASS", output)
         self.assertIn("[USER] time commands PASS", output)
@@ -1311,6 +1312,17 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             else:
                 self.fail(f"键盘输入未执行 help 命令：\n{output}")
 
+            send_text("ec")
+            send_keys(b"tab")
+            send_text("tab-completion")
+            send_keys(b"ret")
+
+            send_text("he")
+            send_keys(b"tab", b"ret")
+
+            send_text("c")
+            send_keys(b"tab", b"ctrl-c")
+
             send_text("echo backspacz")
             send_keys(b"backspace")
             send_text("e")
@@ -1343,6 +1355,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
             send_keys(b"ret")
 
             expected_lines = {
+                "tab-completion": 1,
+                "clear": 1,
+                "cd": 1,
+                "cat": 1,
+                "cp": 1,
                 "backspace": 1,
                 "leftright": 1,
                 "delete": 1,
@@ -1364,6 +1381,11 @@ ASSERT(. <= 0x10000, "fixture exceeds 16-bit address space")
                 time.sleep(0.05)
             else:
                 self.fail(f"特殊键位未完成行编辑验收：\n{output}")
+            self.assertGreaterEqual(
+                output.count("builtins: help clear cd pwd exit shutdown"),
+                2,
+                "Tab 未补全并执行内建 help 命令",
+            )
             self.assertIsNone(re.search(r"(?m)^cancel$", normalized_output))
             self.assertNotIn(
                 "[KERN] keyboard input=",
