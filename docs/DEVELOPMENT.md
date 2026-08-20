@@ -301,6 +301,13 @@ WSL2 rootless OCI 集成曾在独立 `MiniOrangeOS-Dev-Test-ContainerHost`（Ubu
 
 发布前逐项确认：
 
+## 文档维护规范
+
+- 实现发生行为变化时，必须同步更新 `README.md`、`docs/PROJECT.md` 和受影响测试说明，避免“代码已改、文档仍旧”导致答辩或协作误判；
+- 历史记录只写“真实执行过且可追溯”的结果，不写推测性结论；
+- 文档中的命令应优先使用公开入口（`environment/with-env.sh`、`make` 目标、`environment/wsl/*.ps1`），避免写入临时调试命令；
+- 当无法在当前机器复现实测时，必须在文档中显式标记“未运行 + 原因 + 风险 + 下一步”。
+
 ### 环境与来源
 
 - [ ] `environment/verify.sh` 在正式 `MiniOrangeOS-Dev` 中 PASS；

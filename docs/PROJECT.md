@@ -148,7 +148,7 @@ Kernel Heap 从 `0xD1000000` 开始，最大 16 MiB，使用 8-byte 对齐 first
 
 每个用户进程有独立页目录，高半内核 PDE 从主内核页目录刷新。用户 text 只读，data/stack 可写，栈下方保留未映射 guard page。x86 32 位最低实现没有 NX。
 
-`validate_user_range`、`copy_from_user`、`copy_to_user` 和 `copy_user_string` 对每一页检查 present、U/S 和写权限。字符串逐字节验证到 NUL，允许合法终止于 `0xBFFFFFFF`；非法输入返回 `-EFAULT`。
+`validate_user_range`、`copy_from_user`、`copy_to_user` 和 `copy_user_string` 对每一页检查 present、U/S 和写权限。`copy_user_string` 采用“按页分块校验 + 分块内逐字节扫描”路径，既保持跨页安全语义，也降低长字符串热路径中的重复页表查询；合法输入可在 `0xBFFFFFFF` 终止，非法输入返回 `-EFAULT`。
 
 ## 进程与用户态
 
