@@ -86,28 +86,44 @@ int copy_user_string(char *kernel_destination, const char *user_source,
                      size_t maximum_length)
 {
     uint32_t start = (uint32_t)(uintptr_t)user_source;
+    size_t remaining_user;
     size_t index;
 
     if (kernel_destination == NULL || maximum_length == 0U ||
         start >= KERNEL_BASE) {
         return -MINIOS_EFAULT;
     }
-    for (index = 0U; index < maximum_length; ++index) {
-        const char *current;
-        char value;
+    remaining_user = (size_t)(KERNEL_BASE - start);
+    index = 0U;
+    while (index < maximum_length) {
+        uint32_t current_address = start + (uint32_t)index;
+        uint32_t page_offset = current_address & (PAGE_SIZE - 1U);
+        size_t chunk = PAGE_SIZE - (size_t)page_offset;
+        size_t local;
 
-        if (index >= (size_t)(KERNEL_BASE - start)) {
+        if (index >= remaining_user) {
             return -MINIOS_EFAULT;
         }
-        current = (const char *)(uintptr_t)(start + (uint32_t)index);
-        if (!validate_user_range(current, 1U, USER_ACCESS_READ)) {
+        if (chunk > maximum_length - index) {
+            chunk = maximum_length - index;
+        }
+        if (chunk > remaining_user - index) {
+            chunk = remaining_user - index;
+        }
+        if (!validate_user_range((const void *)(uintptr_t)current_address,
+                                 chunk, USER_ACCESS_READ)) {
             return -MINIOS_EFAULT;
         }
-        value = *current;
-        kernel_destination[index] = value;
-        if (value == '\0') {
-            return 0;
+        for (local = 0U; local < chunk; ++local) {
+            char value =
+                *(const char *)(uintptr_t)(current_address + (uint32_t)local);
+
+            kernel_destination[index + local] = value;
+            if (value == '\0') {
+                return 0;
+            }
         }
+        index += chunk;
     }
     return -MINIOS_EFAULT;
 }

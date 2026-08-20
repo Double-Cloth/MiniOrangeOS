@@ -404,6 +404,7 @@ int32_t vfs_readdir(int32_t descriptor, struct minios_dirent *entry)
     struct minifs_dirent minifs_entry;
     struct vfs_file *file;
     uint32_t irq_flags;
+    size_t copy_length;
     size_t index;
     int32_t result;
 
@@ -427,9 +428,15 @@ int32_t vfs_readdir(int32_t descriptor, struct minios_dirent *entry)
         entry->inode = minifs_entry.inode;
         entry->mode = minifs_entry.mode;
         entry->name_length = minifs_entry.name_length;
-        for (index = 0U; index < sizeof(entry->name); ++index) {
-            entry->name[index] = index <= minifs_entry.name_length ?
-                minifs_entry.name[index] : '\0';
+        copy_length = (size_t)minifs_entry.name_length + 1U;
+        if (copy_length > sizeof(entry->name)) {
+            copy_length = sizeof(entry->name);
+        }
+        for (index = 0U; index < copy_length; ++index) {
+            entry->name[index] = minifs_entry.name[index];
+        }
+        for (; index < sizeof(entry->name); ++index) {
+            entry->name[index] = '\0';
         }
         entry->reserved = 0U;
     }
